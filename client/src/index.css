@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+/* Tailwind v4 is CSS-first. Every colour used anywhere in the app comes from
+   a token defined here — no ad-hoc hex values in JSX. */
+@theme {
+    --color-brand-50:  #eff6ff;
+    --color-brand-100: #dbeafe;
+    --color-brand-500: #3b82f6;
+    --color-brand-600: #2563eb;
+    --color-brand-700: #1d4ed8;
+
+    /* Role accent colours — used by badges and the sidebar */
+    --color-role-super:      #a855f7;
+    --color-role-orgadmin:   #2563eb;
+    --color-role-recruiter:  #0ea5e9;
+    --color-role-consultant: #10b981;
+
+    /* Audit action verbs (first word drives the colour) */
+    --color-audit-added:    #10b981;
+    --color-audit-updated:  #f59e0b;
+    --color-audit-approved: #059669;
+    --color-audit-sent:     #0ea5e9;
+    --color-audit-removed:  #ef4444;
+
+    --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html, body, #root {
+    height: 100%;
+}
+
+body {
+    font-family: var(--font-sans);
+}
