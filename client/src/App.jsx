@@ -14,6 +14,7 @@ const ManagementDashboard = lazy(() => import('./pages/management/ManagementDash
 const Users = lazy(() => import('./pages/management/Users.jsx'));
 const Assignments = lazy(() => import('./pages/management/Assignments.jsx'));
 const MyConsultants = lazy(() => import('./pages/management/MyConsultants.jsx'));
+const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.jsx'));
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
 const MyProfile = lazy(() => import('./pages/portal/MyProfile.jsx'));
@@ -51,6 +52,7 @@ const App = () => (
                 <Route path="/management/users" element={route(Users, ADMIN)} />
                 <Route path="/management/assignments" element={route(Assignments, ADMIN)} />
                 <Route path="/management/consultants" element={route(MyConsultants, RECRUITER)} />
+                <Route path="/management/approvals" element={route(ProfileApprovals, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}
                 <Route path="/portal" element={route(ConsultantDashboard, CONSULTANT)} />

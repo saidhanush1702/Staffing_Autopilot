@@ -1,12 +1,18 @@
+import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-    Building2, LayoutDashboard, Users, Link2, UserCircle, ShieldCheck,
+    Building2, LayoutDashboard, Users, Link2, UserCircle, ShieldCheck, ClipboardCheck,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
+import api from '../../api/axios.js';
 
 /**
  * Nav items are filtered by the SAME role lists used on the routes, so a user
  * never sees a link they cannot open.
+ *
+ * `badge` names a counter fetched below:
+ *   approvals — pending profile change requests awaiting this reviewer
+ *   incomplete — required profile fields the consultant still has to fill
  */
 const NAV_ITEMS = [
     { to: '/super-admin', label: 'Platform', icon: ShieldCheck, roles: ['SUPER_ADMIN'] },
@@ -15,10 +21,17 @@ const NAV_ITEMS = [
     { to: '/management', label: 'Dashboard', icon: LayoutDashboard, roles: ['ORG_ADMIN', 'RECRUITER'] },
     { to: '/management/users', label: 'Users', icon: Users, roles: ['ORG_ADMIN'] },
     { to: '/management/consultants', label: 'My Consultants', icon: Users, roles: ['RECRUITER'] },
+    {
+        to: '/management/approvals', label: 'Approvals', icon: ClipboardCheck,
+        roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'approvals',
+    },
     { to: '/management/assignments', label: 'Assignments', icon: Link2, roles: ['ORG_ADMIN'] },
 
     { to: '/portal', label: 'Dashboard', icon: LayoutDashboard, roles: ['CONSULTANT'] },
-    { to: '/portal/profile', label: 'My Profile', icon: UserCircle, roles: ['CONSULTANT'] },
+    {
+        to: '/portal/profile', label: 'My Profile', icon: UserCircle,
+        roles: ['CONSULTANT'], badge: 'incomplete',
+    },
 ];
 
 const ROLE_STYLES = {
@@ -30,6 +43,23 @@ const ROLE_STYLES = {
 
 const Sidebar = () => {
     const { user } = useAuth();
+    const [badges, setBadges] = useState({ approvals: 0, incomplete: 0 });
+
+    useEffect(() => {
+        if (!user) return;
+
+        if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
+            api.get('/management/profile-changes/count')
+                .then(({ data }) => setBadges((b) => ({ ...b, approvals: data.pending })))
+                .catch(() => {});
+        }
+        if (user.role === 'CONSULTANT') {
+            api.get('/portal/me')
+                .then(({ data }) => setBadges((b) => ({ ...b, incomplete: data.missingFields.length })))
+                .catch(() => {});
+        }
+    }, [user]);
+
     if (!user) return null;
 
     const items = NAV_ITEMS.filter((i) => i.roles.includes(user.role));
@@ -44,23 +74,41 @@ const Sidebar = () => {
             </div>
 
             <nav className="flex-1 space-y-1 p-3">
-                {items.map(({ to, label, icon: Icon }) => (
-                    <NavLink
-                        key={to}
-                        to={to}
-                        end={to === '/super-admin' || to === '/management' || to === '/portal'}
-                        className={({ isActive }) =>
-                            [
-                                'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
-                                isActive
-                                    ? 'bg-brand-50 font-medium text-brand-700'
-                                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
-                            ].join(' ')}
-                    >
-                        <Icon className="h-4 w-4" />
-                        {label}
-                    </NavLink>
-                ))}
+                {items.map(({ to, label, icon: Icon, badge }) => {
+                    const count = badge ? badges[badge] : 0;
+                    return (
+                        <NavLink
+                            key={to}
+                            to={to}
+                            end={to === '/super-admin' || to === '/management' || to === '/portal'}
+                            className={({ isActive }) =>
+                                [
+                                    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+                                    isActive
+                                        ? 'bg-brand-50 font-medium text-brand-700'
+                                        : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+                                ].join(' ')}
+                        >
+                            <Icon className="h-4 w-4" />
+                            <span className="flex-1">{label}</span>
+                            {count > 0 && (
+                                <span
+                                    title={badge === 'incomplete'
+                                        ? `${count} required field${count === 1 ? '' : 's'} still missing`
+                                        : `${count} awaiting your review`}
+                                    className={[
+                                        'rounded-full px-2 py-0.5 text-[11px] font-medium',
+                                        badge === 'incomplete'
+                                            ? 'bg-amber-100 text-amber-700'
+                                            : 'bg-brand-600 text-white',
+                                    ].join(' ')}
+                                >
+                                    {count}
+                                </span>
+                            )}
+                        </NavLink>
+                    );
+                })}
             </nav>
 
             <div className="border-t border-slate-200 p-4">

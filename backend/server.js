@@ -39,9 +39,20 @@ import {
     listAssignments, assignConsultant, orgStats,
     createUserSchema, updateUserSchema, assignSchema, resetPasswordSchema,
 } from './controllers/managementController.js';
-import { myProfile, myDashboard } from './controllers/portalController.js';
+import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
+import {
+    getProfileSchema, listConsultants, getConsultantProfile,
+    adminUpdateProfile, myProfile, adminUpdateProfileSchema,
+} from './controllers/profileController.js';
+import {
+    submitChangeRequest, withdrawChangeRequest, listChangeRequests,
+    reviewChangeRequest, pendingCount,
+    submitChangeSchema, reviewSchema,
+} from './controllers/profileChangeController.js';
+import { uploadResume, downloadResume, listResumes } from './controllers/resumeController.js';
+import { resumeUpload } from './utils/upload.js';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 5000);
@@ -143,10 +154,39 @@ app.post('/api/management/assignments',
 
 app.get('/api/management/audit-logs/:module', [verifyToken, isOrgAdmin], getModuleAuditLogs);
 
+/* ──────────────── consultant profiles (Phase 2) ────────────────── */
+
+// The field registry, so the client renders forms from the server's definition.
+app.get('/api/profile-schema', [verifyToken], getProfileSchema);
+
+app.get('/api/management/consultants', [verifyToken, isManagement], listConsultants);
+app.get('/api/management/consultants/:id', [verifyToken, isManagement], getConsultantProfile);
+app.put('/api/management/consultants/:id/profile',
+    [verifyToken, isOrgAdmin, validate(adminUpdateProfileSchema)], adminUpdateProfile);
+
+// ── change requests ──
+// Reviewing is open to ORG_ADMIN and RECRUITER; a recruiter is narrowed to
+// their assigned consultants inside the controller.
+app.get('/api/management/profile-changes', [verifyToken, isManagement], listChangeRequests);
+app.get('/api/management/profile-changes/count', [verifyToken, isManagement], pendingCount);
+app.post('/api/management/profile-changes/:id/review',
+    [verifyToken, isManagement, validate(reviewSchema)], reviewChangeRequest);
+
+// ── resumes ──
+app.get('/api/management/consultants/:id/resumes', [verifyToken, isManagement], listResumes);
+app.post('/api/management/consultants/:id/resume',
+    [verifyToken, isManagement], resumeUpload, uploadResume);
+app.get('/api/resumes/:artifactId/download', [verifyToken], downloadResume);
+
 /* ─────────────────────── consultant portal ─────────────────────── */
 
 app.get('/api/portal/me', [verifyToken, isConsultant], myProfile);
 app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
+app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
+app.post('/api/portal/profile/change-request',
+    [verifyToken, isConsultant, validate(submitChangeSchema)], submitChangeRequest);
+app.delete('/api/portal/profile/change-request',
+    [verifyToken, isConsultant], withdrawChangeRequest);
 
 /* ───────────────────────────── tail ────────────────────────────── */
 

@@ -96,13 +96,26 @@ export const createUser = async (req, res, next) => {
         const id = uuidv4();
         const { enc, iv, tag } = encryptPassword(password);
 
-        await query(
-            `INSERT INTO users
-                (id, organization_id, name, email, phone, role,
-                 password_enc, password_iv, password_tag, created_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [id, orgId, name, email, phone || null, role, enc, iv, tag, req.user.id],
-        );
+        await withTransaction(async (client) => {
+            await client.query(
+                `INSERT INTO users
+                    (id, organization_id, name, email, phone, role,
+                     password_enc, password_iv, password_tag, created_by)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                [id, orgId, name, email, phone || null, role, enc, iv, tag, req.user.id],
+            );
+
+            // A consultant always has a profile row from the moment they exist,
+            // so no read path anywhere has to handle a missing profile.
+            if (role === 'CONSULTANT') {
+                await client.query(
+                    `INSERT INTO consultant_profiles
+                        (user_id, organization_id, phone, daily_cap, created_by)
+                     VALUES ($1,$2,$3,5,$4)`,
+                    [id, orgId, phone || null, req.user.id],
+                );
+            }
+        });
 
         logAction({
             orgId, module: 'users', action: 'Added User',
