@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import Pagination from '../../components/Pagination.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -39,6 +40,7 @@ const StatusPill = ({ status }) => {
 const ProfileApprovals = () => {
     const { user } = useAuth();
     const [requests, setRequests] = useState(null);
+    const [page, setPage] = useState(null);
     const [schema, setSchema] = useState(null);
     const [error, setError] = useState('');
     const [tab, setTab] = useState('PENDING');
@@ -48,13 +50,14 @@ const ProfileApprovals = () => {
     const [submitting, setSubmitting] = useState(null);
     const [rowError, setRowError] = useState({});
 
-    const load = async (status = tab) => {
+    const load = async (status = tab, p = 1) => {
         try {
             const [reqRes, schRes] = await Promise.all([
-                api.get('/management/profile-changes', { params: { status } }),
+                api.get('/management/profile-changes', { params: { status, page: p, limit: 25 } }),
                 api.get('/profile-schema'),
             ]);
             setRequests(reqRes.data.requests);
+            setPage(reqRes.data.page);
             setSchema(schRes.data);
             setDecisions({});
         } catch (err) {
@@ -361,6 +364,8 @@ const ProfileApprovals = () => {
                             })}
                         </tbody>
                     </table>
+
+                    <Pagination page={page} onChange={(p) => load(tab, p)} />
                 </div>
             )}
 

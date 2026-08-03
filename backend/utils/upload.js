@@ -56,14 +56,37 @@ export const resumeUpload = multer({
 }).single('resume');
 
 /**
- * Write a validated buffer to disk.
+ * Turn a person's name into a filesystem-safe fragment.
+ *
+ * Strips everything that is not a word character, space or hyphen — which
+ * removes `.`, `/`, `\` and `..`, so a crafted display name cannot escape the
+ * upload directory. Falls back to 'resume' if nothing usable survives
+ * (e.g. a name written entirely in a script that normalises away).
+ */
+export const slugifyName = (name) => {
+    const slug = String(name ?? '')
+        .normalize('NFKD')
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/[\s_-]+/g, '_')
+        .slice(0, 40);
+    return slug || 'resume';
+};
+
+/**
+ * Write a validated buffer to disk as `<Name>_<short-id>.<ext>`.
+ *
+ * The name makes the uploads folder readable during support work; the short id
+ * keeps two consultants with the same name from colliding.
+ *
  * @returns {{ storedName: string, sha256: string, absolutePath: string }}
  */
-export const persistResume = (orgId, buffer, extension) => {
+export const persistResume = (orgId, buffer, extension, { consultantName, artifactId } = {}) => {
     const dir = path.join(UPLOAD_ROOT, orgId);
     fs.mkdirSync(dir, { recursive: true });
 
-    const storedName = `${uuidv4()}${extension}`;
+    const shortId = (artifactId ?? uuidv4()).slice(0, 8);
+    const storedName = `${slugifyName(consultantName)}_${shortId}${extension}`;
     const absolutePath = path.join(dir, storedName);
     fs.writeFileSync(absolutePath, buffer);
 
@@ -72,6 +95,22 @@ export const persistResume = (orgId, buffer, extension) => {
         sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
         absolutePath,
     };
+};
+
+/**
+ * Remove a stored file. Never throws — a missing file is not a reason to fail
+ * the request that triggered the cleanup.
+ */
+export const deleteStoredFile = (orgId, storedName) => {
+    try {
+        fs.unlinkSync(resolveStoredPath(orgId, storedName));
+        return true;
+    } catch (err) {
+        if (err.code !== 'ENOENT') {
+            console.error(`Could not delete resume file "${storedName}":`, err.message);
+        }
+        return false;
+    }
 };
 
 /**

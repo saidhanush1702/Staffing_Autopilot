@@ -96,11 +96,6 @@ const Login = () => {
                         {submitting ? 'Signing in…' : 'Sign in'}
                     </button>
                 </form>
-
-                <p className="mt-4 text-center text-xs text-slate-400">
-                    Seeded accounts: superadmin@staffing.local · admin@molina.local ·
-                    recruiter1@molina.local · consultant1@molina.local
-                </p>
             </div>
         </div>
     );

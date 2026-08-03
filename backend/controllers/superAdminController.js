@@ -52,7 +52,13 @@ export const listOrganizations = async (req, res, next) => {
     }
 };
 
-/** GET /api/super-admin/organizations/:id */
+/**
+ * GET /api/super-admin/organizations/:id
+ *
+ * The tenant, its per-role headcount, and its user list. SUPER_ADMIN sees who
+ * exists and whether accounts are active — deliberately NOT their business
+ * data (no profiles, no resumes, no change requests).
+ */
 export const getOrganization = async (req, res, next) => {
     try {
         const { rows } = await query(
@@ -63,13 +69,37 @@ export const getOrganization = async (req, res, next) => {
         );
         if (!rows[0]) return res.status(404).json({ error: 'Organization not found.' });
 
-        const { rows: users } = await query(
-            `SELECT id, name, email, role, is_active, last_login_at
-               FROM users WHERE organization_id = $1 ORDER BY role, name`,
+        // One pass, split by role and by active state.
+        const { rows: countRows } = await query(
+            `SELECT
+               COUNT(*) FILTER (WHERE role = 'ORG_ADMIN')                   ::int AS org_admins,
+               COUNT(*) FILTER (WHERE role = 'ORG_ADMIN'  AND is_active)    ::int AS org_admins_active,
+               COUNT(*) FILTER (WHERE role = 'RECRUITER')                   ::int AS recruiters,
+               COUNT(*) FILTER (WHERE role = 'RECRUITER'  AND is_active)    ::int AS recruiters_active,
+               COUNT(*) FILTER (WHERE role = 'CONSULTANT')                  ::int AS consultants,
+               COUNT(*) FILTER (WHERE role = 'CONSULTANT' AND is_active)    ::int AS consultants_active,
+               COUNT(*)                                                     ::int AS total_users,
+               COUNT(*) FILTER (WHERE NOT is_active)                        ::int AS disabled_users
+             FROM users WHERE organization_id = $1`,
             [req.params.id],
         );
 
-        return res.json({ organization: rows[0], users });
+        const { rows: users } = await query(
+            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.last_login_at,
+                    u.created_at, rec.name AS recruiter_name
+               FROM users u
+          LEFT JOIN assignments a
+                 ON a.consultant_id = u.id AND a.effective_to IS NULL
+          LEFT JOIN users rec ON rec.id = a.recruiter_id
+              WHERE u.organization_id = $1
+              ORDER BY CASE u.role
+                         WHEN 'ORG_ADMIN' THEN 1
+                         WHEN 'RECRUITER' THEN 2
+                         ELSE 3 END, u.name`,
+            [req.params.id],
+        );
+
+        return res.json({ organization: rows[0], counts: countRows[0], users });
     } catch (err) {
         return next(err);
     }

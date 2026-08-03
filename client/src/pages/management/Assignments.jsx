@@ -20,7 +20,8 @@ const Assignments = () => {
         try {
             const [aRes, uRes] = await Promise.all([
                 api.get('/management/assignments'),
-                api.get('/management/users'),
+                // The dropdowns need every user, so opt out of the default page size.
+                api.get('/management/users', { params: { limit: 200 } }),
             ]);
             setAssignments(aRes.data.assignments);
             setRecruiters(uRes.data.users.filter((u) => u.role === 'RECRUITER' && u.is_active));

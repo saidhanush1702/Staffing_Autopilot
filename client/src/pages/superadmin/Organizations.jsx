@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Plus, Power, Loader2, AlertCircle, X } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -9,6 +10,7 @@ const EMPTY_FORM = {
 };
 
 const Organizations = () => {
+    const navigate = useNavigate();
     const [orgs, setOrgs] = useState(null);
     const [error, setError] = useState('');
     const [showForm, setShowForm] = useState(false);
@@ -151,7 +153,11 @@ const Organizations = () => {
                             <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No organizations yet.</td></tr>
                         )}
                         {orgs.map((o) => (
-                            <tr key={o.id} className="hover:bg-slate-50">
+                            <tr
+                                key={o.id}
+                                onClick={() => navigate(`/super-admin/organizations/${o.id}`)}
+                                className="cursor-pointer hover:bg-slate-50"
+                            >
                                 <td className="px-4 py-3 font-medium text-slate-900">{o.name}</td>
                                 <td className="px-4 py-3 text-slate-500">{o.slug}</td>
                                 <td className="px-4 py-3 text-slate-600">{o.admin_count}</td>
@@ -165,7 +171,7 @@ const Organizations = () => {
                                 <td className="px-4 py-3 text-right">
                                     <button
                                         type="button"
-                                        onClick={() => toggleActive(o)}
+                                        onClick={(e) => { e.stopPropagation(); toggleActive(o); }}
                                         className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
                                     >
                                         <Power className="h-3.5 w-3.5" />

@@ -15,6 +15,7 @@ import {
     REQUIRED_FIELDS, missingRequiredFields,
 } from '../config/profileFields.js';
 import { canAccessConsultant } from '../utils/scope.js';
+import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction, describeChanges } from './auditLogController.js';
 
 export const adminUpdateProfileSchema = Joi.object({
@@ -58,18 +59,32 @@ const PROFILE_SELECT = `
  LEFT JOIN resume_artifacts r ON r.id = p.base_resume_artifact_id
 `;
 
-/** GET /api/management/consultants — list with completeness + pending flags */
+/**
+ * GET /api/management/consultants
+ *
+ * ORG_ADMIN sees every consultant in the organisation.
+ * RECRUITER sees only those currently assigned to them.
+ *
+ * Supports ?search, ?status (complete|incomplete|pending), ?limit, ?page.
+ * The COUNT(*) OVER () window returns the total on the same pass, so a page
+ * and its count can never disagree.
+ */
 export const listConsultants = async (req, res, next) => {
     try {
         const { orgId, role, id: userId } = req.user;
+        const paging = readPaging(req);
+        const search = (req.query.search ?? '').trim() || null;
+        const filter = req.query.status ?? null;
 
         const { rows } = await query(
-            `SELECT p.user_id, p.phone, p.city, p.state, p.work_auth_status_id,
+            `SELECT COUNT(*) OVER () AS total_count,
+                    p.user_id, p.phone, p.city, p.state, p.work_auth_status_id,
                     p.base_resume_artifact_id, p.daily_cap, p.is_paused,
-                    p.consent_on_file,
+                    p.consent_on_file, p.linkedin_url,
                     u.name, u.email, u.is_active,
                     w.name AS work_auth_name,
-                    rec.name AS recruiter_name,
+                    rec.name AS recruiter_name, rec.id AS recruiter_id,
+                    r.original_name AS resume_name,
                     EXISTS (
                         SELECT 1 FROM profile_change_requests c
                          WHERE c.consultant_id = p.user_id AND c.status = 'PENDING'
@@ -77,21 +92,38 @@ export const listConsultants = async (req, res, next) => {
                FROM consultant_profiles p
                JOIN users u ON u.id = p.user_id
           LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
+          LEFT JOIN resume_artifacts r ON r.id = p.base_resume_artifact_id
           LEFT JOIN assignments a
                  ON a.consultant_id = p.user_id AND a.effective_to IS NULL
           LEFT JOIN users rec ON rec.id = a.recruiter_id
               WHERE p.organization_id = $1
                 AND ($2::text IS NULL OR a.recruiter_id = $2)
-              ORDER BY u.name`,
-            [orgId, role === 'RECRUITER' ? userId : null],
+                AND ($3::text IS NULL OR u.name ILIKE '%' || $3 || '%'
+                                      OR u.email ILIKE '%' || $3 || '%')
+                AND ($4::text IS NULL
+                     OR ($4 = 'pending' AND EXISTS (
+                            SELECT 1 FROM profile_change_requests c
+                             WHERE c.consultant_id = p.user_id AND c.status = 'PENDING'))
+                     OR ($4 = 'complete' AND p.phone IS NOT NULL AND p.city IS NOT NULL
+                         AND p.state IS NOT NULL AND p.work_auth_status_id IS NOT NULL
+                         AND p.base_resume_artifact_id IS NOT NULL)
+                     OR ($4 = 'incomplete' AND (p.phone IS NULL OR p.city IS NULL
+                         OR p.state IS NULL OR p.work_auth_status_id IS NULL
+                         OR p.base_resume_artifact_id IS NULL)))
+              ORDER BY u.name
+              LIMIT $5 OFFSET $6`,
+            [orgId, role === 'RECRUITER' ? userId : null, search, filter,
+                paging.limit, paging.offset],
         );
 
+        const result = pageResult(rows, paging);
         return res.json({
-            consultants: rows.map((r) => ({
+            consultants: result.data.map((r) => ({
                 ...r,
                 missing_fields: missingRequiredFields(r),
                 is_complete: missingRequiredFields(r).length === 0,
             })),
+            page: result.page,
         });
     } catch (err) {
         return next(err);

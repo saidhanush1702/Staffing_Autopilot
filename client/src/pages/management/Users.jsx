@@ -1,9 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Plus, X, Loader2, AlertCircle, Power, ShieldAlert, Users as UsersIcon } from 'lucide-react';
+import {
+    Plus, X, Loader2, AlertCircle, Power, PowerOff, ShieldAlert, Lock,
+    Users as UsersIcon,
+} from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import PasswordCell from '../../components/PasswordCell.jsx';
+import Pagination from '../../components/Pagination.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 const EMPTY = { name: '', email: '', phone: '', role: 'CONSULTANT', password: '' };
 
@@ -21,7 +26,10 @@ const ROLE_BADGE = {
 };
 
 const Users = () => {
+    const { user } = useAuth();
     const [users, setUsers] = useState(null);
+    const [page, setPage] = useState(null);
+    const [currentPage, setCurrentPage] = useState(1);
     const [error, setError] = useState('');
     const [activeTab, setActiveTab] = useState('ORG_ADMIN');
 
@@ -36,16 +44,20 @@ const Users = () => {
     const [resetError, setResetError] = useState('');
     const [resetting, setResetting] = useState(false);
 
-    const load = async () => {
+    const load = async (p = 1) => {
         try {
-            const { data } = await api.get('/management/users');
+            const { data } = await api.get('/management/users', {
+                params: { page: p, limit: 25 },
+            });
             setUsers(data.users);
+            setPage(data.page);
+            setCurrentPage(p);
         } catch (err) {
             setError(errorMessage(err));
         }
     };
 
-    useEffect(() => { load(); }, []);
+    useEffect(() => { load(1); }, []);
 
     const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -77,6 +89,15 @@ const Users = () => {
         if (!window.confirm(`Disable ${u.name}? They will not be able to sign in.`)) return;
         try {
             await api.delete(`/management/users/${u.id}`);
+            await load();
+        } catch (err) {
+            setError(errorMessage(err));
+        }
+    };
+
+    const enable = async (u) => {
+        try {
+            await api.patch(`/management/users/${u.id}`, { isActive: true });
             await load();
         } catch (err) {
             setError(errorMessage(err));
@@ -234,10 +255,22 @@ const Users = () => {
                                 <td className="px-4 py-3 font-medium text-slate-900">{u.name}</td>
                                 <td className="px-4 py-3 text-slate-500">{u.email}</td>
                                 <td className="px-4 py-3">
-                                    <PasswordCell
-                                        userId={u.id}
-                                        onReset={() => { setResetTarget(u); setNewPassword(''); setResetError(''); }}
-                                    />
+                                    {/* Layer 3, cosmetic only: the server refuses a peer admin's
+                                        password regardless. Hiding the controls avoids offering
+                                        buttons that can only ever return 403. */}
+                                    {u.role === 'ORG_ADMIN' && u.id !== user?.id ? (
+                                        <span
+                                            title="Another organization admin's password is not accessible"
+                                            className="inline-flex items-center gap-1.5 text-xs text-slate-400"
+                                        >
+                                            <Lock className="h-3.5 w-3.5" /> Not accessible
+                                        </span>
+                                    ) : (
+                                        <PasswordCell
+                                            userId={u.id}
+                                            onReset={() => { setResetTarget(u); setNewPassword(''); setResetError(''); }}
+                                        />
+                                    )}
                                 </td>
                                 <td className="px-4 py-3">
                                     <span className={`rounded px-2 py-0.5 text-xs font-medium ${ROLE_BADGE[u.role] ?? 'bg-slate-100 text-slate-600'}`}>
@@ -250,20 +283,34 @@ const Users = () => {
                                     </span>
                                 </td>
                                 <td className="px-4 py-3 text-right">
-                                    {u.role !== 'ORG_ADMIN' && u.is_active && (
-                                        <button
-                                            type="button"
-                                            onClick={() => disable(u)}
-                                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
-                                        >
-                                            <Power className="h-3.5 w-3.5" /> Disable
-                                        </button>
+                                    {/* Both directions must be reachable — a Disable button with
+                                        no Enable counterpart makes disabling a one-way door. */}
+                                    {u.role !== 'ORG_ADMIN' && (
+                                        u.is_active ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => disable(u)}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                                            >
+                                                <Power className="h-3.5 w-3.5" /> Disable
+                                            </button>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => enable(u)}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-100"
+                                            >
+                                                <PowerOff className="h-3.5 w-3.5" /> Enable
+                                            </button>
+                                        )
                                     )}
                                 </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
+
+                <Pagination page={page} onChange={(p) => load(p)} />
             </div>
 
             <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">

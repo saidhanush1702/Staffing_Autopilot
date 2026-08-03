@@ -12,7 +12,9 @@
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db.js';
-import { sniffFileType, persistResume, resolveStoredPath } from '../utils/upload.js';
+import {
+    sniffFileType, persistResume, resolveStoredPath, deleteStoredFile,
+} from '../utils/upload.js';
 import { canAccessConsultant } from '../utils/scope.js';
 import { logAction } from './auditLogController.js';
 
@@ -20,6 +22,41 @@ const EXT_TO_MIME = {
     '.pdf': 'application/pdf',
     '.doc': 'application/msword',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+/**
+ * Keep exactly one resume per consultant — delete every other base resume,
+ * file and row.
+ *
+ * `keepIds` normally holds one id. It holds TWO only while a change request is
+ * in flight: the live resume, plus the one the consultant proposed. Both must
+ * survive until the reviewer decides, or approving would resolve to a file
+ * that no longer exists.
+ *
+ * Called after every event that changes which resume is current:
+ * upload, approve, reject, withdraw.
+ */
+export const pruneResumes = async (orgId, consultantId, keepIds = []) => {
+    const keep = keepIds.filter(Boolean);
+
+    const { rows } = await query(
+        `SELECT id, stored_name, original_name
+           FROM resume_artifacts
+          WHERE organization_id = $1
+            AND consultant_id   = $2
+            AND kind = 'base'
+            AND NOT (id = ANY($3::char(36)[]))`,
+        [orgId, consultantId, keep.length ? keep : ['-']],
+    );
+    if (rows.length === 0) return 0;
+
+    for (const r of rows) deleteStoredFile(orgId, r.stored_name);
+
+    await query(
+        'DELETE FROM resume_artifacts WHERE id = ANY($1::char(36)[])',
+        [rows.map((r) => r.id)],
+    );
+    return rows.length;
 };
 
 /**
@@ -49,8 +86,21 @@ export const uploadResume = async (req, res, next) => {
             });
         }
 
-        const { storedName, sha256 } = persistResume(orgId, req.file.buffer, sniffed);
+        // Name the file after the consultant so the uploads folder is readable.
+        const { rows: whoRows } = await query(
+            `SELECT u.name, p.base_resume_artifact_id AS current_id
+               FROM users u
+          LEFT JOIN consultant_profiles p ON p.user_id = u.id
+              WHERE u.id = $1 AND u.organization_id = $2`,
+            [consultantId, orgId],
+        );
+        const consultantName = whoRows[0]?.name;
+        const currentId = whoRows[0]?.current_id ?? null;
+
         const artifactId = uuidv4();
+        const { storedName, sha256 } = persistResume(
+            orgId, req.file.buffer, sniffed, { consultantName, artifactId },
+        );
 
         await query(
             `INSERT INTO resume_artifacts
@@ -74,13 +124,37 @@ export const uploadResume = async (req, res, next) => {
             applied = true;
         }
 
+        // Any artifact a PENDING change request points at must survive, even
+        // through an admin upload. Deleting it would leave the request
+        // referencing a row that no longer exists, and approving it would then
+        // fail on the foreign key.
+        const { rows: pendingRows } = await query(
+            `SELECT f.new_value
+               FROM profile_change_request_fields f
+               JOIN profile_change_requests c ON c.id = f.change_request_id
+              WHERE c.consultant_id = $1
+                AND c.status = 'PENDING'
+                AND f.field_name = 'base_resume_artifact_id'
+                AND f.new_value IS NOT NULL`,
+            [consultantId],
+        );
+        const pendingIds = pendingRows.map((r) => r.new_value);
+
+        // Only one resume survives, plus anything still awaiting review.
+        // An admin upload replaces the live one outright; a consultant upload
+        // keeps the live one until their proposal is reviewed.
+        const removed = await pruneResumes(
+            orgId, consultantId,
+            [...(applied ? [artifactId] : [currentId, artifactId]), ...pendingIds],
+        );
+
         logAction({
             orgId, module: 'resumes', action: 'Added Resume',
             entityType: 'ResumeArtifact', entityId: artifactId,
             entityName: req.file.originalname,
             performedBy: req.user.id, performedByRole: req.user.role,
             description: applied
-                ? `Uploaded base resume "${req.file.originalname}"`
+                ? `Uploaded base resume "${req.file.originalname}"${removed ? ` (replaced ${removed} earlier file)` : ''}`
                 : `Uploaded resume "${req.file.originalname}" pending approval`,
             ipAddress: req.ip,
         }).catch(() => {});
@@ -138,9 +212,16 @@ export const downloadResume = async (req, res, next) => {
             ipAddress: req.ip,
         }).catch(() => {});
 
+        // ?disposition=inline renders in an <iframe> preview instead of
+        // triggering a download. Same authorisation, same audit row — only the
+        // header differs.
+        const inline = req.query.disposition === 'inline';
+
         res.setHeader('Content-Type', artifact.mime_type);
         res.setHeader('Content-Disposition',
-            `attachment; filename="${artifact.original_name.replace(/"/g, '')}"`);
+            `${inline ? 'inline' : 'attachment'}; filename="${artifact.original_name.replace(/"/g, '')}"`);
+        // Lets the browser render it in a frame served from the client origin.
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         return fs.createReadStream(absolutePath).pipe(res);
     } catch (err) {
         return next(err);

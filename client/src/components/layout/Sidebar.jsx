@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
-    Building2, LayoutDashboard, Users, Link2, UserCircle, ShieldCheck, ClipboardCheck,
+    Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
+    ShieldCheck, ClipboardCheck,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../api/axios.js';
@@ -20,7 +21,10 @@ const NAV_ITEMS = [
 
     { to: '/management', label: 'Dashboard', icon: LayoutDashboard, roles: ['ORG_ADMIN', 'RECRUITER'] },
     { to: '/management/users', label: 'Users', icon: Users, roles: ['ORG_ADMIN'] },
-    { to: '/management/consultants', label: 'My Consultants', icon: Users, roles: ['RECRUITER'] },
+    // Same route for both roles; the label differs because a recruiter only
+    // ever receives their own assigned consultants from the server.
+    { to: '/management/consultants', label: 'Consultants', icon: Contact, roles: ['ORG_ADMIN'] },
+    { to: '/management/consultants', label: 'My Consultants', icon: Contact, roles: ['RECRUITER'] },
     {
         to: '/management/approvals', label: 'Approvals', icon: ClipboardCheck,
         roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'approvals',
@@ -41,24 +45,42 @@ const ROLE_STYLES = {
     CONSULTANT: 'bg-role-consultant/10 text-role-consultant',
 };
 
+const POLL_MS = 30_000;
+
 const Sidebar = () => {
     const { user } = useAuth();
+    const location = useLocation();
     const [badges, setBadges] = useState({ approvals: 0, incomplete: 0 });
 
-    useEffect(() => {
+    const refreshBadges = useCallback(async () => {
         if (!user) return;
-
-        if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
-            api.get('/management/profile-changes/count')
-                .then(({ data }) => setBadges((b) => ({ ...b, approvals: data.pending })))
-                .catch(() => {});
-        }
-        if (user.role === 'CONSULTANT') {
-            api.get('/portal/me')
-                .then(({ data }) => setBadges((b) => ({ ...b, incomplete: data.missingFields.length })))
-                .catch(() => {});
-        }
+        try {
+            if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
+                const { data } = await api.get('/management/profile-changes/count');
+                setBadges((b) => ({ ...b, approvals: data.pending }));
+            } else if (user.role === 'CONSULTANT') {
+                const { data } = await api.get('/portal/me');
+                setBadges((b) => ({ ...b, incomplete: data.missingFields.length }));
+            }
+        } catch { /* a stale badge must never break the shell */ }
     }, [user]);
+
+    /**
+     * Counts were previously fetched once per session, so a badge stayed wrong
+     * until the user logged out and back in. Three triggers now keep it live:
+     *   - on navigation, which covers "I just approved something"
+     *   - on a 30s poll, which covers changes made by someone else
+     *   - on window focus, which covers coming back to an idle tab
+     */
+    useEffect(() => { refreshBadges(); }, [refreshBadges, location.pathname]);
+
+    useEffect(() => {
+        if (!user) return undefined;
+        const id = setInterval(refreshBadges, POLL_MS);
+        const onFocus = () => refreshBadges();
+        window.addEventListener('focus', onFocus);
+        return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+    }, [user, refreshBadges]);
 
     if (!user) return null;
 

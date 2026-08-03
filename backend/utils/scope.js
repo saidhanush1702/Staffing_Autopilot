@@ -68,3 +68,54 @@ export const assertSameOrg = async (orgId, userId) => {
     );
     return rows[0] ?? null;
 };
+
+/**
+ * Load a user for a management action, applying BOTH rules that every
+ * user-management endpoint needs:
+ *
+ *   1. the target must belong to the actor's organisation
+ *   2. an ORG_ADMIN may not act on ANOTHER ORG_ADMIN
+ *
+ * Rule 2 exists because ORG_ADMIN can reveal and reset passwords. Without it,
+ * admin A could read or overwrite admin B's credentials and sign in as them —
+ * privilege escalation inside a tenant, and it would launder every subsequent
+ * action into B's name in the audit log.
+ *
+ * Acting on YOURSELF is allowed (you already know your own password); pass
+ * `{ allowSelf: false }` for destructive actions such as disabling an account.
+ *
+ * Use this instead of hand-writing the checks. Duplicated authorisation rules
+ * get forgotten — that is exactly how the reveal/reset endpoints originally
+ * shipped without rule 2.
+ *
+ * @returns {{ target?: object, error?: { status: number, message: string } }}
+ *
+ * NOTE: the row includes password material so callers do not need a second
+ * query. Never serialise `target` straight to a response.
+ */
+export const resolveManageableUser = async (actor, targetId, { allowSelf = true } = {}) => {
+    const { rows } = await query(
+        `SELECT id, name, email, phone, role, is_active,
+                password_enc, password_iv, password_tag
+           FROM users
+          WHERE id = $1 AND organization_id = $2`,
+        [targetId, actor.orgId],
+    );
+    const target = rows[0];
+
+    // Returns 404 rather than 403 so it does not confirm the user exists
+    // elsewhere in the platform.
+    if (!target) {
+        return { error: { status: 404, message: 'User not found in your organization.' } };
+    }
+
+    if (!allowSelf && target.id === actor.id) {
+        return { error: { status: 400, message: 'You cannot perform this action on your own account.' } };
+    }
+
+    if (target.role === 'ORG_ADMIN' && target.id !== actor.id) {
+        return { error: { status: 403, message: 'Cannot act on another organization admin.' } };
+    }
+
+    return { target };
+};

@@ -8,7 +8,10 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
-import { getAssignedConsultantIds, assertSameOrg } from '../utils/scope.js';
+import {
+    getAssignedConsultantIds, assertSameOrg, resolveManageableUser,
+} from '../utils/scope.js';
+import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction, describeChanges } from './auditLogController.js';
 
 export const createUserSchema = Joi.object({
@@ -63,20 +66,33 @@ export const listUsers = async (req, res, next) => {
             return res.json({ users: rows });
         }
 
+        // COALESCE resolves the phone ownership rule from migration 011:
+        // consultants own theirs on the profile, everyone else on users.
+        const paging = readPaging(req);
+        const search = (req.query.search ?? '').trim() || null;
+
         const { rows } = await query(
-            `SELECT u.id, u.name, u.email, u.phone, u.role, u.is_active,
+            `SELECT COUNT(*) OVER () AS total_count,
+                    u.id, u.name, u.email, u.role, u.is_active,
+                    COALESCE(p.phone, u.phone) AS phone,
                     u.last_login_at, u.created_at,
                     r.name AS recruiter_name
                FROM users u
+          LEFT JOIN consultant_profiles p ON p.user_id = u.id
           LEFT JOIN assignments a
                  ON a.consultant_id = u.id AND a.effective_to IS NULL
           LEFT JOIN users r ON r.id = a.recruiter_id
               WHERE u.organization_id = $1
                 AND ($2::text IS NULL OR u.role = $2)
-              ORDER BY u.role, u.name`,
-            [orgId, roleFilter],
+                AND ($3::text IS NULL OR u.name ILIKE '%' || $3 || '%'
+                                      OR u.email ILIKE '%' || $3 || '%')
+              ORDER BY u.role, u.name
+              LIMIT $4 OFFSET $5`,
+            [orgId, roleFilter, search, paging.limit, paging.offset],
         );
-        return res.json({ users: rows });
+
+        const result = pageResult(rows, paging);
+        return res.json({ users: result.data, page: result.page });
     } catch (err) {
         return next(err);
     }
@@ -96,18 +112,24 @@ export const createUser = async (req, res, next) => {
         const id = uuidv4();
         const { enc, iv, tag } = encryptPassword(password);
 
+        const isConsultantRole = role === 'CONSULTANT';
+
         await withTransaction(async (client) => {
+            // Phone ownership (migration 011): consultants keep theirs on the
+            // profile only, so users.phone stays NULL for them.
             await client.query(
                 `INSERT INTO users
                     (id, organization_id, name, email, phone, role,
                      password_enc, password_iv, password_tag, created_by)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-                [id, orgId, name, email, phone || null, role, enc, iv, tag, req.user.id],
+                [id, orgId, name, email,
+                    isConsultantRole ? null : (phone || null),
+                    role, enc, iv, tag, req.user.id],
             );
 
             // A consultant always has a profile row from the moment they exist,
             // so no read path anywhere has to handle a missing profile.
-            if (role === 'CONSULTANT') {
+            if (isConsultantRole) {
                 await client.query(
                     `INSERT INTO consultant_profiles
                         (user_id, organization_id, phone, daily_cap, created_by)
@@ -135,38 +157,65 @@ export const createUser = async (req, res, next) => {
 export const updateUser = async (req, res, next) => {
     try {
         const { orgId } = req.user;
-        const existing = await query(
-            'SELECT id, name, phone, role, is_active FROM users WHERE id = $1 AND organization_id = $2',
-            [req.params.id, orgId],
-        );
-        const old = existing.rows[0];
-        if (!old) return res.status(404).json({ error: 'User not found in your organization.' });
-        if (old.role === 'ORG_ADMIN' && old.id !== req.user.id) {
-            return res.status(403).json({ error: 'Cannot modify another organization admin.' });
-        }
+
+        const { target: old, error } = await resolveManageableUser(req.user, req.params.id);
+        if (error) return res.status(error.status).json({ error: error.message });
 
         const { name, phone, isActive } = req.body;
+        const isConsultantRole = old.role === 'CONSULTANT';
 
-        await query(
-            `UPDATE users
-                SET name = COALESCE($1, name),
-                    phone = COALESCE($2, phone),
-                    is_active = COALESCE($3, is_active),
-                    updated_by = $4
-              WHERE id = $5 AND organization_id = $6`,
-            [name ?? null, phone ?? null, isActive ?? null, req.user.id, old.id, orgId],
-        );
+        // A consultant's phone lives on their profile (migration 011), so the
+        // previous value for the audit diff has to come from there too.
+        let oldPhone = old.phone;
+        if (isConsultantRole) {
+            const { rows } = await query(
+                'SELECT phone FROM consultant_profiles WHERE user_id = $1 AND organization_id = $2',
+                [old.id, orgId],
+            );
+            oldPhone = rows[0]?.phone ?? null;
+        }
+
+        await withTransaction(async (client) => {
+            await client.query(
+                `UPDATE users
+                    SET name = COALESCE($1, name),
+                        is_active = COALESCE($2, is_active),
+                        updated_by = $3
+                  WHERE id = $4 AND organization_id = $5`,
+                [name ?? null, isActive ?? null, req.user.id, old.id, orgId],
+            );
+
+            if (phone !== undefined) {
+                // Routed by role so there is only ever ONE stored phone.
+                // ORG_ADMIN writes are direct — the approval gate exists
+                // because the CONSULTANT is proposing, not because the field
+                // is sensitive.
+                const table = isConsultantRole ? 'consultant_profiles' : 'users';
+                const key = isConsultantRole ? 'user_id' : 'id';
+                await client.query(
+                    `UPDATE ${table}
+                        SET phone = $1, updated_by = $2
+                      WHERE ${key} = $3 AND organization_id = $4`,
+                    [phone || null, req.user.id, old.id, orgId],
+                );
+            }
+        });
 
         const description = describeChanges('User', [
             { label: 'Name', oldVal: old.name, newVal: name ?? old.name },
-            { label: 'Phone', oldVal: old.phone, newVal: phone ?? old.phone },
+            { label: 'Phone', oldVal: oldPhone, newVal: phone === undefined ? oldPhone : phone },
             { label: 'Status', oldVal: old.is_active ? 'Active' : 'Disabled',
                 newVal: (isActive ?? old.is_active) ? 'Active' : 'Disabled' },
         ]);
 
+        // Verb drives the colour in the activity log:
+        // Disabled = red, Enabled = emerald, Updated = amber.
+        const action = isActive === false ? 'Disabled User'
+            : isActive === true && old.is_active === false ? 'Enabled User'
+                : 'Updated User';
+
         logAction({
-            orgId, module: 'users',
-            action: isActive === false ? 'Disabled User' : 'Updated User',
+            orgId, module: 'users', action,
             entityType: 'User', entityId: old.id, entityName: name ?? old.name,
             performedBy: req.user.id, performedByRole: req.user.role,
             description, ipAddress: req.ip,
@@ -185,14 +234,12 @@ export const updateUser = async (req, res, next) => {
 export const deactivateUser = async (req, res, next) => {
     try {
         const { orgId } = req.user;
-        const target = await assertSameOrg(orgId, req.params.id);
-        if (!target) return res.status(404).json({ error: 'User not found in your organization.' });
-        if (target.id === req.user.id) {
-            return res.status(400).json({ error: 'You cannot disable your own account.' });
-        }
-        if (target.role === 'ORG_ADMIN') {
-            return res.status(403).json({ error: 'Cannot disable another organization admin.' });
-        }
+
+        // allowSelf: false — disabling your own account would lock you out.
+        const { target, error } = await resolveManageableUser(
+            req.user, req.params.id, { allowSelf: false },
+        );
+        if (error) return res.status(error.status).json({ error: error.message });
 
         await query(
             'UPDATE users SET is_active = FALSE, updated_by = $1 WHERE id = $2 AND organization_id = $3',
@@ -234,17 +281,11 @@ export const revealUserPassword = async (req, res, next) => {
     try {
         const { orgId } = req.user;
 
-        const { rows } = await query(
-            `SELECT id, name, email, role, password_enc, password_iv, password_tag
-               FROM users
-              WHERE id = $1 AND organization_id = $2`,
-            [req.params.id, orgId],
-        );
-        const target = rows[0];
-
-        if (!target) {
-            return res.status(404).json({ error: 'User not found in your organization.' });
-        }
+        // Enforces org scope AND the peer-admin rule. Without the second
+        // check, one org admin could read another's password and sign in as
+        // them — see utils/scope.js.
+        const { target, error } = await resolveManageableUser(req.user, req.params.id);
+        if (error) return res.status(error.status).json({ error: error.message });
 
         let password;
         try {
@@ -286,8 +327,11 @@ export const revealUserPassword = async (req, res, next) => {
 export const resetUserPassword = async (req, res, next) => {
     try {
         const { orgId } = req.user;
-        const target = await assertSameOrg(orgId, req.params.id);
-        if (!target) return res.status(404).json({ error: 'User not found in your organization.' });
+
+        // Same guard as the reveal endpoint: resetting a peer admin's password
+        // is an account takeover, not an administrative convenience.
+        const { target, error } = await resolveManageableUser(req.user, req.params.id);
+        if (error) return res.status(error.status).json({ error: error.message });
 
         const { enc, iv, tag } = encryptPassword(req.body.newPassword);
         await query(

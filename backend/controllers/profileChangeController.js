@@ -19,7 +19,23 @@ import {
     toStoredValue, toDisplayValue, missingRequiredFields,
 } from '../config/profileFields.js';
 import { canAccessConsultant } from '../utils/scope.js';
+import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction } from './auditLogController.js';
+import { pruneResumes } from './resumeController.js';
+
+const RESUME_FIELD = 'base_resume_artifact_id';
+
+/**
+ * Keep exactly one resume file per consultant after a request closes.
+ * Whichever artifact the profile now points at is the only one that survives.
+ */
+const cleanupResumes = async (orgId, consultantId) => {
+    const { rows } = await query(
+        'SELECT base_resume_artifact_id FROM consultant_profiles WHERE user_id = $1 AND organization_id = $2',
+        [consultantId, orgId],
+    );
+    await pruneResumes(orgId, consultantId, [rows[0]?.base_resume_artifact_id]);
+};
 
 /* ── validation ──────────────────────────────────────────────────────── */
 
@@ -158,6 +174,11 @@ export const withdrawChangeRequest = async (req, res, next) => {
         );
         if (!rows[0]) return res.status(404).json({ error: 'No pending request to withdraw.' });
 
+        // Any resume uploaded for the withdrawn request is now unreachable —
+        // remove it so it neither takes disk space nor stays downloadable.
+        cleanupResumes(req.user.orgId, req.user.id).catch((err) =>
+            console.error('Resume cleanup after withdraw failed:', err.message));
+
         logAction({
             orgId: req.user.orgId, module: 'profile_changes', action: 'Removed Profile Changes',
             entityType: 'ProfileChangeRequest', entityId: rows[0].id,
@@ -182,9 +203,11 @@ export const listChangeRequests = async (req, res, next) => {
     try {
         const { orgId, role, id: userId } = req.user;
         const status = req.query.status ?? 'PENDING';
+        const paging = readPaging(req);
 
         const { rows } = await query(
-            `SELECT c.id, c.status, c.submitted_at, c.reviewed_at, c.review_note,
+            `SELECT COUNT(*) OVER () AS total_count,
+                    c.id, c.status, c.submitted_at, c.reviewed_at, c.review_note,
                     c.consultant_id,
                     u.name AS consultant_name, u.email AS consultant_email,
                     rev.name AS reviewed_by_name, rev.role AS reviewed_by_role,
@@ -211,11 +234,14 @@ export const listChangeRequests = async (req, res, next) => {
                 AND ($2::text = 'ALL' OR c.status = $2)
                 AND ($3::text IS NULL OR a.recruiter_id = $3)
               GROUP BY c.id, u.name, u.email, rev.name, rev.role, rec.name
-              ORDER BY c.submitted_at ASC`,
-            [orgId, status, role === 'RECRUITER' ? userId : null],
+              ORDER BY c.submitted_at ASC
+              LIMIT $4 OFFSET $5`,
+            [orgId, status, role === 'RECRUITER' ? userId : null,
+                paging.limit, paging.offset],
         );
 
-        return res.json({ requests: rows });
+        const result = pageResult(rows, paging);
+        return res.json({ requests: result.data, page: result.page });
     } catch (err) {
         return next(err);
     }
@@ -322,6 +348,14 @@ export const reviewChangeRequest = async (req, res, next) => {
                 [status, req.user.id, req.body.reviewNote || null, req.params.id],
             );
         });
+
+        // The profile now points at whichever resume won. Delete the loser —
+        // an approved upload supersedes the old file, a rejected one is
+        // discarded. Never blocks the response.
+        if (req.body.decisions.some((d) => d.fieldName === RESUME_FIELD)) {
+            cleanupResumes(orgId, request.consultant_id).catch((err) =>
+                console.error('Resume cleanup after review failed:', err.message));
+        }
 
         const approvedLabels = approved.map((d) => PROFILE_FIELDS[d.fieldName].label);
         const rejectedLabels = rejected.map((d) => PROFILE_FIELDS[d.fieldName].label);

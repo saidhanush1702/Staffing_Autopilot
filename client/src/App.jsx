@@ -9,11 +9,13 @@ import Unauthorized from './pages/Unauthorized.jsx';
 
 const PlatformDashboard = lazy(() => import('./pages/superadmin/PlatformDashboard.jsx'));
 const Organizations = lazy(() => import('./pages/superadmin/Organizations.jsx'));
+const OrganizationDetail = lazy(() => import('./pages/superadmin/OrganizationDetail.jsx'));
 
 const ManagementDashboard = lazy(() => import('./pages/management/ManagementDashboard.jsx'));
 const Users = lazy(() => import('./pages/management/Users.jsx'));
 const Assignments = lazy(() => import('./pages/management/Assignments.jsx'));
-const MyConsultants = lazy(() => import('./pages/management/MyConsultants.jsx'));
+const Consultants = lazy(() => import('./pages/management/Consultants.jsx'));
+const ConsultantDetail = lazy(() => import('./pages/management/ConsultantDetail.jsx'));
 const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.jsx'));
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
@@ -46,12 +48,16 @@ const App = () => (
                 {/* SUPER_ADMIN — platform */}
                 <Route path="/super-admin" element={route(PlatformDashboard, SUPER)} />
                 <Route path="/super-admin/organizations" element={route(Organizations, SUPER)} />
+                <Route path="/super-admin/organizations/:id" element={route(OrganizationDetail, SUPER)} />
 
                 {/* ORG_ADMIN + RECRUITER — management */}
                 <Route path="/management" element={route(ManagementDashboard, MGMT)} />
                 <Route path="/management/users" element={route(Users, ADMIN)} />
                 <Route path="/management/assignments" element={route(Assignments, ADMIN)} />
-                <Route path="/management/consultants" element={route(MyConsultants, RECRUITER)} />
+                {/* Same screens for both roles — the server narrows a recruiter
+                    to their assigned consultants. */}
+                <Route path="/management/consultants" element={route(Consultants, MGMT)} />
+                <Route path="/management/consultants/:id" element={route(ConsultantDetail, MGMT)} />
                 <Route path="/management/approvals" element={route(ProfileApprovals, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}
