@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Users, UserCheck, UserX, Link2 } from 'lucide-react';
+import { Users, UserCheck, UserX, Link2, PauseCircle } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -53,7 +53,8 @@ const ManagementDashboard = () => {
                         <StatCard icon={UserCheck} label="Recruiters" value={stats.recruiters} />
                         <StatCard icon={Users} label="Consultants" value={stats.consultants} />
                         <StatCard icon={Link2} label="Unassigned" value={stats.unassigned} />
-                        <StatCard icon={UserX} label="Disabled users" value={stats.disabled_users} />
+                        <StatCard icon={PauseCircle} label="Suspended" value={stats.suspended_users} />
+                        <StatCard icon={UserX} label="Terminated" value={stats.terminated_users} />
                     </>
                 )}
             </div>

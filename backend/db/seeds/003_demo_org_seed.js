@@ -48,10 +48,12 @@ const upsertUser = async (connection, { orgId, name, email, role, password }) =>
     const id = uuidv4();
 
     await connection.query(
+        // is_active is a generated column now — employment_status drives it,
+        // and it defaults to ACTIVE.
         `INSERT INTO users
             (id, organization_id, name, email, role,
-             password_enc, password_iv, password_tag, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)`,
+             password_enc, password_iv, password_tag)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [id, orgId, name, email, role, enc, iv, tag],
     );
     return id;

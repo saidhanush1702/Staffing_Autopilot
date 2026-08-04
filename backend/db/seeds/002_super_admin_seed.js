@@ -27,7 +27,7 @@ export const runSeed002 = async (connection) => {
 
     if (rows.length > 0) {
         await connection.query(
-            'UPDATE users SET name = $1, is_active = TRUE WHERE id = $2',
+            "UPDATE users SET name = $1, employment_status = 'ACTIVE' WHERE id = $2",
             [name, rows[0].id],
         );
         console.log(`  ✓ super admin already exists (${email}) — password untouched`);
@@ -38,10 +38,11 @@ export const runSeed002 = async (connection) => {
     const id = uuidv4();
 
     await connection.query(
+        // is_active is generated from employment_status, which defaults to ACTIVE.
         `INSERT INTO users
             (id, organization_id, name, email, role,
-             password_enc, password_iv, password_tag, is_active, created_by)
-         VALUES ($1, NULL, $2, $3, 'SUPER_ADMIN', $4, $5, $6, TRUE, $1)`,
+             password_enc, password_iv, password_tag, created_by)
+         VALUES ($1, NULL, $2, $3, 'SUPER_ADMIN', $4, $5, $6, $1)`,
         [id, name, email, enc, iv, tag],
     );
 

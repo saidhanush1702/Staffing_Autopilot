@@ -17,8 +17,11 @@ const actionColour = (action = '') => {
     const verb = action.split(' ')[0];
     if (['Added', 'Created', 'Generated'].includes(verb)) return 'bg-emerald-50 text-emerald-700';
     if (['Updated', 'Ran', 'Submitted'].includes(verb)) return 'bg-amber-50 text-amber-700';
-    if (['Approved', 'Enabled'].includes(verb)) return 'bg-emerald-50 text-emerald-800';
+    if (['Approved', 'Enabled', 'Reactivated'].includes(verb)) return 'bg-emerald-50 text-emerald-800';
     if (['Sent', 'Signed'].includes(verb)) return 'bg-sky-50 text-sky-700';
+    if (['Suspended', 'Cancelled'].includes(verb)) return 'bg-amber-50 text-amber-800';
+    // 'Disabled' stays listed: pre-lifecycle rows are still in the log and
+    // audit_logs is append-only, so history cannot be rewritten to match.
     if (['Rejected', 'Deleted', 'Removed', 'Disabled', 'Terminated'].includes(verb)) return 'bg-red-50 text-red-700';
     return 'bg-slate-100 text-slate-600';
 };

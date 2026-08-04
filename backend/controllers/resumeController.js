@@ -214,14 +214,36 @@ export const downloadResume = async (req, res, next) => {
 
         // ?disposition=inline renders in an <iframe> preview instead of
         // triggering a download. Same authorisation, same audit row — only the
-        // header differs.
+        // response headers differ.
         const inline = req.query.disposition === 'inline';
 
         res.setHeader('Content-Type', artifact.mime_type);
         res.setHeader('Content-Disposition',
             `${inline ? 'inline' : 'attachment'}; filename="${artifact.original_name.replace(/"/g, '')}"`);
-        // Lets the browser render it in a frame served from the client origin.
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+        if (inline) {
+            // helmet defaults block framing entirely: X-Frame-Options SAMEORIGIN
+            // plus frame-ancestors 'self'. The client runs on a different PORT,
+            // which makes it a different ORIGIN, so both refuse and the browser
+            // shows "localhost refused to connect".
+            //
+            // X-Frame-Options has no per-origin form browsers still honour
+            // (ALLOW-FROM is dead), so drop it and let CSP decide — that one
+            // does take an explicit origin list.
+            //
+            // Relaxed for THIS response only. Every other route keeps the
+            // full helmet defaults.
+            const allowed = (process.env.CLIENT_ORIGIN ?? '')
+                .split(',').map((o) => o.trim()).filter(Boolean).join(' ');
+
+            res.removeHeader('X-Frame-Options');
+            res.setHeader(
+                'Content-Security-Policy',
+                `frame-ancestors 'self' ${allowed}`.trim(),
+            );
+        }
+
         return fs.createReadStream(absolutePath).pipe(res);
     } catch (err) {
         return next(err);

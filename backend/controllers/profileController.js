@@ -12,25 +12,21 @@ import Joi from 'joi';
 import { query } from '../db.js';
 import {
     PROFILE_FIELDS, ADMIN_ONLY_FIELDS, CONSULTANT_EDITABLE,
-    REQUIRED_FIELDS, missingRequiredFields,
+    REQUIRED_FIELDS, missingRequiredFields, joiForField,
 } from '../config/profileFields.js';
 import { canAccessConsultant } from '../utils/scope.js';
 import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction, describeChanges } from './auditLogController.js';
 
-export const adminUpdateProfileSchema = Joi.object({
-    phone: Joi.string().max(30).allow('', null),
-    city: Joi.string().max(120).allow('', null),
-    state: Joi.string().max(120).allow('', null),
-    work_auth_status_id: Joi.number().integer().allow(null),
-    work_auth_notes: Joi.string().max(500).allow('', null),
-    linkedin_url: Joi.string().uri().max(255).allow('', null),
-    daily_cap: Joi.number().integer().min(0).max(100),
-    consent_on_file: Joi.boolean(),
-    consent_signed_at: Joi.date().allow(null),
-    is_paused: Joi.boolean(),
-    notes: Joi.string().max(2000).allow('', null),
-}).min(1);
+// Every profile field, rules taken from the registry. Hand-written duplicates
+// used to live here and had already drifted — phone accepted 30 characters of
+// anything while the registry called for 10 digits. Deriving both from
+// joiForField removes the second source of truth.
+export const adminUpdateProfileSchema = Joi.object(
+    Object.fromEntries(
+        Object.keys(PROFILE_FIELDS).map((name) => [name, joiForField(Joi, name)]),
+    ),
+).min(1);
 
 /**
  * GET /api/profile-schema
@@ -48,7 +44,8 @@ export const getProfileSchema = (req, res) => {
 
 const PROFILE_SELECT = `
     SELECT p.*,
-           u.name, u.email, u.role, u.is_active,
+           u.name, u.email, u.role, u.is_active, u.employment_status,
+           u.suspended_at, u.suspend_reason, u.terminated_at, u.termination_reason,
            w.name AS work_auth_name,
            r.original_name AS resume_name,
            r.size_bytes    AS resume_size,
@@ -75,13 +72,14 @@ export const listConsultants = async (req, res, next) => {
         const paging = readPaging(req);
         const search = (req.query.search ?? '').trim() || null;
         const filter = req.query.status ?? null;
+        const includeInactive = req.query.includeInactive === 'true';
 
         const { rows } = await query(
             `SELECT COUNT(*) OVER () AS total_count,
                     p.user_id, p.phone, p.city, p.state, p.work_auth_status_id,
                     p.base_resume_artifact_id, p.daily_cap, p.is_paused,
                     p.consent_on_file, p.linkedin_url,
-                    u.name, u.email, u.is_active,
+                    u.name, u.email, u.is_active, u.employment_status,
                     w.name AS work_auth_name,
                     rec.name AS recruiter_name, rec.id AS recruiter_id,
                     r.original_name AS resume_name,
@@ -97,6 +95,7 @@ export const listConsultants = async (req, res, next) => {
                  ON a.consultant_id = p.user_id AND a.effective_to IS NULL
           LEFT JOIN users rec ON rec.id = a.recruiter_id
               WHERE p.organization_id = $1
+                AND ($7::boolean OR u.employment_status = 'ACTIVE')
                 AND ($2::text IS NULL OR a.recruiter_id = $2)
                 AND ($3::text IS NULL OR u.name ILIKE '%' || $3 || '%'
                                       OR u.email ILIKE '%' || $3 || '%')
@@ -113,7 +112,7 @@ export const listConsultants = async (req, res, next) => {
               ORDER BY u.name
               LIMIT $5 OFFSET $6`,
             [orgId, role === 'RECRUITER' ? userId : null, search, filter,
-                paging.limit, paging.offset],
+                paging.limit, paging.offset, includeInactive],
         );
 
         const result = pageResult(rows, paging);

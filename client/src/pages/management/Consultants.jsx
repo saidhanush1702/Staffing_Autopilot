@@ -2,11 +2,13 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     Search, Users as UsersIcon, CheckCircle2, AlertCircle, Clock,
-    FileText, ChevronRight,
+    FileText, ChevronRight, Eye, EyeOff,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import Pagination from '../../components/Pagination.jsx';
+import TableShell from '../../components/TableShell.jsx';
+import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 /**
@@ -35,20 +37,26 @@ const Consultants = () => {
     const [search, setSearch] = useState('');
     const [filter, setFilter] = useState('');
     const [currentPage, setCurrentPage] = useState(1);
+    const [showAll, setShowAll] = useState(false);
 
-    const load = useCallback(async (p = currentPage, s = search, f = filter) => {
+    const load = useCallback(async (p = currentPage, s = search, f = filter, all = showAll) => {
         try {
             const { data } = await api.get('/management/consultants', {
-                params: { page: p, limit: 25, search: s || undefined, status: f || undefined },
+                params: {
+                    page: p, limit: 25,
+                    search: s || undefined,
+                    status: f || undefined,
+                    includeInactive: all || undefined,
+                },
             });
             setRows(data.consultants);
             setPage(data.page);
         } catch (err) {
             setError(errorMessage(err));
         }
-    }, [currentPage, search, filter]);
+    }, [currentPage, search, filter, showAll]);
 
-    useEffect(() => { load(1); /* eslint-disable-next-line */ }, [filter]);
+    useEffect(() => { load(1); /* eslint-disable-next-line */ }, [filter, showAll]);
 
     // Debounce search so typing doesn't fire a request per keystroke.
     useEffect(() => {
@@ -101,11 +109,27 @@ const Consultants = () => {
                         </button>
                     ))}
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setShowAll((v) => !v)}
+                    className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                    {showAll ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    {showAll ? 'Show active only' : 'Show all consultants'}
+                </button>
             </div>
 
             {/* ── table ─────────────────────────────────────────── */}
-            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="w-full text-sm">
+            <TableShell
+                className="mt-4"
+                minWidth={960}
+                footer={(
+                    <Pagination
+                        page={page}
+                        onChange={(p) => { setCurrentPage(p); load(p); }}
+                    />
+                )}
+            >
                     <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Consultant</th>
@@ -140,7 +164,7 @@ const Consultants = () => {
                                 onClick={() => navigate(`/management/consultants/${c.user_id}`)}
                                 className="cursor-pointer hover:bg-slate-50"
                             >
-                                <td className="px-4 py-3">
+                                <td className="whitespace-nowrap px-4 py-3">
                                     <p className="font-medium text-slate-900">{c.name}</p>
                                     <p className="text-xs text-slate-500">{c.email}</p>
                                 </td>
@@ -185,10 +209,8 @@ const Consultants = () => {
                                                 <Clock className="h-3 w-3" /> Pending
                                             </span>
                                         )}
-                                        {!c.is_active && (
-                                            <span className="rounded bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700">
-                                                Disabled
-                                            </span>
+                                        {c.employment_status !== 'ACTIVE' && (
+                                            <EmploymentStatus status={c.employment_status} />
                                         )}
                                     </div>
                                 </td>
@@ -198,13 +220,7 @@ const Consultants = () => {
                             </tr>
                         ))}
                     </tbody>
-                </table>
-
-                <Pagination
-                    page={page}
-                    onChange={(p) => { setCurrentPage(p); load(p); }}
-                />
-            </div>
+            </TableShell>
         </div>
     );
 };

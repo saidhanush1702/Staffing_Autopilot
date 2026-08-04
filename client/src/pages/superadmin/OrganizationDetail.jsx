@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import TableShell from '../../components/TableShell.jsx';
 
 const ROLE_BADGE = {
     ORG_ADMIN: 'bg-role-orgadmin/10 text-role-orgadmin',
@@ -89,8 +90,8 @@ const OrganizationDetail = () => {
                     sub={`${counts.consultants_active} active`}
                 />
                 <StatCard
-                    icon={UserX} label="Disabled accounts"
-                    value={counts.disabled_users}
+                    icon={UserX} label="Suspended / terminated"
+                    value={(counts.suspended_users ?? 0) + (counts.terminated_users ?? 0)}
                     sub={`of ${counts.total_users} total`}
                 />
             </div>
@@ -122,21 +123,19 @@ const OrganizationDetail = () => {
             <h2 className="mt-8 text-sm font-semibold text-slate-700">
                 Users ({users.length})
             </h2>
-            <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="w-full text-sm">
+            <TableShell className="mt-3" minWidth={820}>
                     <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Name</th>
                             <th className="px-4 py-3">Email</th>
                             <th className="px-4 py-3">Role</th>
-                            <th className="px-4 py-3">Recruiter</th>
                             <th className="px-4 py-3">Status</th>
                             <th className="px-4 py-3">Last sign-in</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                         {users.length === 0 && (
-                            <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">No users yet.</td></tr>
+                            <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users yet.</td></tr>
                         )}
                         {users.map((u) => (
                             <tr key={u.id} className="hover:bg-slate-50">
@@ -147,13 +146,12 @@ const OrganizationDetail = () => {
                                         {u.role.replace('_', ' ')}
                                     </span>
                                 </td>
-                                <td className="px-4 py-3 text-slate-500">
-                                    {u.recruiter_name ?? <span className="text-slate-300">—</span>}
-                                </td>
                                 <td className="px-4 py-3">
-                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${u.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-                                        {u.is_active ? 'Active' : 'Disabled'}
-                                    </span>
+                                    <EmploymentStatus
+                                        status={u.employment_status}
+                                        since={u.terminated_at ?? u.suspended_at}
+                                        reason={u.termination_reason ?? u.suspend_reason}
+                                    />
                                 </td>
                                 <td className="px-4 py-3 text-xs text-slate-400">
                                     {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
@@ -161,8 +159,7 @@ const OrganizationDetail = () => {
                             </tr>
                         ))}
                     </tbody>
-                </table>
-            </div>
+            </TableShell>
         </div>
     );
 };

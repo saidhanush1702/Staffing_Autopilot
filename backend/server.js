@@ -34,10 +34,13 @@ import {
     createOrgSchema, updateOrgSchema,
 } from './controllers/superAdminController.js';
 import {
-    listUsers, createUser, updateUser, deactivateUser,
+    listUsers, createUser, updateUser,
+    suspendUser, reactivateUser, terminateUser,
     revealUserPassword, resetUserPassword,
     listAssignments, assignConsultant, orgStats,
+    setRecruiterRoster, setConsultantRecruiter,
     createUserSchema, updateUserSchema, assignSchema, resetPasswordSchema,
+    lifecycleSchema, recruiterRosterSchema, consultantRecruiterSchema,
 } from './controllers/managementController.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
@@ -87,11 +90,21 @@ app.use('/api', rateLimit({
     message: { error: 'Too many requests. Please slow down.' },
 }));
 
+/**
+ * Coarse volumetric backstop only — it counts failures per IP.
+ *
+ * The precise control is the per-account lockout in authController
+ * (checkLockout / login_attempts), which is what actually stops someone
+ * grinding a single account. This limit exists purely to blunt high-volume
+ * spray from one address, so it is set well above what a shared office NAT
+ * produces in normal use: several colleagues each fumbling a password must
+ * never lock out the whole building, which was half of finding A-2.
+ */
 const loginLimiter = rateLimit({
     windowMs: 15 * 60_000,
-    max: 10,
+    max: 60,
     skipSuccessfulRequests: true,
-    message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+    message: { error: 'Too many login attempts from this network. Try again later.' },
 });
 
 /* ───────────────────────────── health ──────────────────────────── */
@@ -139,7 +152,13 @@ app.post('/api/management/users',
     [verifyToken, isOrgAdmin, validate(createUserSchema)], createUser);
 app.patch('/api/management/users/:id',
     [verifyToken, isOrgAdmin, validate(updateUserSchema)], updateUser);
-app.delete('/api/management/users/:id', [verifyToken, isOrgAdmin], deactivateUser);
+// Employment lifecycle. Suspend is reversible; terminate is not.
+app.post('/api/management/users/:id/suspend',
+    [verifyToken, isOrgAdmin, validate(lifecycleSchema)], suspendUser);
+app.post('/api/management/users/:id/reactivate',
+    [verifyToken, isOrgAdmin], reactivateUser);
+app.post('/api/management/users/:id/terminate',
+    [verifyToken, isOrgAdmin, validate(lifecycleSchema)], terminateUser);
 
 // Password reveal / reset — ORG_ADMIN only, org-scoped, every reveal audited.
 // One user per request by design: never bundled into the /users list payload.
@@ -151,6 +170,13 @@ app.post('/api/management/users/:id/reset-password',
 app.get('/api/management/assignments', [verifyToken, isManagement], listAssignments);
 app.post('/api/management/assignments',
     [verifyToken, isOrgAdmin, validate(assignSchema)], assignConsultant);
+
+// Bulk edit from either end. Both take the desired end state and reconcile,
+// so replaying a stale payload changes nothing.
+app.put('/api/management/assignments/recruiter/:recruiterId',
+    [verifyToken, isOrgAdmin, validate(recruiterRosterSchema)], setRecruiterRoster);
+app.put('/api/management/assignments/consultant/:consultantId',
+    [verifyToken, isOrgAdmin, validate(consultantRecruiterSchema)], setConsultantRecruiter);
 
 app.get('/api/management/audit-logs/:module', [verifyToken, isOrgAdmin], getModuleAuditLogs);
 

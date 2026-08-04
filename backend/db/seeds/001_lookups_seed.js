@@ -14,12 +14,20 @@ export const runSeed001 = async (connection) => {
         );
     }
 
-    const userStatuses = ['Active', 'Disabled', 'Invited'];
-    for (const name of userStatuses) {
+    // Mirrors users.employment_status — see migration 015. `name` is the value
+    // the database stores and the API returns; `label` is the UI text. If the
+    // CHECK constraint on users.employment_status ever gains a state, add it
+    // here too or the lookup starts lying again.
+    const userStatuses = [
+        { name: 'ACTIVE', label: 'Active' },
+        { name: 'SUSPENDED', label: 'Suspended' },
+        { name: 'TERMINATED', label: 'Terminated' },
+    ];
+    for (const s of userStatuses) {
         await connection.query(
-            `INSERT INTO lkp_user_statuses (name) VALUES ($1)
-             ON CONFLICT (name) DO NOTHING`,
-            [name],
+            `INSERT INTO lkp_user_statuses (name, label) VALUES ($1, $2)
+             ON CONFLICT (name) DO UPDATE SET label = EXCLUDED.label`,
+            [s.name, s.label],
         );
     }
 

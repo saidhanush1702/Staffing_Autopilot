@@ -15,19 +15,23 @@ export const createOrgSchema = Joi.object({
         .pattern(/^[a-z0-9-]+$/)
         .message('Slug may contain only lowercase letters, numbers and hyphens.')
         .required(),
-    contactEmail: Joi.string().email({ tlds: { allow: false } }).max(255).allow('', null),
-    contactPhone: Joi.string().max(30).allow('', null),
+    contactEmail: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).max(255).allow('', null),
+    contactPhone: Joi.string().pattern(/^[0-9]{10}$/)
+        .messages({ 'string.pattern.base': 'Contact phone must be exactly 10 digits.' })
+        .allow('', null),
     timezone: Joi.string().max(64).default('Asia/Kolkata'),
 
     adminName: Joi.string().trim().min(2).max(255).required(),
-    adminEmail: Joi.string().email({ tlds: { allow: false } }).max(255).required(),
+    adminEmail: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).max(255).required(),
     adminPassword: Joi.string().min(8).max(200).required(),
 });
 
 export const updateOrgSchema = Joi.object({
     name: Joi.string().trim().min(2).max(255),
-    contactEmail: Joi.string().email({ tlds: { allow: false } }).max(255).allow('', null),
-    contactPhone: Joi.string().max(30).allow('', null),
+    contactEmail: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).max(255).allow('', null),
+    contactPhone: Joi.string().pattern(/^[0-9]{10}$/)
+        .messages({ 'string.pattern.base': 'Contact phone must be exactly 10 digits.' })
+        .allow('', null),
     timezone: Joi.string().max(64),
     isActive: Joi.boolean(),
 }).min(1);
@@ -79,23 +83,24 @@ export const getOrganization = async (req, res, next) => {
                COUNT(*) FILTER (WHERE role = 'CONSULTANT')                  ::int AS consultants,
                COUNT(*) FILTER (WHERE role = 'CONSULTANT' AND is_active)    ::int AS consultants_active,
                COUNT(*)                                                     ::int AS total_users,
-               COUNT(*) FILTER (WHERE NOT is_active)                        ::int AS disabled_users
+               COUNT(*) FILTER (WHERE employment_status = 'SUSPENDED')      ::int AS suspended_users,
+               COUNT(*) FILTER (WHERE employment_status = 'TERMINATED')     ::int AS terminated_users
              FROM users WHERE organization_id = $1`,
             [req.params.id],
         );
 
+        // No assignment join — SUPER_ADMIN administers tenants, and who
+        // reports to whom inside one is the organisation's own business.
         const { rows: users } = await query(
-            `SELECT u.id, u.name, u.email, u.role, u.is_active, u.last_login_at,
-                    u.created_at, rec.name AS recruiter_name
-               FROM users u
-          LEFT JOIN assignments a
-                 ON a.consultant_id = u.id AND a.effective_to IS NULL
-          LEFT JOIN users rec ON rec.id = a.recruiter_id
-              WHERE u.organization_id = $1
-              ORDER BY CASE u.role
+            `SELECT id, name, email, role, is_active, employment_status,
+                    suspended_at, suspend_reason, terminated_at, termination_reason,
+                    last_login_at, created_at
+               FROM users
+              WHERE organization_id = $1
+              ORDER BY CASE role
                          WHEN 'ORG_ADMIN' THEN 1
                          WHEN 'RECRUITER' THEN 2
-                         ELSE 3 END, u.name`,
+                         ELSE 3 END, name`,
             [req.params.id],
         );
 

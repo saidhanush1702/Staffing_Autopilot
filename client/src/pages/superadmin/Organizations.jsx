@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Power, Loader2, AlertCircle, X } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import TableShell from '../../components/TableShell.jsx';
 
 const EMPTY_FORM = {
     name: '', slug: '', contactEmail: '', contactPhone: '',
@@ -63,7 +64,7 @@ const Organizations = () => {
 
     return (
         <div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className="text-xl font-semibold text-slate-900">Organizations</h1>
                     <p className="mt-1 text-sm text-slate-500">
@@ -92,11 +93,26 @@ const Organizations = () => {
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                         <label className="block">
                             <span className="text-sm text-slate-600">Name</span>
-                            <input required value={form.name} onChange={set('name')} className={input} placeholder="Molina Staffing" />
+                            <input required minLength={2} maxLength={255} value={form.name} onChange={set('name')} className={input} placeholder="Molina Staffing" />
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Slug</span>
-                            <input required value={form.slug} onChange={set('slug')} className={input} placeholder="molina" />
+                            <input
+                                required minLength={2} maxLength={60}
+                                pattern="[a-z0-9-]+"
+                                title="Lowercase letters, numbers and hyphens only."
+                                value={form.slug}
+                                onChange={(e) => setForm((f) => ({
+                                    ...f,
+                                    slug: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''),
+                                }))}
+                                className={input}
+                                placeholder="molina"
+                            />
+                            <span className="mt-1 block text-xs text-slate-400">
+                                Short unique handle for this organization — lowercase letters,
+                                numbers and hyphens. Permanent once set.
+                            </span>
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Contact email</span>
@@ -104,7 +120,16 @@ const Organizations = () => {
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Contact phone</span>
-                            <input value={form.contactPhone} onChange={set('contactPhone')} className={input} />
+                            <input
+                                inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
+                                title="Exactly 10 digits, no spaces or symbols."
+                                placeholder="5550101234"
+                                value={form.contactPhone}
+                                onChange={(e) => setForm((f) => ({
+                                    ...f, contactPhone: e.target.value.replace(/\D/g, '').slice(0, 10),
+                                }))}
+                                className={input}
+                            />
                         </label>
                     </div>
 
@@ -112,11 +137,14 @@ const Organizations = () => {
                     <div className="mt-3 grid gap-4 sm:grid-cols-3">
                         <label className="block">
                             <span className="text-sm text-slate-600">Name</span>
-                            <input required value={form.adminName} onChange={set('adminName')} className={input} />
+                            <input required minLength={2} maxLength={255} value={form.adminName} onChange={set('adminName')} className={input} />
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Email</span>
-                            <input required type="email" value={form.adminEmail} onChange={set('adminEmail')} className={input} />
+                            <input required type="email" maxLength={255} value={form.adminEmail} onChange={set('adminEmail')} className={input} />
+                            <span className="mt-1 block text-xs text-slate-400">
+                                Must not already exist on any organization.
+                            </span>
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Password</span>
@@ -135,8 +163,7 @@ const Organizations = () => {
                 </form>
             )}
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="w-full text-sm">
+            <TableShell className="mt-6" minWidth={900}>
                     <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Organization</th>
@@ -181,8 +208,7 @@ const Organizations = () => {
                             </tr>
                         ))}
                     </tbody>
-                </table>
-            </div>
+            </TableShell>
         </div>
     );
 };

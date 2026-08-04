@@ -15,7 +15,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import {
-    PROFILE_FIELDS, CONSULTANT_EDITABLE,
+    PROFILE_FIELDS, joiForField, CONSULTANT_EDITABLE,
     toStoredValue, toDisplayValue, missingRequiredFields,
 } from '../config/profileFields.js';
 import { canAccessConsultant } from '../utils/scope.js';
@@ -39,16 +39,11 @@ const cleanupResumes = async (orgId, consultantId) => {
 
 /* ── validation ──────────────────────────────────────────────────────── */
 
-// Built from the registry, so a new consultant-editable field is accepted
-// automatically without touching this schema.
+// Built from the registry via joiForField, so a new consultant-editable field
+// is accepted automatically, and a rule added there — a phone digit count, a
+// URL host — takes effect here without touching this schema.
 export const submitChangeSchema = Joi.object(
-    Object.fromEntries(CONSULTANT_EDITABLE.map((name) => {
-        const f = PROFILE_FIELDS[name];
-        if (f.type === 'lookup') return [name, Joi.number().integer().allow(null)];
-        if (f.type === 'file') return [name, Joi.string().guid({ version: 'uuidv4' }).allow(null)];
-        if (f.type === 'url') return [name, Joi.string().uri().max(f.maxLength ?? 255).allow('', null)];
-        return [name, Joi.string().max(f.maxLength ?? 255).allow('', null)];
-    })),
+    Object.fromEntries(CONSULTANT_EDITABLE.map((name) => [name, joiForField(Joi, name)])),
 ).min(1);
 
 export const reviewSchema = Joi.object({
@@ -210,6 +205,9 @@ export const listChangeRequests = async (req, res, next) => {
                     c.id, c.status, c.submitted_at, c.reviewed_at, c.review_note,
                     c.consultant_id,
                     u.name AS consultant_name, u.email AS consultant_email,
+                    -- so the queue can flag a suspended consultant rather than
+                    -- letting the reviewer decide blind (C-2)
+                    u.employment_status AS consultant_employment_status,
                     rev.name AS reviewed_by_name, rev.role AS reviewed_by_role,
                     rec.name AS recruiter_name,
                     COUNT(f.id) FILTER (WHERE f.status = 'APPROVED')::int AS approved_count,
@@ -233,7 +231,8 @@ export const listChangeRequests = async (req, res, next) => {
               WHERE c.organization_id = $1
                 AND ($2::text = 'ALL' OR c.status = $2)
                 AND ($3::text IS NULL OR a.recruiter_id = $3)
-              GROUP BY c.id, u.name, u.email, rev.name, rev.role, rec.name
+              GROUP BY c.id, u.name, u.email, u.employment_status,
+                       rev.name, rev.role, rec.name
               ORDER BY c.submitted_at ASC
               LIMIT $4 OFFSET $5`,
             [orgId, status, role === 'RECRUITER' ? userId : null,
@@ -263,7 +262,7 @@ export const reviewChangeRequest = async (req, res, next) => {
         const { orgId } = req.user;
 
         const { rows: reqRows } = await query(
-            `SELECT c.*, u.name AS consultant_name
+            `SELECT c.*, u.name AS consultant_name, u.employment_status
                FROM profile_change_requests c
                JOIN users u ON u.id = c.consultant_id
               WHERE c.id = $1 AND c.organization_id = $2`,
@@ -273,6 +272,16 @@ export const reviewChangeRequest = async (req, res, next) => {
         if (!request) return res.status(404).json({ error: 'Request not found in your organization.' });
         if (request.status !== 'PENDING') {
             return res.status(409).json({ error: `This request is already ${request.status.toLowerCase()}.` });
+        }
+
+        // C-2, defence in depth. Termination cancels pending requests in the
+        // same transaction, so this should be unreachable — unless a reviewer
+        // had the screen open when the termination landed and posts a stale
+        // decision. Refuse rather than push values live for a non-employee.
+        if (request.employment_status === 'TERMINATED') {
+            return res.status(409).json({
+                error: 'This consultant has been terminated. Their pending changes were cancelled.',
+            });
         }
 
         // A recruiter may only review their own assigned consultants.

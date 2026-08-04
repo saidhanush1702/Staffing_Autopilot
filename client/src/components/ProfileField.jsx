@@ -110,6 +110,16 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
         );
     }
 
+    /**
+     * The rule comes from the server's field registry (GET /api/profile-schema),
+     * so this is the same regex the server will enforce — not a second copy that
+     * can drift. Shown live rather than only on submit, since a wrong phone
+     * number is worth catching before it becomes an approval request.
+     */
+    const invalid = field.pattern
+        && value
+        && !new RegExp(field.pattern).test(String(value));
+
     return (
         <label className="block">
             {label}
@@ -119,9 +129,16 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
                 disabled={disabled}
                 maxLength={field.maxLength}
                 placeholder={field.placeholder}
+                inputMode={field.inputMode}
+                pattern={field.pattern}
+                aria-invalid={invalid || undefined}
+                title={field.patternMessage}
                 onChange={(e) => onChange(name, e.target.value)}
-                className={base}
+                className={`${base} ${invalid ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : ''}`}
             />
+            {invalid && (
+                <span className="mt-1 block text-xs text-red-600">{field.patternMessage}</span>
+            )}
         </label>
     );
 };

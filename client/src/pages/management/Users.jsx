@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import {
-    Plus, X, Loader2, AlertCircle, Power, PowerOff, ShieldAlert, Lock,
+    Plus, X, Loader2, AlertCircle, ShieldAlert, Lock, Eye, EyeOff,
     Users as UsersIcon,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import PasswordCell from '../../components/PasswordCell.jsx';
 import Pagination from '../../components/Pagination.jsx';
+import TableShell from '../../components/TableShell.jsx';
+import EmploymentStatus from '../../components/EmploymentStatus.jsx';
+import LifecycleActions from '../../components/LifecycleActions.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -32,6 +35,8 @@ const Users = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [error, setError] = useState('');
     const [activeTab, setActiveTab] = useState('ORG_ADMIN');
+    const [counts, setCounts] = useState({});
+    const [showAll, setShowAll] = useState(false);
 
     const [showForm, setShowForm] = useState(false);
     const [form, setForm] = useState(EMPTY);
@@ -44,20 +49,27 @@ const Users = () => {
     const [resetError, setResetError] = useState('');
     const [resetting, setResetting] = useState(false);
 
-    const load = async (p = 1) => {
+    /**
+     * Role filtering happens SERVER-SIDE. Filtering a paginated page in the
+     * browser meant a tab could show zero rows simply because none of its
+     * users landed on page 1.
+     */
+    const load = async (p = 1, role = activeTab, all = showAll) => {
         try {
             const { data } = await api.get('/management/users', {
-                params: { page: p, limit: 25 },
+                params: { page: p, limit: 25, role, includeInactive: all || undefined },
             });
             setUsers(data.users);
             setPage(data.page);
+            setCounts(data.counts ?? {});
             setCurrentPage(p);
         } catch (err) {
             setError(errorMessage(err));
         }
     };
 
-    useEffect(() => { load(1); }, []);
+    useEffect(() => { load(1, activeTab, showAll); /* eslint-disable-next-line */ },
+        [activeTab, showAll]);
 
     const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -85,25 +97,6 @@ const Users = () => {
         }
     };
 
-    const disable = async (u) => {
-        if (!window.confirm(`Disable ${u.name}? They will not be able to sign in.`)) return;
-        try {
-            await api.delete(`/management/users/${u.id}`);
-            await load();
-        } catch (err) {
-            setError(errorMessage(err));
-        }
-    };
-
-    const enable = async (u) => {
-        try {
-            await api.patch(`/management/users/${u.id}`, { isActive: true });
-            await load();
-        } catch (err) {
-            setError(errorMessage(err));
-        }
-    };
-
     const handleReset = async (e) => {
         e.preventDefault();
         setResetError('');
@@ -124,14 +117,16 @@ const Users = () => {
 
     const input = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100';
 
-    const countFor = (role) => users.filter((u) => u.role === role).length;
-    const visible = users.filter((u) => u.role === activeTab);
+    // Counts cover the whole organisation, not just the fetched page.
+    const countFor = (role) =>
+        (showAll ? counts[role]?.total : counts[role]?.active) ?? 0;
+    const visible = users;   // already filtered by role on the server
     const activeLabel = TABS.find((t) => t.key === activeTab)?.label.toLowerCase();
 
     return (
         <div>
             {/* ── heading + add button ───────────────────────────── */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className="text-xl font-semibold text-slate-900">Users</h1>
                     <p className="mt-1 text-sm text-slate-500">
@@ -141,7 +136,7 @@ const Users = () => {
                 <button
                     type="button"
                     onClick={() => (showForm ? setShowForm(false) : openForm())}
-                    className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+                    className="flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
                 >
                     {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     {showForm ? 'Cancel' : 'Add user'}
@@ -159,15 +154,37 @@ const Users = () => {
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <label className="block">
                             <span className="text-sm text-slate-600">Name</span>
-                            <input required value={form.name} onChange={set('name')} className={input} />
+                            <input
+                                required minLength={2} maxLength={255}
+                                pattern="[A-Za-z][A-Za-z .'\-]*"
+                                title="Letters, spaces, hyphens and apostrophes only."
+                                value={form.name} onChange={set('name')} className={input}
+                            />
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Email</span>
-                            <input required type="email" value={form.email} onChange={set('email')} className={input} />
+                            <input
+                                required type="email" maxLength={255}
+                                title="Must be unique across the whole platform."
+                                value={form.email} onChange={set('email')} className={input}
+                            />
+                            <span className="mt-1 block text-xs text-slate-400">
+                                Used to sign in — must not already exist on any organization.
+                            </span>
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Phone</span>
-                            <input value={form.phone} onChange={set('phone')} className={input} />
+                            {/* Mirrors PROFILE_FIELDS.phone on the server. */}
+                            <input
+                                inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
+                                title="Exactly 10 digits, no spaces or symbols."
+                                placeholder="5550101234"
+                                value={form.phone}
+                                onChange={(e) => setForm((f) => ({
+                                    ...f, phone: e.target.value.replace(/\D/g, '').slice(0, 10),
+                                }))}
+                                className={input}
+                            />
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Role</span>
@@ -178,7 +195,12 @@ const Users = () => {
                         </label>
                         <label className="block">
                             <span className="text-sm text-slate-600">Password</span>
-                            <input required type="text" minLength={8} value={form.password} onChange={set('password')} className={input} placeholder="min 8 characters" />
+                            <input
+                                required type="text" minLength={8} maxLength={200}
+                                title="At least 8 characters."
+                                value={form.password} onChange={set('password')}
+                                className={input} placeholder="min 8 characters"
+                            />
                         </label>
                     </div>
                     <button
@@ -194,7 +216,7 @@ const Users = () => {
 
             {/* ── role tabs ──────────────────────────────────────── */}
             <div className="mt-6 border-b border-slate-200">
-                <nav className="-mb-px flex gap-6" aria-label="User roles">
+                <nav className="-mb-px flex gap-4 overflow-x-auto sm:gap-6" aria-label="User roles">
                     {TABS.map((tab) => {
                         const isActive = activeTab === tab.key;
                         return (
@@ -204,7 +226,7 @@ const Users = () => {
                                 onClick={() => setActiveTab(tab.key)}
                                 aria-current={isActive ? 'page' : undefined}
                                 className={[
-                                    'flex items-center gap-2 border-b-2 px-1 pb-3 text-sm transition-colors',
+                                    'flex shrink-0 items-center gap-2 border-b-2 px-1 pb-3 text-sm transition-colors',
                                     isActive
                                         ? 'border-brand-600 font-medium text-brand-700'
                                         : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700',
@@ -223,9 +245,24 @@ const Users = () => {
                 </nav>
             </div>
 
+            {/* Day to day an admin wants the current roster; history is opt-in. */}
+            <div className="mt-3 flex items-center justify-end">
+                <button
+                    type="button"
+                    onClick={() => setShowAll((v) => !v)}
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                    {showAll ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    {showAll ? 'Show active only' : `Show all ${activeLabel}`}
+                </button>
+            </div>
+
             {/* ── table for the active tab ───────────────────────── */}
-            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                <table className="w-full text-sm">
+            <TableShell
+                className="mt-4"
+                minWidth={860}
+                footer={<Pagination page={page} onChange={(p) => load(p)} />}
+            >
                     <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Name</th>
@@ -252,8 +289,8 @@ const Users = () => {
                         )}
                         {visible.map((u) => (
                             <tr key={u.id} className="hover:bg-slate-50">
-                                <td className="px-4 py-3 font-medium text-slate-900">{u.name}</td>
-                                <td className="px-4 py-3 text-slate-500">{u.email}</td>
+                                <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-900">{u.name}</td>
+                                <td className="whitespace-nowrap px-4 py-3 text-slate-500">{u.email}</td>
                                 <td className="px-4 py-3">
                                     {/* Layer 3, cosmetic only: the server refuses a peer admin's
                                         password regardless. Hiding the controls avoids offering
@@ -278,40 +315,21 @@ const Users = () => {
                                     </span>
                                 </td>
                                 <td className="px-4 py-3">
-                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${u.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
-                                        {u.is_active ? 'Active' : 'Disabled'}
-                                    </span>
+                                    <EmploymentStatus
+                                        status={u.employment_status}
+                                        since={u.terminated_at ?? u.suspended_at}
+                                        reason={u.termination_reason ?? u.suspend_reason}
+                                    />
                                 </td>
-                                <td className="px-4 py-3 text-right">
-                                    {/* Both directions must be reachable — a Disable button with
-                                        no Enable counterpart makes disabling a one-way door. */}
+                                <td className="whitespace-nowrap px-4 py-3 text-right">
                                     {u.role !== 'ORG_ADMIN' && (
-                                        u.is_active ? (
-                                            <button
-                                                type="button"
-                                                onClick={() => disable(u)}
-                                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
-                                            >
-                                                <Power className="h-3.5 w-3.5" /> Disable
-                                            </button>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                onClick={() => enable(u)}
-                                                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-100"
-                                            >
-                                                <PowerOff className="h-3.5 w-3.5" /> Enable
-                                            </button>
-                                        )
+                                        <LifecycleActions user={u} onDone={() => load(currentPage)} />
                                     )}
                                 </td>
                             </tr>
                         ))}
                     </tbody>
-                </table>
-
-                <Pagination page={page} onChange={(p) => load(p)} />
-            </div>
+            </TableShell>
 
             <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />

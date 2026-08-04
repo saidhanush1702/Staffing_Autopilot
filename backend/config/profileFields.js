@@ -24,6 +24,17 @@
  *   adminOnly          only ORG_ADMIN can set it, never proposed
  *   maxLength          validation
  *   placeholder        input hint
+ *   pattern            regex SOURCE string the value must match
+ *   patternMessage     what to tell the user when it does not
+ *   inputMode          mobile keyboard hint ('numeric', 'tel', …)
+ *
+ * `pattern` is stored as a string, not a RegExp, because this whole registry
+ * is serialised to the client by GET /api/profile-schema. Both sides compile
+ * the same source, so a rule cannot be tightened on one side only — which is
+ * how client and server validation normally drift apart.
+ *
+ * The client rule is a convenience. The server rule is the one that counts:
+ * every schema below is rebuilt from these same entries.
  */
 
 export const PROFILE_FIELDS = {
@@ -32,8 +43,11 @@ export const PROFILE_FIELDS = {
         type: 'text',
         required: true,
         consultantEditable: true,
-        maxLength: 30,
-        placeholder: '+1 555 010 1234',
+        maxLength: 10,
+        pattern: '^[0-9]{10}$',
+        patternMessage: 'Phone number must be exactly 10 digits, no spaces or symbols.',
+        inputMode: 'numeric',
+        placeholder: '5550101234',
     },
     city: {
         label: 'City',
@@ -41,6 +55,10 @@ export const PROFILE_FIELDS = {
         required: true,
         consultantEditable: true,
         maxLength: 120,
+        // Letters, spaces, hyphens and apostrophes — enough for real place
+        // names (St. John's, Winston-Salem) without allowing digits or symbols.
+        pattern: "^[A-Za-z][A-Za-z .'-]*$",
+        patternMessage: 'City may only contain letters, spaces, hyphens and apostrophes.',
         placeholder: 'Dallas',
     },
     state: {
@@ -49,6 +67,8 @@ export const PROFILE_FIELDS = {
         required: true,
         consultantEditable: true,
         maxLength: 120,
+        pattern: "^[A-Za-z][A-Za-z .'-]*$",
+        patternMessage: 'State may only contain letters, spaces, hyphens and apostrophes.',
         placeholder: 'TX',
     },
     work_auth_status_id: {
@@ -80,6 +100,8 @@ export const PROFILE_FIELDS = {
         required: false,
         consultantEditable: true,
         maxLength: 255,
+        pattern: '^https?://([a-z]{2,3}\.)?linkedin\.com/.+$',
+        patternMessage: 'Must be a linkedin.com profile URL.',
         placeholder: 'https://linkedin.com/in/…',
     },
 
@@ -120,6 +142,31 @@ export const PROFILE_FIELDS = {
         adminOnly: true,
         maxLength: 2000,
     },
+};
+
+/**
+ * Joi rules for one field, derived from its registry entry.
+ * Used by every request schema so no endpoint can disagree with the registry.
+ */
+export const joiForField = (Joi, name) => {
+    const f = PROFILE_FIELDS[name];
+    if (!f) return null;
+
+    if (f.type === 'lookup') return Joi.number().integer().allow(null);
+    if (f.type === 'file') return Joi.string().guid({ version: 'uuidv4' }).allow(null);
+    if (f.type === 'boolean') return Joi.boolean();
+    if (f.type === 'number') return Joi.number().integer().min(0).max(1000);
+    if (f.type === 'date') return Joi.date().allow(null);
+
+    let rule = Joi.string().max(f.maxLength ?? 255);
+    if (f.type === 'url') rule = Joi.string().uri().max(f.maxLength ?? 255);
+    if (f.pattern) {
+        rule = rule.pattern(new RegExp(f.pattern)).messages({
+            'string.pattern.base': f.patternMessage ?? `${f.label} is not in the expected format.`,
+        });
+    }
+    // '' means "clear this field"; the pattern must not fire on an empty value.
+    return rule.allow('', null);
 };
 
 /** Field names a consultant is allowed to propose changes to. */

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
-    ShieldCheck, ClipboardCheck,
+    ShieldCheck, ClipboardCheck, X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import api from '../../api/axios.js';
@@ -47,7 +47,12 @@ const ROLE_STYLES = {
 
 const POLL_MS = 30_000;
 
-const Sidebar = () => {
+/**
+ * Static column from `lg` up; an off-canvas drawer below that, where a
+ * permanent 16rem column would leave almost nothing for the page itself.
+ * `open` / `onClose` are owned by Layout, which also renders the toggle.
+ */
+const Sidebar = ({ open = false, onClose = () => {} }) => {
     const { user } = useAuth();
     const location = useLocation();
     const [badges, setBadges] = useState({ approvals: 0, incomplete: 0 });
@@ -74,6 +79,18 @@ const Sidebar = () => {
      */
     useEffect(() => { refreshBadges(); }, [refreshBadges, location.pathname]);
 
+    // Tapping a link on a phone should reveal the page, not leave the drawer
+    // covering it.
+    useEffect(() => { onClose(); /* eslint-disable-next-line */ }, [location.pathname]);
+
+    // Escape closes the drawer, as any overlay should.
+    useEffect(() => {
+        if (!open) return undefined;
+        const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [open, onClose]);
+
     useEffect(() => {
         if (!user) return undefined;
         const id = setInterval(refreshBadges, POLL_MS);
@@ -87,15 +104,42 @@ const Sidebar = () => {
     const items = NAV_ITEMS.filter((i) => i.roles.includes(user.role));
 
     return (
-        <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
-            <div className="border-b border-slate-200 px-5 py-4">
-                <p className="text-sm font-semibold text-slate-900">Staffing Autopilot</p>
-                <p className="mt-0.5 truncate text-xs text-slate-500">
-                    {user.organizationName ?? 'Platform'}
-                </p>
+        <>
+            {/* Scrim, mobile only. */}
+            {open && (
+                <button
+                    type="button"
+                    aria-label="Close navigation"
+                    onClick={onClose}
+                    className="fixed inset-0 z-30 bg-slate-900/40 lg:hidden"
+                />
+            )}
+
+            <aside
+                className={[
+                    'z-40 flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white',
+                    'fixed inset-y-0 left-0 transition-transform duration-200 lg:static lg:translate-x-0',
+                    open ? 'translate-x-0' : '-translate-x-full',
+                ].join(' ')}
+            >
+            <div className="flex items-start justify-between gap-2 border-b border-slate-200 px-5 py-4">
+                <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">Staffing Autopilot</p>
+                    <p className="mt-0.5 truncate text-xs text-slate-500">
+                        {user.organizationName ?? 'Platform'}
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    aria-label="Close navigation"
+                    className="-mr-1 rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 lg:hidden"
+                >
+                    <X className="h-5 w-5" />
+                </button>
             </div>
 
-            <nav className="flex-1 space-y-1 p-3">
+            <nav className="flex-1 space-y-1 overflow-y-auto p-3">
                 {items.map(({ to, label, icon: Icon, badge }) => {
                     const count = badge ? badges[badge] : 0;
                     return (
@@ -140,7 +184,8 @@ const Sidebar = () => {
                     {user.role.replace('_', ' ')}
                 </span>
             </div>
-        </aside>
+            </aside>
+        </>
     );
 };
 

@@ -95,7 +95,7 @@ export const assertSameOrg = async (orgId, userId) => {
  */
 export const resolveManageableUser = async (actor, targetId, { allowSelf = true } = {}) => {
     const { rows } = await query(
-        `SELECT id, name, email, phone, role, is_active,
+        `SELECT id, name, email, phone, role, is_active, employment_status,
                 password_enc, password_iv, password_tag
            FROM users
           WHERE id = $1 AND organization_id = $2`,

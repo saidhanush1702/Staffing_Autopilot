@@ -73,7 +73,7 @@ Applies to every phase.
 **Layer 1 — route guards** (`middleware/roleGuards.js`)
 `isSuperAdmin` · `isOrgAdmin` · `isManagement` · `isConsultant` · `isTenantUser`
 Applied as `app.get('/api/x', [verifyToken, isManagement], handler)`.
-**Rule:** DELETE / disable routes are `isOrgAdmin` only, even where read is broader.
+**Rule:** lifecycle routes are `isOrgAdmin` only, even where read is broader.
 
 **Layer 2 — tenant scoping** (`utils/scope.js`, in every query)
 Every query carries `WHERE organization_id = $1`, sourced from `req.user.orgId` — which comes from the **signed JWT**, never from the body, query string, or params. Recruiters narrow further via `getAssignedConsultantIds()`.
@@ -106,7 +106,9 @@ UX only, never trusted. Nav items filtered by the same role lists used on the ro
 - `lookup_id INT GENERATED ALWAYS AS IDENTITY` on every business table
 - `organization_id CHAR(36)` on every business table, `ON DELETE CASCADE`
 - Audit columns everywhere — `created_by`, `created_at`, `updated_by`, `updated_at`
-- Soft disable via `is_active`, never row deletes
+- Never row deletes. Accounts move through `employment_status`
+  (`ACTIVE` → `SUSPENDED` ⇄ back, or → `TERMINATED`, which is terminal);
+  `is_active` is a generated column derived from it — see Phase 2.1
 - Composite indexes `(organization_id, <frequent filter>)`
 - Lookup tables prefixed `lkp_`, served in one call
 
@@ -148,7 +150,9 @@ GET    /api/management/stats                    ORG_ADMIN + RECRUITER
 GET    /api/management/users                    RECRUITER narrowed to assigned
 POST   /api/management/users                    ORG_ADMIN only
 PATCH  /api/management/users/:id                 ORG_ADMIN only
-DELETE /api/management/users/:id                 ORG_ADMIN only (soft disable)
+POST   /api/management/users/:id/suspend          ORG_ADMIN only (reversible)
+POST   /api/management/users/:id/reactivate       ORG_ADMIN only
+POST   /api/management/users/:id/terminate        ORG_ADMIN only (permanent)
 GET    /api/management/users/:id/password        ORG_ADMIN only, audited
 POST   /api/management/users/:id/reset-password  ORG_ADMIN only
 GET    /api/management/assignments
@@ -277,18 +281,21 @@ Mitigations: reveal is ORG_ADMIN-only, org-scoped, one user per request, never i
 | # | Do | Expect |
 |---|---|---|
 | 35 | admin creates a user, expand Activity log | `Added User` in green |
-| 36 | admin disables a user, refresh | `Disabled User` in red |
+| 36 | admin suspends a user, refresh | `Suspended User` in red |
 | 37 | recruiter1 looks for Activity log panel | **Not rendered** — ORG_ADMIN only |
 | 38 | psql: `UPDATE audit_logs SET action='x';` | **ERROR: audit_logs is append-only** |
 | 39 | psql as `app_role`: `DELETE FROM audit_logs;` | **permission denied** |
 
 ### Account state
+> Superseded by the Phase 2.1 lifecycle gate. Kept to show what Phase 1
+> covered; run the 2.1 table instead.
+
 | # | As | Do | Expect |
 |---|---|---|---|
-| 40 | admin@molina | Disable consultant1 | Marked Disabled |
-| 41 | consultant1 | Sign in | **403** "account has been disabled" |
-| 42 | admin@molina | Disable own account | **400** blocked |
-| 43 | admin@molina | Disable another ORG_ADMIN | **403** blocked |
+| 40 | admin@molina | Suspend consultant1 | Marked Suspended |
+| 41 | consultant1 | Sign in | Refused — "access has been suspended" |
+| 42 | admin@molina | Suspend own account | **400** blocked |
+| 43 | admin@molina | Suspend another ORG_ADMIN | **403** blocked |
 
 ### Password reveal
 | # | As | Do | Expect |
@@ -499,6 +506,195 @@ GET    /api/resumes/:artifactId/download               ONE file, audited
 |---|---|---|
 | 32 | Expand Activity log on the Approvals page | `Submitted Profile Changes`, `Approved Profile Changes`, `Rejected Profile Changes` |
 | 33 | Read a review entry | Names which fields were approved and which rejected |
+
+---
+---
+
+# Phase 2.1 — employment lifecycle & session integrity ✅
+
+Remediation of three audit findings, plus the two-state lifecycle. Covered by
+an automated HTTP suite (48 assertions, all green) as well as the manual gate
+below.
+
+## What changed and why
+
+### A-1 — a disabled account kept its live session
+
+Phase 1 checked the account only at **login**. The JWT then stood on its own
+until expiry, so suspending someone mid-session did nothing until their token
+aged out. The Phase 1 gate claimed this was covered. It was not — that claim
+was wrong and has been removed.
+
+`middleware/verifyToken.js` is now async and re-checks on **every** request:
+the user still exists, `employment_status = 'ACTIVE'`, the organisation is
+still active, and the token's `role` claim still matches the database — so a
+demotion also takes effect at once. On any failure it clears the cookie.
+
+Those rejections return **401, not 403**. The distinction is load-bearing: 403
+means "signed in but not allowed to do this", and the client keeps the session;
+401 means the session itself is dead, which is what makes the browser drop its
+state and bounce to login. Returning 403 here left a suspended user sitting on
+the page collecting error toasts, never actually logged out.
+
+The cost is one indexed primary-key lookup per request — the right trade for
+revocation being immediate.
+
+### A-2 — lockout protected the wrong thing
+
+The old limiter was per-IP across all logins, so it did nothing against someone
+grinding one account from many addresses, while a shared office NAT could lock
+out a whole organisation at once.
+
+`login_attempts` (migration 013) records every attempt. `checkLockout(email)`
+counts failures **for that email** since its last successful login, inside a
+rolling window. `MAX_ATTEMPTS` and `LOCKOUT_MINUTES` come from env. A successful
+login resets the count by definition, since the window starts from it.
+
+The per-IP limiter was kept but demoted and loosened (10 → 60 failures / 15 min).
+It is now only a volumetric backstop against spray from one address; at 10 it was
+itself the "locks out the wrong people" half of this finding, since a handful of
+colleagues behind one office NAT fumbling passwords could lock out the building.
+The per-account lockout is the precise control, so the coarse one no longer needs
+to be tight. This surfaced during testing, when repeated runs from one machine
+locked out the org admin.
+
+### B-1 — role tabs were broken by pagination (my regression)
+
+The Users page fetched one page of 25 and then filtered by role in the browser,
+so a tab could show an empty table while that role clearly had members — the
+rows simply sat on another page.
+
+`listUsers` now takes `?role=` and filters in SQL, so a page belongs to exactly
+one tab. Tab badges come from a separate org-wide `counts` aggregate
+(`{ active, total }` per role), not from the current page, so they stay correct
+wherever you are in the list.
+
+### C-2 — a pending request outlived the person who submitted it
+
+A consultant could leave a change request in a reviewer's queue and then stop
+working there. Approving it would push values live for a non-employee;
+rejecting it sends a note to an account nobody can read. Neither is meaningful.
+
+The fix splits by intent rather than treating "not active" as one case:
+
+- **Terminate** cancels the pending request in the **same transaction** as the
+  termination, so the queue can never disagree with employment state.
+- **Suspend** deliberately does **not**. Suspension is reversible and the person
+  is still an employee — discarding their work over a two-week leave would just
+  make them redo it. The queue flags the consultant as suspended instead, so the
+  reviewer decides knowingly.
+
+Cancellation uses a new `CANCELLED` status rather than reusing an existing one.
+`WITHDRAWN` means the consultant changed their mind — recording an
+admin-initiated termination that way would put words in their mouth and make the
+audit trail lie about who did what. `REJECTED` is worse: it implies a reviewer
+looked at the values and turned them down. `CANCELLED` says the true thing —
+nobody judged these values, the request simply stopped being relevant.
+
+`reviewChangeRequest` also refuses a decision on a terminated consultant. That
+path should be unreachable, but a reviewer with the screen already open when the
+termination lands would otherwise post a stale approval.
+
+## The two-state lifecycle
+
+| | Suspend | Terminate |
+|---|---|---|
+| Portal access | removed | removed |
+| Still an employee | **yes** | **no** |
+| Reversible | **yes** — Reactivate | **never** |
+| Intended for | leave, a temporary hold | resignation, contract end, dismissal |
+| Current assignment | left in place | closed in the same transaction |
+
+Terminate is refused a reactivate **at the API**, not merely hidden in the UI;
+the same goes for suspending someone already terminated. The record and its
+history are always kept.
+
+**Migration 012** adds `employment_status` with its `suspended_*` /
+`terminated_*` columns, migrates every existing `is_active = FALSE` row to
+`SUSPENDED`, then drops `is_active` and re-adds it as
+`GENERATED ALWAYS AS (employment_status = 'ACTIVE') STORED`. Deriving it rather
+than dropping it keeps every existing read working, and makes any stale *write*
+fail loudly — which is exactly how the two seed files still setting `is_active`
+by hand were caught.
+
+## Listing behaviour
+
+Both lists show **active people only** by default — the everyday question is who
+is on the roster now. A *Show all* toggle sends `includeInactive=true` and
+brings suspended and terminated rows in alongside the active ones, ordered
+ACTIVE → SUSPENDED → TERMINATED.
+
+## Files
+
+| File | Change |
+|---|---|
+| `db/migrations/012_employment_status.sql` | new — status columns, generated `is_active` |
+| `db/migrations/013_login_attempts.sql` | new — per-account attempt log |
+| `db/migrations/014_cancel_change_requests.sql` | new — `CANCELLED` status + backfill |
+| `middleware/verifyToken.js` | per-request revocation check, 401 on dead session |
+| `controllers/authController.js` | per-account lockout, status-aware login errors |
+| `server.js` | lifecycle routes; per-IP login limiter demoted to a backstop |
+| `controllers/managementController.js` | `suspendUser` / `reactivateUser` / `terminateUser`; `listUsers` role filter + org-wide counts; cancels pending requests on terminate |
+| `controllers/profileChangeController.js` | queue exposes consultant employment status; review refuses a terminated consultant |
+| `controllers/profileController.js` | `listConsultants` honours `includeInactive` |
+| `db/seeds/002`, `db/seeds/003` | stopped writing the now-generated `is_active` |
+| `components/EmploymentStatus.jsx` | new — status badge |
+| `components/LifecycleActions.jsx` | new — Suspend / Reactivate / Terminate + confirm dialog |
+| `pages/management/Users.jsx` | lifecycle actions, status column, Show all |
+| `pages/management/Consultants.jsx` | status badge, Show all |
+| `pages/management/ProfileApprovals.jsx` | `Cancelled` pill, suspended-consultant flag |
+
+## Manual test gate — Phase 2.1
+
+### Session revocation
+| # | Do | Expect |
+|---|---|---|
+| 1 | consultant1 signs in, leaves a tab open; admin suspends them; consultant clicks anything | Bounced to login **immediately** — no waiting for token expiry |
+| 2 | Same, but terminate | Same |
+| 3 | Admin changes a user's role mid-session; that user acts | Signed out, "permissions have changed" |
+| 4 | SUPER_ADMIN disables an org; its admin acts | Signed out |
+
+### Lifecycle
+| # | As | Do | Expect |
+|---|---|---|---|
+| 5 | admin@molina | Suspend a recruiter | Amber **Suspended** badge; row hidden once back on active-only |
+| 6 | that recruiter | Sign in | Refused, told they are suspended |
+| 7 | admin@molina | Reactivate them | Back to **Active**; they can sign in |
+| 8 | admin@molina | Terminate a consultant | Red **Terminated**; dialog warned it is permanent |
+| 9 | admin@molina | Look at that row | **No actions** — no reactivate offered |
+| 10 | — | `POST /users/:id/reactivate` on them by hand | **4xx** — refused server-side, not just hidden |
+| 11 | admin@molina | Check their recruiter assignment | Released |
+| 12 | admin@molina | Terminate own account | Blocked |
+| 13 | admin@molina | Terminate another ORG_ADMIN | **403** blocked |
+
+### Listing
+| # | Do | Expect |
+|---|---|---|
+| 14 | Open Users, any tab | Active only |
+| 15 | Click *Show all* | Suspended + terminated appear, active first |
+| 16 | Switch tabs | Every row matches the tab; badge counts org-wide, not page counts |
+| 17 | Page 2 of a tab | Counts unchanged; rows still all one role |
+| 18 | Consultants page, *Show all* | Same behaviour |
+
+### Pending requests vs employment (C-2)
+| # | As | Do | Expect |
+|---|---|---|---|
+| 19 | consultant1 | Submit a profile change | Appears in the reviewer's Pending queue |
+| 20 | admin@molina | Suspend that consultant | Request **still pending**, row flagged **Suspended** |
+| 21 | admin@molina | Approve it anyway | Allowed — their work survives the suspension |
+| 22 | consultant2 | Submit a change; admin terminates them | Gone from Pending |
+| 23 | admin@molina | Filter **All** | Shows **Cancelled** — not Rejected, not Withdrawn |
+| 24 | admin@molina | Expand that row | Read-only; no approve/reject buttons |
+| 25 | — | Post a review to it by hand | **409** refused |
+| 26 | admin@molina | Check the sidebar pending badge | Dropped by one |
+
+### Lockout
+| # | Do | Expect |
+|---|---|---|
+| 27 | Fail one account's password repeatedly | That account locks |
+| 28 | Immediately sign in as a **different** user, same machine | **Succeeds** — lockout is per account |
+| 29 | Return to the locked account with the **correct** password | Still refused until the window passes |
+| 30 | Wait out `LOCKOUT_MINUTES`, sign in correctly | Succeeds |
 
 ---
 ---

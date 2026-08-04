@@ -14,19 +14,44 @@ import {
 import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction, describeChanges } from './auditLogController.js';
 
+// Shared so the create and update forms cannot disagree about what a valid
+// name or phone number is.
+const nameRule = Joi.string().trim().min(2).max(255)
+    .pattern(/^[A-Za-z][A-Za-z .'-]*$/)
+    .messages({
+        'string.pattern.base': 'Name may only contain letters, spaces, hyphens and apostrophes.',
+        'string.min': 'Name must be at least 2 characters.',
+    });
+
+// Matches PROFILE_FIELDS.phone — a consultant's phone lives on their profile
+// and is validated by the registry, so the two rules must agree.
+const phoneRule = Joi.string().pattern(/^[0-9]{10}$/)
+    .messages({ 'string.pattern.base': 'Phone number must be exactly 10 digits, no spaces or symbols.' })
+    .allow('', null);
+
+const emailRule = Joi.string().trim().lowercase()
+    .email({ tlds: { allow: false } }).max(255);
+
 export const createUserSchema = Joi.object({
-    name: Joi.string().trim().min(2).max(255).required(),
-    email: Joi.string().email({ tlds: { allow: false } }).max(255).required(),
-    phone: Joi.string().max(30).allow('', null),
+    name: nameRule.required(),
+    email: emailRule.required(),
+    phone: phoneRule,
     role: Joi.string().valid('RECRUITER', 'CONSULTANT').required(),
-    password: Joi.string().min(8).max(200).required(),
+    password: Joi.string().min(8).max(200).required()
+        .messages({ 'string.min': 'Password must be at least 8 characters.' }),
 });
 
+// No isActive here — employment state changes go through the dedicated
+// suspend / reactivate / terminate endpoints, which enforce the transition
+// rules (terminated is permanent) and record who did it and why.
 export const updateUserSchema = Joi.object({
-    name: Joi.string().trim().min(2).max(255),
-    phone: Joi.string().max(30).allow('', null),
-    isActive: Joi.boolean(),
+    name: nameRule,
+    phone: phoneRule,
 }).min(1);
+
+export const lifecycleSchema = Joi.object({
+    reason: Joi.string().max(500).allow('', null),
+});
 
 export const resetPasswordSchema = Joi.object({
     newPassword: Joi.string().min(8).max(200).required()
@@ -36,6 +61,24 @@ export const resetPasswordSchema = Joi.object({
 export const assignSchema = Joi.object({
     consultantId: Joi.string().guid({ version: 'uuidv4' }).required(),
     recruiterId: Joi.string().guid({ version: 'uuidv4' }).required(),
+    reason: Joi.string().max(255).allow('', null),
+});
+
+// Bulk edit from the recruiter's end: the FULL roster this recruiter should
+// own once saved. Absent ids mean "release", not "leave alone" — the endpoint
+// reconciles against what is stored rather than taking a list of deltas.
+export const recruiterRosterSchema = Joi.object({
+    consultantIds: Joi.array()
+        .items(Joi.string().guid({ version: 'uuidv4' }))
+        .max(500)
+        .required(),
+    reason: Joi.string().max(255).allow('', null),
+});
+
+// The consultant's end. `null` unassigns — the database permits a consultant
+// at most one current recruiter, so this is single-valued by definition.
+export const consultantRecruiterSchema = Joi.object({
+    recruiterId: Joi.string().guid({ version: 'uuidv4' }).allow(null).required(),
     reason: Joi.string().max(255).allow('', null),
 });
 
@@ -71,9 +114,15 @@ export const listUsers = async (req, res, next) => {
         const paging = readPaging(req);
         const search = (req.query.search ?? '').trim() || null;
 
+        // Terminated and suspended people are hidden unless explicitly asked
+        // for — day to day an admin wants the current roster, not the history.
+        const includeInactive = req.query.includeInactive === 'true';
+
         const { rows } = await query(
             `SELECT COUNT(*) OVER () AS total_count,
                     u.id, u.name, u.email, u.role, u.is_active,
+                    u.employment_status, u.suspended_at, u.suspend_reason,
+                    u.terminated_at, u.termination_reason,
                     COALESCE(p.phone, u.phone) AS phone,
                     u.last_login_at, u.created_at,
                     r.name AS recruiter_name
@@ -86,13 +135,34 @@ export const listUsers = async (req, res, next) => {
                 AND ($2::text IS NULL OR u.role = $2)
                 AND ($3::text IS NULL OR u.name ILIKE '%' || $3 || '%'
                                       OR u.email ILIKE '%' || $3 || '%')
-              ORDER BY u.role, u.name
-              LIMIT $4 OFFSET $5`,
-            [orgId, roleFilter, search, paging.limit, paging.offset],
+                AND ($4::boolean OR u.employment_status = 'ACTIVE')
+              ORDER BY
+                CASE u.employment_status
+                  WHEN 'ACTIVE' THEN 1 WHEN 'SUSPENDED' THEN 2 ELSE 3 END,
+                u.role, u.name
+              LIMIT $5 OFFSET $6`,
+            [orgId, roleFilter, search, includeInactive, paging.limit, paging.offset],
+        );
+
+        // Tab badges must count the whole organisation, not the current page.
+        const { rows: counts } = await query(
+            `SELECT u.role,
+                    COUNT(*) FILTER (WHERE u.employment_status = 'ACTIVE')::int AS active,
+                    COUNT(*)::int AS total
+               FROM users u
+              WHERE u.organization_id = $1
+              GROUP BY u.role`,
+            [orgId],
         );
 
         const result = pageResult(rows, paging);
-        return res.json({ users: result.data, page: result.page });
+        return res.json({
+            users: result.data,
+            page: result.page,
+            counts: Object.fromEntries(
+                counts.map((c) => [c.role, { active: c.active, total: c.total }]),
+            ),
+        });
     } catch (err) {
         return next(err);
     }
@@ -161,7 +231,7 @@ export const updateUser = async (req, res, next) => {
         const { target: old, error } = await resolveManageableUser(req.user, req.params.id);
         if (error) return res.status(error.status).json({ error: error.message });
 
-        const { name, phone, isActive } = req.body;
+        const { name, phone } = req.body;
         const isConsultantRole = old.role === 'CONSULTANT';
 
         // A consultant's phone lives on their profile (migration 011), so the
@@ -178,11 +248,9 @@ export const updateUser = async (req, res, next) => {
         await withTransaction(async (client) => {
             await client.query(
                 `UPDATE users
-                    SET name = COALESCE($1, name),
-                        is_active = COALESCE($2, is_active),
-                        updated_by = $3
-                  WHERE id = $4 AND organization_id = $5`,
-                [name ?? null, isActive ?? null, req.user.id, old.id, orgId],
+                    SET name = COALESCE($1, name), updated_by = $2
+                  WHERE id = $3 AND organization_id = $4`,
+                [name ?? null, req.user.id, old.id, orgId],
             );
 
             if (phone !== undefined) {
@@ -204,18 +272,10 @@ export const updateUser = async (req, res, next) => {
         const description = describeChanges('User', [
             { label: 'Name', oldVal: old.name, newVal: name ?? old.name },
             { label: 'Phone', oldVal: oldPhone, newVal: phone === undefined ? oldPhone : phone },
-            { label: 'Status', oldVal: old.is_active ? 'Active' : 'Disabled',
-                newVal: (isActive ?? old.is_active) ? 'Active' : 'Disabled' },
         ]);
 
-        // Verb drives the colour in the activity log:
-        // Disabled = red, Enabled = emerald, Updated = amber.
-        const action = isActive === false ? 'Disabled User'
-            : isActive === true && old.is_active === false ? 'Enabled User'
-                : 'Updated User';
-
         logAction({
-            orgId, module: 'users', action,
+            orgId, module: 'users', action: 'Updated User',
             entityType: 'User', entityId: old.id, entityName: name ?? old.name,
             performedBy: req.user.id, performedByRole: req.user.role,
             description, ipAddress: req.ip,
@@ -227,34 +287,182 @@ export const updateUser = async (req, res, next) => {
     }
 };
 
+/* ────────────────── employment lifecycle ─────────────────────────── */
+
 /**
- * DELETE /api/management/users/:id — ORG_ADMIN only.
- * Soft disable, per the is_active convention. Never a row delete.
+ * POST /api/management/users/:id/suspend — ORG_ADMIN only.
+ *
+ * Removes portal access while keeping the person on the books. Reversible.
+ * Use for leave, an investigation, or a temporary hold.
  */
-export const deactivateUser = async (req, res, next) => {
+export const suspendUser = async (req, res, next) => {
     try {
         const { orgId } = req.user;
-
-        // allowSelf: false — disabling your own account would lock you out.
         const { target, error } = await resolveManageableUser(
             req.user, req.params.id, { allowSelf: false },
         );
         if (error) return res.status(error.status).json({ error: error.message });
 
+        if (target.employment_status === 'TERMINATED') {
+            return res.status(409).json({ error: 'This person has already been terminated.' });
+        }
+        if (target.employment_status === 'SUSPENDED') {
+            return res.status(409).json({ error: 'This person is already suspended.' });
+        }
+
         await query(
-            'UPDATE users SET is_active = FALSE, updated_by = $1 WHERE id = $2 AND organization_id = $3',
+            `UPDATE users
+                SET employment_status = 'SUSPENDED',
+                    suspended_at = now(), suspended_by = $1, suspend_reason = $2,
+                    updated_by = $1
+              WHERE id = $3 AND organization_id = $4`,
+            [req.user.id, req.body.reason || null, target.id, orgId],
+        );
+
+        logAction({
+            orgId, module: 'users', action: 'Suspended User',
+            entityType: 'User', entityId: target.id, entityName: target.name,
+            performedBy: req.user.id, performedByRole: req.user.role,
+            description: `Suspended access for ${target.role.toLowerCase()} "${target.name}"`
+                + (req.body.reason ? ` — ${req.body.reason}` : ''),
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({ message: 'Access suspended.', employmentStatus: 'SUSPENDED' });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * POST /api/management/users/:id/reactivate — ORG_ADMIN only.
+ * Only a SUSPENDED account can come back. Termination is final.
+ */
+export const reactivateUser = async (req, res, next) => {
+    try {
+        const { orgId } = req.user;
+        const { target, error } = await resolveManageableUser(req.user, req.params.id);
+        if (error) return res.status(error.status).json({ error: error.message });
+
+        if (target.employment_status === 'TERMINATED') {
+            return res.status(409).json({
+                error: 'A terminated person cannot be reactivated. Create a new account instead.',
+            });
+        }
+        if (target.employment_status === 'ACTIVE') {
+            return res.status(409).json({ error: 'This person is already active.' });
+        }
+
+        await query(
+            `UPDATE users
+                SET employment_status = 'ACTIVE',
+                    suspended_at = NULL, suspended_by = NULL, suspend_reason = NULL,
+                    updated_by = $1
+              WHERE id = $2 AND organization_id = $3`,
             [req.user.id, target.id, orgId],
         );
 
         logAction({
-            orgId, module: 'users', action: 'Disabled User',
+            orgId, module: 'users', action: 'Reactivated User',
             entityType: 'User', entityId: target.id, entityName: target.name,
             performedBy: req.user.id, performedByRole: req.user.role,
-            description: `Disabled ${target.role.toLowerCase()} "${target.name}"`,
+            description: `Restored access for ${target.role.toLowerCase()} "${target.name}"`,
             ipAddress: req.ip,
         }).catch(() => {});
 
-        return res.json({ message: 'User disabled.' });
+        return res.json({ message: 'Access restored.', employmentStatus: 'ACTIVE' });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * POST /api/management/users/:id/terminate — ORG_ADMIN only.
+ *
+ * PERMANENT. The person has resigned or been dismissed: no portal access ever
+ * again, and no longer an employee of this organisation. The record is kept —
+ * never deleted — so history, audit entries and past work stay attributable.
+ *
+ * Any current assignment is closed in the same transaction. A terminated
+ * recruiter must not keep holding consultants, and a terminated consultant
+ * should not stay on a recruiter's list.
+ */
+export const terminateUser = async (req, res, next) => {
+    try {
+        const { orgId } = req.user;
+        const { target, error } = await resolveManageableUser(
+            req.user, req.params.id, { allowSelf: false },
+        );
+        if (error) return res.status(error.status).json({ error: error.message });
+
+        if (target.employment_status === 'TERMINATED') {
+            return res.status(409).json({ error: 'This person is already terminated.' });
+        }
+
+        const { releasedAssignments, cancelledRequests } = await withTransaction(async (client) => {
+            await client.query(
+                `UPDATE users
+                    SET employment_status = 'TERMINATED',
+                        terminated_at = now(), terminated_by = $1,
+                        termination_reason = $2, updated_by = $1
+                  WHERE id = $3 AND organization_id = $4`,
+                [req.user.id, req.body.reason || null, target.id, orgId],
+            );
+
+            const { rowCount: released } = await client.query(
+                `UPDATE assignments
+                    SET effective_to = CURRENT_DATE, updated_by = $1
+                  WHERE organization_id = $2
+                    AND effective_to IS NULL
+                    AND (consultant_id = $3 OR recruiter_id = $3)`,
+                [req.user.id, orgId, target.id],
+            );
+
+            // C-2. A pending request from someone who no longer works here is
+            // not decidable: approving pushes values live for a non-employee,
+            // rejecting sends a note to an account that can never be read.
+            // Cancel it in the SAME transaction as the termination, so the
+            // queue can never disagree with the person's employment state.
+            await client.query(
+                `UPDATE profile_change_request_fields
+                    SET status = 'CANCELLED'
+                  WHERE status = 'PENDING'
+                    AND change_request_id IN (
+                        SELECT id FROM profile_change_requests
+                         WHERE consultant_id = $1 AND organization_id = $2
+                           AND status = 'PENDING')`,
+                [target.id, orgId],
+            );
+            const { rowCount: cancelled } = await client.query(
+                `UPDATE profile_change_requests
+                    SET status = 'CANCELLED',
+                        reviewed_by = $1, reviewed_at = now(), updated_by = $1,
+                        review_note = 'Cancelled automatically — the consultant was terminated.'
+                  WHERE consultant_id = $2 AND organization_id = $3
+                    AND status = 'PENDING'`,
+                [req.user.id, target.id, orgId],
+            );
+
+            return { releasedAssignments: released, cancelledRequests: cancelled };
+        });
+
+        logAction({
+            orgId, module: 'users', action: 'Terminated User',
+            entityType: 'User', entityId: target.id, entityName: target.name,
+            performedBy: req.user.id, performedByRole: req.user.role,
+            description: `Terminated ${target.role.toLowerCase()} "${target.name}"`
+                + (req.body.reason ? ` — ${req.body.reason}` : '')
+                + (releasedAssignments ? ` (${releasedAssignments} assignment(s) released)` : '')
+                + (cancelledRequests ? ' (pending profile changes cancelled)' : ''),
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({
+            message: 'Terminated.',
+            employmentStatus: 'TERMINATED',
+            releasedAssignments,
+            cancelledRequests,
+        });
     } catch (err) {
         return next(err);
     }
@@ -431,6 +639,279 @@ export const assignConsultant = async (req, res, next) => {
     }
 };
 
+/* ── bulk assignment editing ───────────────────────────────────────────
+ *
+ * The single POST above moves one consultant at a time. These two endpoints
+ * let an admin edit the links from either end in one go — the recruiter's
+ * whole roster, or one consultant's recruiter.
+ *
+ * Both take the DESIRED END STATE, not a list of deltas, and reconcile it
+ * against what is stored. A stale browser tab therefore cannot double-add or
+ * remove someone twice: replaying the same payload is a no-op.
+ */
+
+/** One user of an expected role, within the org. `null` if it is not them. */
+const loadAssignableUser = async (orgId, userId, role) => {
+    const { rows } = await query(
+        `SELECT id, name, employment_status
+           FROM users
+          WHERE id = $1 AND organization_id = $2 AND role = $3`,
+        [userId, orgId, role],
+    );
+    return rows[0] ?? null;
+};
+
+/** id -> name, for the org users named in an audit description. */
+const namesById = async (orgId, ids) => {
+    if (ids.length === 0) return new Map();
+    const { rows } = await query(
+        'SELECT id, name FROM users WHERE organization_id = $1 AND id = ANY($2::text[])',
+        [orgId, ids],
+    );
+    return new Map(rows.map((r) => [r.id, r.name]));
+};
+
+/**
+ * PUT /api/management/assignments/recruiter/:recruiterId — ORG_ADMIN only.
+ *
+ * Body `{ consultantIds }` is the complete roster this recruiter should hold.
+ * Consultants in the list but not currently theirs are added — taking them off
+ * whichever recruiter had them. Consultants currently theirs but absent from
+ * the list are released and left unassigned.
+ */
+export const setRecruiterRoster = async (req, res, next) => {
+    try {
+        const { orgId } = req.user;
+        const { recruiterId } = req.params;
+        const { reason } = req.body;
+
+        // A repeated id must not open two rows for the same person.
+        const wanted = [...new Set(req.body.consultantIds)];
+
+        const recruiter = await loadAssignableUser(orgId, recruiterId, 'RECRUITER');
+        if (!recruiter) {
+            return res.status(404).json({ error: 'Recruiter not found in your organization.' });
+        }
+        if (recruiter.employment_status !== 'ACTIVE') {
+            return res.status(409).json({
+                error: 'Cannot assign consultants to a recruiter who is not active.',
+            });
+        }
+
+        // Every proposed consultant must be a real, active consultant here.
+        // Checked as a set before anything is written, so a single bad id
+        // fails the whole save rather than half-applying it.
+        const { rows: candidates } = wanted.length
+            ? await query(
+                `SELECT id, name, employment_status
+                   FROM users
+                  WHERE organization_id = $1 AND role = 'CONSULTANT'
+                    AND id = ANY($2::text[])`,
+                [orgId, wanted],
+            )
+            : { rows: [] };
+
+        const byId = new Map(candidates.map((c) => [c.id, c]));
+        if (wanted.some((id) => !byId.has(id))) {
+            return res.status(404).json({
+                error: 'One or more selected consultants were not found in your organization.',
+            });
+        }
+        const inactive = candidates.filter((c) => c.employment_status !== 'ACTIVE');
+        if (inactive.length > 0) {
+            return res.status(409).json({
+                error: `Cannot assign an inactive consultant: ${inactive.map((c) => c.name).join(', ')}.`,
+            });
+        }
+
+        const currentIds = await getAssignedConsultantIds(orgId, recruiterId);
+        const toAdd = wanted.filter((id) => !currentIds.includes(id));
+        const toRemove = currentIds.filter((id) => !wanted.includes(id));
+
+        if (toAdd.length === 0 && toRemove.length === 0) {
+            return res.json({ message: 'No changes.', added: 0, removed: 0, moved: 0 });
+        }
+
+        // Who the added consultants are being taken FROM — read before the
+        // write, since the write is what erases it. Used for the audit line.
+        const { rows: priorRows } = toAdd.length
+            ? await query(
+                `SELECT a.consultant_id, r.name AS recruiter_name
+                   FROM assignments a
+                   JOIN users r ON r.id = a.recruiter_id
+                  WHERE a.organization_id = $1
+                    AND a.effective_to IS NULL
+                    AND a.consultant_id = ANY($2::text[])`,
+                [orgId, toAdd],
+            )
+            : { rows: [] };
+        const priorRecruiter = new Map(priorRows.map((r) => [r.consultant_id, r.recruiter_name]));
+
+        const nameOf = await namesById(orgId, [...new Set([...toAdd, ...toRemove])]);
+
+        await withTransaction(async (client) => {
+            if (toRemove.length > 0) {
+                await client.query(
+                    `UPDATE assignments
+                        SET effective_to = CURRENT_DATE, updated_by = $1
+                      WHERE organization_id = $2
+                        AND recruiter_id    = $3
+                        AND effective_to IS NULL
+                        AND consultant_id = ANY($4::text[])`,
+                    [req.user.id, orgId, recruiterId, toRemove],
+                );
+            }
+
+            if (toAdd.length > 0) {
+                // Close whatever they had first — for a move this belongs to a
+                // different recruiter, and the partial unique index would
+                // reject the insert otherwise.
+                await client.query(
+                    `UPDATE assignments
+                        SET effective_to = CURRENT_DATE, updated_by = $1
+                      WHERE organization_id = $2
+                        AND effective_to IS NULL
+                        AND consultant_id = ANY($3::text[])`,
+                    [req.user.id, orgId, toAdd],
+                );
+
+                for (const consultantId of toAdd) {
+                    await client.query(
+                        `INSERT INTO assignments
+                            (id, organization_id, consultant_id, recruiter_id,
+                             effective_from, reason, created_by)
+                         VALUES ($1,$2,$3,$4,CURRENT_DATE,$5,$6)`,
+                        [uuidv4(), orgId, consultantId, recruiterId, reason || null, req.user.id],
+                    );
+                }
+            }
+        });
+
+        const label = (id) => nameOf.get(id) ?? id;
+        const parts = [];
+        if (toAdd.length > 0) {
+            parts.push('added ' + toAdd.map((id) => {
+                const from = priorRecruiter.get(id);
+                return from ? `${label(id)} (moved from ${from})` : label(id);
+            }).join(', '));
+        }
+        if (toRemove.length > 0) {
+            parts.push(`released ${toRemove.map(label).join(', ')}`);
+        }
+
+        logAction({
+            orgId, module: 'assignments', action: 'Updated Assignment',
+            entityType: 'Assignment', entityId: recruiterId, entityName: recruiter.name,
+            performedBy: req.user.id, performedByRole: req.user.role,
+            description: `Updated recruiter "${recruiter.name}" roster — ${parts.join('; ')}`
+                + (reason ? ` — ${reason}` : ''),
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({
+            message: 'Assignments updated.',
+            added: toAdd.length,
+            removed: toRemove.length,
+            moved: priorRecruiter.size,
+        });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * PUT /api/management/assignments/consultant/:consultantId — ORG_ADMIN only.
+ *
+ * Body `{ recruiterId }`, or `{ recruiterId: null }` to leave them unassigned.
+ * Single-valued because `uq_assignments_one_current` allows a consultant only
+ * one open assignment row.
+ */
+export const setConsultantRecruiter = async (req, res, next) => {
+    try {
+        const { orgId } = req.user;
+        const { consultantId } = req.params;
+        const { recruiterId, reason } = req.body;
+
+        const consultant = await loadAssignableUser(orgId, consultantId, 'CONSULTANT');
+        if (!consultant) {
+            return res.status(404).json({ error: 'Consultant not found in your organization.' });
+        }
+        if (consultant.employment_status !== 'ACTIVE') {
+            return res.status(409).json({
+                error: 'Cannot change the assignment of a consultant who is not active.',
+            });
+        }
+
+        let recruiter = null;
+        if (recruiterId) {
+            recruiter = await loadAssignableUser(orgId, recruiterId, 'RECRUITER');
+            if (!recruiter) {
+                return res.status(404).json({ error: 'Recruiter not found in your organization.' });
+            }
+            if (recruiter.employment_status !== 'ACTIVE') {
+                return res.status(409).json({
+                    error: 'Cannot assign a consultant to a recruiter who is not active.',
+                });
+            }
+        }
+
+        const { rows: cur } = await query(
+            `SELECT a.recruiter_id, r.name AS recruiter_name
+               FROM assignments a
+               JOIN users r ON r.id = a.recruiter_id
+              WHERE a.organization_id = $1
+                AND a.consultant_id   = $2
+                AND a.effective_to IS NULL`,
+            [orgId, consultantId],
+        );
+        const currentId = cur[0]?.recruiter_id ?? null;
+
+        // Idempotent: re-saving the same choice writes nothing, so a stale tab
+        // cannot pad the history with zero-length rows.
+        if (currentId === (recruiterId ?? null)) {
+            return res.json({ message: 'No changes.', changed: false });
+        }
+
+        await withTransaction(async (client) => {
+            await client.query(
+                `UPDATE assignments
+                    SET effective_to = CURRENT_DATE, updated_by = $1
+                  WHERE organization_id = $2
+                    AND consultant_id   = $3
+                    AND effective_to IS NULL`,
+                [req.user.id, orgId, consultantId],
+            );
+
+            if (recruiterId) {
+                await client.query(
+                    `INSERT INTO assignments
+                        (id, organization_id, consultant_id, recruiter_id,
+                         effective_from, reason, created_by)
+                     VALUES ($1,$2,$3,$4,CURRENT_DATE,$5,$6)`,
+                    [uuidv4(), orgId, consultantId, recruiterId, reason || null, req.user.id],
+                );
+            }
+        });
+
+        const description = recruiter
+            ? `Assigned consultant "${consultant.name}" to recruiter "${recruiter.name}"`
+                + (cur[0] ? ` (moved from "${cur[0].recruiter_name}")` : '')
+            : `Unassigned consultant "${consultant.name}" from recruiter "${cur[0].recruiter_name}"`;
+
+        logAction({
+            orgId, module: 'assignments', action: 'Updated Assignment',
+            entityType: 'Assignment', entityId: consultantId, entityName: consultant.name,
+            performedBy: req.user.id, performedByRole: req.user.role,
+            description: description + (reason ? ` — ${reason}` : ''),
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({ message: 'Assignment updated.', changed: true });
+    } catch (err) {
+        return next(err);
+    }
+};
+
 /** GET /api/management/stats */
 export const orgStats = async (req, res, next) => {
     try {
@@ -447,7 +928,8 @@ export const orgStats = async (req, res, next) => {
             `SELECT
                COUNT(*) FILTER (WHERE role = 'RECRUITER'  AND is_active)::int AS recruiters,
                COUNT(*) FILTER (WHERE role = 'CONSULTANT' AND is_active)::int AS consultants,
-               COUNT(*) FILTER (WHERE NOT is_active)::int                     AS disabled_users
+               COUNT(*) FILTER (WHERE employment_status = 'SUSPENDED')::int   AS suspended_users,
+               COUNT(*) FILTER (WHERE employment_status = 'TERMINATED')::int  AS terminated_users
              FROM users WHERE organization_id = $1`,
             [orgId],
         );

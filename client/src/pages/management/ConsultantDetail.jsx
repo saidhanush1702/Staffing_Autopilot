@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -90,10 +91,12 @@ const ConsultantDetail = () => {
                             <Pause className="h-3.5 w-3.5" /> Paused
                         </span>
                     )}
-                    {!profile.is_active && (
-                        <span className="rounded bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700">
-                            Account disabled
-                        </span>
+                    {profile.employment_status !== 'ACTIVE' && (
+                        <EmploymentStatus
+                            status={profile.employment_status}
+                            since={profile.terminated_at ?? profile.suspended_at}
+                            reason={profile.termination_reason ?? profile.suspend_reason}
+                        />
                     )}
                 </div>
             </div>

@@ -9,7 +9,7 @@ export const getLookups = async (req, res, next) => {
     try {
         const [genders, userStatuses, workAuth, roles] = await Promise.all([
             query('SELECT id, name FROM lkp_genders ORDER BY id'),
-            query('SELECT id, name FROM lkp_user_statuses ORDER BY id'),
+            query('SELECT id, name, label FROM lkp_user_statuses ORDER BY id'),
             query('SELECT id, name FROM lkp_work_auth_statuses ORDER BY id'),
             query('SELECT id, name, label FROM lkp_roles ORDER BY id'),
         ]);

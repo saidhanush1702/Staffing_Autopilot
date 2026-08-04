@@ -2,10 +2,12 @@ import { useEffect, useState, Fragment } from 'react';
 import {
     Check, X, Loader2, AlertCircle, Inbox, ArrowRight,
     ChevronRight, ChevronDown, Clock, CheckCircle2, XCircle, MinusCircle,
+    XOctagon, PauseCircle,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import Pagination from '../../components/Pagination.jsx';
+import TableShell from '../../components/TableShell.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
@@ -23,6 +25,9 @@ const STATUS_STYLE = {
     PARTIALLY_APPROVED: { icon: MinusCircle, cls: 'bg-sky-50 text-sky-700', text: 'Partly approved' },
     REJECTED: { icon: XCircle, cls: 'bg-red-50 text-red-700', text: 'Rejected' },
     WITHDRAWN: { icon: MinusCircle, cls: 'bg-slate-100 text-slate-600', text: 'Withdrawn' },
+    // Nobody judged these values — the consultant was terminated, so the
+    // request stopped being decidable. Distinct from Rejected on purpose.
+    CANCELLED: { icon: XOctagon, cls: 'bg-slate-100 text-slate-500', text: 'Cancelled' },
 };
 
 const roleLabel = (r) => (r ? r.replace('_', ' ') : '');
@@ -141,14 +146,14 @@ const ProfileApprovals = () => {
             </p>
 
             <div className="mt-6 border-b border-slate-200">
-                <nav className="-mb-px flex gap-6">
+                <nav className="-mb-px flex gap-4 overflow-x-auto sm:gap-6">
                     {TABS.map((t) => (
                         <button
                             key={t.key}
                             type="button"
                             onClick={() => setTab(t.key)}
                             className={[
-                                'border-b-2 px-1 pb-3 text-sm transition-colors',
+                                'shrink-0 whitespace-nowrap border-b-2 px-1 pb-3 text-sm transition-colors',
                                 tab === t.key
                                     ? 'border-brand-600 font-medium text-brand-700'
                                     : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700',
@@ -171,8 +176,11 @@ const ProfileApprovals = () => {
                     )}
                 </div>
             ) : (
-                <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white">
-                    <table className="w-full text-sm">
+                <TableShell
+                    className="mt-6"
+                    minWidth={880}
+                    footer={<Pagination page={page} onChange={(p) => load(tab, p)} />}
+                >
                         <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                             <tr>
                                 <th className="w-10 px-3 py-3" />
@@ -205,6 +213,17 @@ const ProfileApprovals = () => {
                                             <td className="px-4 py-3">
                                                 <p className="font-medium text-slate-900">{req.consultant_name}</p>
                                                 <p className="text-xs text-slate-500">{req.consultant_email}</p>
+                                                {/* A suspended consultant's request stays reviewable —
+                                                    suspension is temporary and their work should survive it.
+                                                    Flag it so the decision is made knowingly. (C-2) */}
+                                                {req.consultant_employment_status === 'SUSPENDED' && (
+                                                    <span
+                                                        title="This consultant's access is suspended. Their changes can still be reviewed."
+                                                        className="mt-1 inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700"
+                                                    >
+                                                        <PauseCircle className="h-3 w-3" /> Suspended
+                                                    </span>
+                                                )}
                                             </td>
                                             <td className="px-4 py-3 text-slate-600">
                                                 {req.recruiter_name ?? <span className="text-slate-400">Unassigned</span>}
@@ -363,10 +382,7 @@ const ProfileApprovals = () => {
                                 );
                             })}
                         </tbody>
-                    </table>
-
-                    <Pagination page={page} onChange={(p) => load(tab, p)} />
-                </div>
+                </TableShell>
             )}
 
             <AuditLogPanel module="profile_changes" />
