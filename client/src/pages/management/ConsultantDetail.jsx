@@ -9,6 +9,7 @@ import PageLoader from '../../components/PageLoader.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { card, cardPad } from '../../design/tokens.js';
 
 const Row = ({ icon: Icon, label, value, muted }) => (
     <div className="flex items-start gap-3 py-2.5">
@@ -114,7 +115,7 @@ const ConsultantDetail = () => {
             <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,20rem)_1fr]">
                 {/* ── details ─────────────────────────────────── */}
                 <div className="space-y-4">
-                    <div className="rounded-xl border border-slate-200 bg-white p-5">
+                    <div className={`${card} ${cardPad}`}>
                         <p className="text-sm font-medium text-slate-700">Contact</p>
                         <div className="mt-2 divide-y divide-slate-100">
                             <Row icon={Mail} label="Email" value={profile.email} />
@@ -130,7 +131,7 @@ const ConsultantDetail = () => {
                         </div>
                     </div>
 
-                    <div className="rounded-xl border border-slate-200 bg-white p-5">
+                    <div className={`${card} ${cardPad}`}>
                         <p className="text-sm font-medium text-slate-700">Eligibility</p>
                         <div className="mt-2 divide-y divide-slate-100">
                             <Row
@@ -152,7 +153,7 @@ const ConsultantDetail = () => {
                     </div>
 
                     {profile.notes && (
-                        <div className="rounded-xl border border-slate-200 bg-white p-5">
+                        <div className={`${card} ${cardPad}`}>
                             <p className="text-sm font-medium text-slate-700">Internal notes</p>
                             <p className="mt-2 whitespace-pre-wrap text-sm text-slate-600">{profile.notes}</p>
                         </div>

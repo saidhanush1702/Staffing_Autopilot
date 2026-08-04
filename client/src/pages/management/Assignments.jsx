@@ -5,6 +5,10 @@ import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import AssignmentPicker from '../../components/AssignmentPicker.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
+import {
+    card, cardPad, input, fieldLabel, btn, iconBtn, badge, countPill, TONE, TONE_ALERT,
+    pageTitle, pageSubtitle, sectionTitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
+} from '../../design/tokens.js';
 
 const VIEWS = [
     { key: 'CONSULTANTS', label: 'By consultant', icon: UsersIcon },
@@ -89,7 +93,6 @@ const Assignments = () => {
     if (error) return <p className="text-sm text-red-600">{error}</p>;
     if (!assignments) return <PageLoader />;
 
-    const input = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100';
     const current = assignments.filter((a) => !a.effective_to);
     const history = assignments.filter((a) => a.effective_to);
 
@@ -113,21 +116,21 @@ const Assignments = () => {
 
     return (
         <div>
-            <h1 className="text-xl font-semibold text-slate-900">Assignments</h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <h1 className={pageTitle}>Assignments</h1>
+            <p className={pageSubtitle}>
                 A recruiter can only see consultants currently assigned to them.
                 Reassigning closes the old link and opens a new one — history is kept.
             </p>
 
-            <form onSubmit={handleAssign} className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
+            <form onSubmit={handleAssign} className={`mt-5 ${card} ${cardPad}`}>
                 {formError && (
-                    <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                    <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
                         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                     </div>
                 )}
                 <div className="grid gap-4 sm:grid-cols-3">
                     <label className="block">
-                        <span className="text-sm text-slate-600">Consultant</span>
+                        <span className={fieldLabel}>Consultant</span>
                         <select required value={consultantId} onChange={(e) => setConsultantId(e.target.value)} className={input}>
                             <option value="">Select…</option>
                             {consultants.map((c) => (
@@ -136,7 +139,7 @@ const Assignments = () => {
                         </select>
                     </label>
                     <label className="block">
-                        <span className="text-sm text-slate-600">Recruiter</span>
+                        <span className={fieldLabel}>Recruiter</span>
                         <select required value={recruiterId} onChange={(e) => setRecruiterId(e.target.value)} className={input}>
                             <option value="">Select…</option>
                             {recruiters.map((r) => (
@@ -145,36 +148,27 @@ const Assignments = () => {
                         </select>
                     </label>
                     <label className="block">
-                        <span className="text-sm text-slate-600">Reason (optional)</span>
+                        <span className={fieldLabel}>Reason (optional)</span>
                         <input value={reason} onChange={(e) => setReason(e.target.value)} className={input} placeholder="Rebalancing workload" />
                     </label>
                 </div>
-                <button
-                    type="submit"
-                    disabled={saving}
-                    className="mt-5 flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
-                >
+                <button type="submit" disabled={saving} className={`mt-5 ${btn.primary}`}>
                     {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
                     Assign
                 </button>
             </form>
 
             {/* -- current assignments, read from either end -------------- */}
-            <h2 className="mt-8 text-sm font-semibold text-slate-700">Current assignments</h2>
+            <h2 className={`mt-8 ${sectionTitle}`}>Current assignments</h2>
 
-            <div className="mt-3 border-b border-slate-200">
-                <nav className="-mb-px flex gap-4 overflow-x-auto sm:gap-6">
+            <div className={`mt-3 ${tabBar}`}>
+                <nav className={tabNav}>
                     {VIEWS.map((v) => (
                         <button
                             key={v.key}
                             type="button"
                             onClick={() => setView(v.key)}
-                            className={[
-                                'flex shrink-0 items-center gap-2 border-b-2 px-1 pb-3 text-sm transition-colors',
-                                view === v.key
-                                    ? 'border-brand-600 font-medium text-brand-700'
-                                    : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700',
-                            ].join(' ')}
+                            className={`${tabItem} ${view === v.key ? tabActive : tabIdle}`}
                         >
                             <v.icon className="h-4 w-4" />
                             {v.label}
@@ -207,7 +201,7 @@ const Assignments = () => {
                                     <span className="flex items-center gap-2">
                                         {assignment
                                             ? assignment.recruiter_name
-                                            : <span className="text-amber-600">Unassigned</span>}
+                                            : <span className="text-warning-700">Unassigned</span>}
                                         <button
                                             type="button"
                                             onClick={() => setPicker({
@@ -217,7 +211,7 @@ const Assignments = () => {
                                             })}
                                             title={`Change ${consultant.name}'s recruiter`}
                                             aria-label={`Change ${consultant.name}'s recruiter`}
-                                            className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-brand-600"
+                                            className={iconBtn}
                                         >
                                             <Pencil className="h-3.5 w-3.5" />
                                         </button>
@@ -261,7 +255,7 @@ const Assignments = () => {
                                                         <span
                                                             key={a.id}
                                                             title={'Since ' + a.effective_from}
-                                                            className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
+                                                            className={`${badge} ${TONE.neutral}`}
                                                         >
                                                             {a.consultant_name}
                                                         </span>
@@ -278,19 +272,14 @@ const Assignments = () => {
                                             })}
                                             title={`Change ${recruiter.name}'s consultants`}
                                             aria-label={`Change ${recruiter.name}'s consultants`}
-                                            className="shrink-0 rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-brand-600"
+                                            className={`shrink-0 ${iconBtn}`}
                                         >
                                             <Pencil className="h-3.5 w-3.5" />
                                         </button>
                                     </div>
                                 </td>
                                 <td className="px-4 py-3 align-top">
-                                    <span className={[
-                                        'rounded-full px-2 py-0.5 text-xs font-medium',
-                                        items.length === 0
-                                            ? 'bg-slate-100 text-slate-500'
-                                            : 'bg-brand-50 text-brand-700',
-                                    ].join(' ')}>
+                                    <span className={`${countPill} ${items.length === 0 ? TONE.neutral : TONE.brand}`}>
                                         {items.length}
                                     </span>
                                 </td>
@@ -302,7 +291,7 @@ const Assignments = () => {
 
             {history.length > 0 && (
                 <>
-                    <h2 className="mt-8 text-sm font-semibold text-slate-700">History</h2>
+                    <h2 className={`mt-8 ${sectionTitle}`}>History</h2>
                     <TableShell className="mt-3" minWidth={640}>
                             <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                                 <tr>

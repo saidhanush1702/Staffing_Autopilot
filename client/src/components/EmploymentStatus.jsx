@@ -1,4 +1,7 @@
-import { CheckCircle2, PauseCircle, XOctagon } from 'lucide-react';
+import { CheckCircle2, PauseCircle, XOctagon, CircleDashed } from 'lucide-react';
+import Badge from './ui/Badge.jsx';
+import { STATUS_TONE } from '../design/tokens.js';
+import { useLookups } from '../context/LookupContext.jsx';
 
 /**
  * Employment state badge.
@@ -6,25 +9,23 @@ import { CheckCircle2, PauseCircle, XOctagon } from 'lucide-react';
  *   ACTIVE      normal
  *   SUSPENDED   access removed, still an employee — REVERSIBLE
  *   TERMINATED  no longer an employee — PERMANENT
+ *
+ * The LABEL comes from `lkp_user_statuses`, which migration 015 aligned with
+ * the CHECK constraint on `users.employment_status`. Only the icon and the
+ * tone are decided here — those are design choices and have no business in
+ * the database.
+ *
+ * Adding a fourth state is therefore a seed entry plus one line in each map
+ * below, and no screen changes at all.
  */
-export const STATUS_META = {
-    ACTIVE: {
-        label: 'Active', icon: CheckCircle2,
-        cls: 'bg-emerald-50 text-emerald-700',
-    },
-    SUSPENDED: {
-        label: 'Suspended', icon: PauseCircle,
-        cls: 'bg-amber-50 text-amber-700',
-    },
-    TERMINATED: {
-        label: 'Terminated', icon: XOctagon,
-        cls: 'bg-red-50 text-red-700',
-    },
+const STATUS_ICON = {
+    ACTIVE: CheckCircle2,
+    SUSPENDED: PauseCircle,
+    TERMINATED: XOctagon,
 };
 
 const EmploymentStatus = ({ status, since, reason }) => {
-    const meta = STATUS_META[status] ?? STATUS_META.ACTIVE;
-    const Icon = meta.icon;
+    const { statusLabel } = useLookups();
 
     const title = [
         since && `Since ${new Date(since).toLocaleDateString()}`,
@@ -32,12 +33,13 @@ const EmploymentStatus = ({ status, since, reason }) => {
     ].filter(Boolean).join(' — ') || undefined;
 
     return (
-        <span
+        <Badge
+            tone={STATUS_TONE[status] ?? 'neutral'}
+            icon={STATUS_ICON[status] ?? CircleDashed}
             title={title}
-            className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${meta.cls}`}
         >
-            <Icon className="h-3.5 w-3.5" />{meta.label}
-        </span>
+            {statusLabel(status)}
+        </Badge>
     );
 };
 

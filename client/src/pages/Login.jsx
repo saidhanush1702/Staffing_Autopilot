@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Loader2, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 import { errorMessage } from '../api/axios.js';
+import { inputLarge, btn, requiredMark, TONE_ALERT } from '../design/tokens.js';
 
 /** Where each role lands after signing in. */
 export const HOME_FOR_ROLE = {
@@ -41,10 +42,6 @@ const Login = () => {
         }
     };
 
-    const field = 'w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm '
-        + 'text-slate-900 placeholder:text-slate-400 outline-none transition-colors '
-        + 'focus:border-brand-500 focus:ring-2 focus:ring-brand-100';
-
     return (
         <div className="min-h-screen w-full bg-white">
             {/* Full-bleed: no card, no surrounding page gutter — the two columns
@@ -72,7 +69,7 @@ const Login = () => {
                             {error && (
                                 <div
                                     role="alert"
-                                    className="mb-5 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700"
+                                    className={`mb-5 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}
                                 >
                                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                                     <span>{error}</span>
@@ -81,7 +78,7 @@ const Login = () => {
 
                             <label className="block">
                                 <span className="text-sm text-slate-700">
-                                    E-mail <span className="text-red-500">*</span>
+                                    E-mail <span className={requiredMark}>*</span>
                                 </span>
                                 <input
                                     type="email"
@@ -89,7 +86,7 @@ const Login = () => {
                                     autoComplete="username"
                                     value={email}
                                     onChange={(e) => setEmail(e.target.value)}
-                                    className={`mt-1.5 ${field}`}
+                                    className={`mt-1.5 ${inputLarge}`}
                                     placeholder="Type your Email"
                                 />
                             </label>
@@ -97,7 +94,7 @@ const Login = () => {
                             <div className="mt-5">
                                 <div className="flex items-baseline justify-between gap-3">
                                     <label htmlFor="password" className="text-sm text-slate-700">
-                                        Password <span className="text-red-500">*</span>
+                                        Password <span className={requiredMark}>*</span>
                                     </label>
                                     {/* Wired up in a later phase — rendered now so the
                                         layout matches the agreed design. */}
@@ -122,7 +119,7 @@ const Login = () => {
                                         autoComplete="current-password"
                                         value={password}
                                         onChange={(e) => setPassword(e.target.value)}
-                                        className={`${field} pr-12`}
+                                        className={`${inputLarge} pr-12`}
                                         placeholder="Type your Password"
                                     />
                                     <button
@@ -144,10 +141,7 @@ const Login = () => {
                             <button
                                 type="submit"
                                 disabled={submitting}
-                                className="mt-8 flex w-full items-center justify-center gap-2 rounded-full
-                                           bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white
-                                           transition-colors hover:bg-slate-800
-                                           disabled:cursor-not-allowed disabled:opacity-60"
+                                className={`mt-8 ${btn.pill}`}
                             >
                                 {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
                                 {submitting ? 'Signing in…' : 'Sign in'}

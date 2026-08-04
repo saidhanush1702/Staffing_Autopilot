@@ -4,6 +4,7 @@ import { Plus, Power, Loader2, AlertCircle, X } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
+import { card, cardPad, input, fieldLabel, btn, pageTitle, TONE_ALERT } from '../../design/tokens.js';
 
 const EMPTY_FORM = {
     name: '', slug: '', contactEmail: '', contactPhone: '',
@@ -60,13 +61,12 @@ const Organizations = () => {
     if (error) return <p className="text-sm text-red-600">{error}</p>;
     if (!orgs) return <PageLoader />;
 
-    const input = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100';
 
     return (
         <div>
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className="text-xl font-semibold text-slate-900">Organizations</h1>
+                    <h1 className={pageTitle}>Organizations</h1>
                     <p className="mt-1 text-sm text-slate-500">
                         Each organization is one staffing agency, fully isolated from the others.
                     </p>
@@ -74,7 +74,7 @@ const Organizations = () => {
                 <button
                     type="button"
                     onClick={() => setShowForm((s) => !s)}
-                    className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+                    className={btn.primary}
                 >
                     {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     {showForm ? 'Cancel' : 'New organization'}
@@ -82,9 +82,9 @@ const Organizations = () => {
             </div>
 
             {showForm && (
-                <form onSubmit={handleCreate} className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
+                <form onSubmit={handleCreate} className={`mt-5 ${card} ${cardPad}`}>
                     {formError && (
-                        <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                         </div>
                     )}
@@ -92,11 +92,11 @@ const Organizations = () => {
                     <p className="text-sm font-medium text-slate-700">Organization</p>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                         <label className="block">
-                            <span className="text-sm text-slate-600">Name</span>
+                            <span className={fieldLabel}>Name</span>
                             <input required minLength={2} maxLength={255} value={form.name} onChange={set('name')} className={input} placeholder="Molina Staffing" />
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Slug</span>
+                            <span className={fieldLabel}>Slug</span>
                             <input
                                 required minLength={2} maxLength={60}
                                 pattern="[a-z0-9-]+"
@@ -115,11 +115,11 @@ const Organizations = () => {
                             </span>
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Contact email</span>
+                            <span className={fieldLabel}>Contact email</span>
                             <input type="email" value={form.contactEmail} onChange={set('contactEmail')} className={input} />
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Contact phone</span>
+                            <span className={fieldLabel}>Contact phone</span>
                             <input
                                 inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
                                 title="Exactly 10 digits, no spaces or symbols."
@@ -136,18 +136,18 @@ const Organizations = () => {
                     <p className="mt-6 text-sm font-medium text-slate-700">First organization admin</p>
                     <div className="mt-3 grid gap-4 sm:grid-cols-3">
                         <label className="block">
-                            <span className="text-sm text-slate-600">Name</span>
+                            <span className={fieldLabel}>Name</span>
                             <input required minLength={2} maxLength={255} value={form.adminName} onChange={set('adminName')} className={input} />
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Email</span>
+                            <span className={fieldLabel}>Email</span>
                             <input required type="email" maxLength={255} value={form.adminEmail} onChange={set('adminEmail')} className={input} />
                             <span className="mt-1 block text-xs text-slate-400">
                                 Must not already exist on any organization.
                             </span>
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Password</span>
+                            <span className={fieldLabel}>Password</span>
                             <input required type="text" minLength={8} value={form.adminPassword} onChange={set('adminPassword')} className={input} placeholder="min 8 characters" />
                         </label>
                     </div>
@@ -155,7 +155,7 @@ const Organizations = () => {
                     <button
                         type="submit"
                         disabled={saving}
-                        className="mt-6 flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                        className={`mt-6 ${btn.primary}`}
                     >
                         {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                         Create organization

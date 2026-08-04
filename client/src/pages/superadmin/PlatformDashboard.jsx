@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { Building2, Users, UserCheck, Briefcase } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import { card, cardPad } from '../../design/tokens.js';
 
 const StatCard = ({ icon: Icon, label, value }) => (
-    <div className="rounded-xl border border-slate-200 bg-white p-5">
+    <div className={`${card} ${cardPad}`}>
         <div className="flex items-center gap-3">
             <span className="rounded-lg bg-brand-50 p-2">
                 <Icon className="h-5 w-5 text-brand-600" />

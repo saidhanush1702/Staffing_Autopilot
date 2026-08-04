@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { FileText, Download, Maximize2, X, AlertCircle } from 'lucide-react';
+import { FileText, Download, Maximize2, AlertCircle } from 'lucide-react';
+import Modal from './ui/Modal.jsx';
+import { card, btnSm, TONE_TEXT } from '../design/tokens.js';
 
 const API = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:5001';
 
@@ -31,7 +33,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
 
     return (
         <>
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <div className={`overflow-hidden ${card}`}>
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
                     <div className="flex min-w-0 items-center gap-2">
                         <FileText className="h-4 w-4 shrink-0 text-slate-400" />
@@ -49,15 +51,12 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
                             <button
                                 type="button"
                                 onClick={() => setExpanded(true)}
-                                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-white"
+                                className={btnSm.secondary}
                             >
                                 <Maximize2 className="h-3.5 w-3.5" /> Full screen
                             </button>
                         )}
-                        <a
-                            href={dl}
-                            className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-white"
-                        >
+                        <a href={dl} className={btnSm.secondary}>
                             <Download className="h-3.5 w-3.5" /> Download
                         </a>
                     </div>
@@ -71,7 +70,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
                     />
                 ) : (
                     <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
-                        <AlertCircle className="h-7 w-7 text-amber-500" />
+                        <AlertCircle className={`h-7 w-7 ${TONE_TEXT.warning}`} />
                         <p className="text-sm text-slate-600">
                             Word documents cannot be previewed in the browser.
                         </p>
@@ -83,23 +82,13 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
             </div>
 
             {expanded && (
-                <div className="fixed inset-0 z-50 flex flex-col bg-slate-900/80 p-4">
-                    <div className="mb-2 flex items-center justify-between">
-                        <p className="text-sm font-medium text-white">{fileName}</p>
-                        <button
-                            type="button"
-                            onClick={() => setExpanded(false)}
-                            className="rounded-lg bg-white/10 p-2 text-white hover:bg-white/20"
-                        >
-                            <X className="h-4 w-4" />
-                        </button>
-                    </div>
+                <Modal variant="viewer" title={fileName} onClose={() => setExpanded(false)}>
                     <iframe
                         src={src}
                         title={`Resume full screen — ${fileName}`}
                         className="flex-1 rounded-lg border-0 bg-white"
                     />
-                </div>
+                </Modal>
             )}
         </>
     );

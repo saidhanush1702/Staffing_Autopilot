@@ -11,25 +11,31 @@ import TableShell from '../../components/TableShell.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import LifecycleActions from '../../components/LifecycleActions.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
+import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
+import { RoleBadge } from '../../components/ui/Badge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useLookups } from '../../context/LookupContext.jsx';
+import {
+    card, cardPad, input, fieldLabel, fieldHint, btn, countPill, TONE, TONE_ALERT,
+    pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
+} from '../../design/tokens.js';
 
 const EMPTY = { name: '', email: '', phone: '', role: 'CONSULTANT', password: '' };
 
-/** One tab per role. Order follows the hierarchy. */
-const TABS = [
-    { key: 'ORG_ADMIN', label: 'Org Admins' },
-    { key: 'RECRUITER', label: 'Recruiters' },
-    { key: 'CONSULTANT', label: 'Consultants' },
-];
+/**
+ * Which roles get a tab, in hierarchy order. The KEYS are the values the
+ * database stores, so they live in code; the visible text comes from
+ * `lkp_roles` at render time. Adding a role means seeding it, not editing
+ * three label maps.
+ */
+const TAB_ROLES = ['ORG_ADMIN', 'RECRUITER', 'CONSULTANT'];
 
-const ROLE_BADGE = {
-    ORG_ADMIN: 'bg-role-orgadmin/10 text-role-orgadmin',
-    RECRUITER: 'bg-role-recruiter/10 text-role-recruiter',
-    CONSULTANT: 'bg-role-consultant/10 text-role-consultant',
-};
+/** Roles an ORG_ADMIN may create here — never another ORG_ADMIN. */
+const CREATABLE_ROLES = ['CONSULTANT', 'RECRUITER'];
 
 const Users = () => {
     const { user } = useAuth();
+    const { roleLabel } = useLookups();
     const [users, setUsers] = useState(null);
     const [page, setPage] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
@@ -115,28 +121,26 @@ const Users = () => {
     if (error) return <p className="text-sm text-red-600">{error}</p>;
     if (!users) return <PageLoader />;
 
-    const input = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100';
-
     // Counts cover the whole organisation, not just the fetched page.
     const countFor = (role) =>
         (showAll ? counts[role]?.total : counts[role]?.active) ?? 0;
     const visible = users;   // already filtered by role on the server
-    const activeLabel = TABS.find((t) => t.key === activeTab)?.label.toLowerCase();
+    const activeLabel = roleLabel(activeTab).toLowerCase();
 
     return (
         <div>
             {/* ── heading + add button ───────────────────────────── */}
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className="text-xl font-semibold text-slate-900">Users</h1>
-                    <p className="mt-1 text-sm text-slate-500">
+                    <h1 className={pageTitle}>Users</h1>
+                    <p className={pageSubtitle}>
                         Everyone in this organization, grouped by role.
                     </p>
                 </div>
                 <button
                     type="button"
                     onClick={() => (showForm ? setShowForm(false) : openForm())}
-                    className="flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+                    className={`shrink-0 ${btn.primary}`}
                 >
                     {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
                     {showForm ? 'Cancel' : 'Add user'}
@@ -145,15 +149,15 @@ const Users = () => {
 
             {/* ── add user form ──────────────────────────────────── */}
             {showForm && (
-                <form onSubmit={handleCreate} className="mt-5 rounded-xl border border-slate-200 bg-white p-5">
+                <form onSubmit={handleCreate} className={`mt-5 ${card} ${cardPad}`}>
                     {formError && (
-                        <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                         </div>
                     )}
                     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <label className="block">
-                            <span className="text-sm text-slate-600">Name</span>
+                            <span className={fieldLabel}>Name</span>
                             <input
                                 required minLength={2} maxLength={255}
                                 pattern="[A-Za-z][A-Za-z .'\-]*"
@@ -162,18 +166,18 @@ const Users = () => {
                             />
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Email</span>
+                            <span className={fieldLabel}>Email</span>
                             <input
                                 required type="email" maxLength={255}
                                 title="Must be unique across the whole platform."
                                 value={form.email} onChange={set('email')} className={input}
                             />
-                            <span className="mt-1 block text-xs text-slate-400">
+                            <span className={`block ${fieldHint}`}>
                                 Used to sign in — must not already exist on any organization.
                             </span>
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Phone</span>
+                            <span className={fieldLabel}>Phone</span>
                             {/* Mirrors PROFILE_FIELDS.phone on the server. */}
                             <input
                                 inputMode="numeric" maxLength={10} pattern="[0-9]{10}"
@@ -187,14 +191,17 @@ const Users = () => {
                             />
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Role</span>
+                            <span className={fieldLabel}>Role</span>
+                            {/* Options come from lkp_roles — the label is never
+                                typed here, only the set of roles allowed. */}
                             <select value={form.role} onChange={set('role')} className={input}>
-                                <option value="CONSULTANT">Consultant</option>
-                                <option value="RECRUITER">Recruiter</option>
+                                {CREATABLE_ROLES.map((r) => (
+                                    <option key={r} value={r}>{roleLabel(r)}</option>
+                                ))}
                             </select>
                         </label>
                         <label className="block">
-                            <span className="text-sm text-slate-600">Password</span>
+                            <span className={fieldLabel}>Password</span>
                             <input
                                 required type="text" minLength={8} maxLength={200}
                                 title="At least 8 characters."
@@ -203,11 +210,7 @@ const Users = () => {
                             />
                         </label>
                     </div>
-                    <button
-                        type="submit"
-                        disabled={saving}
-                        className="mt-5 flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
-                    >
+                    <button type="submit" disabled={saving} className={`mt-5 ${btn.primary}`}>
                         {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                         Create user
                     </button>
@@ -215,29 +218,21 @@ const Users = () => {
             )}
 
             {/* ── role tabs ──────────────────────────────────────── */}
-            <div className="mt-6 border-b border-slate-200">
-                <nav className="-mb-px flex gap-4 overflow-x-auto sm:gap-6" aria-label="User roles">
-                    {TABS.map((tab) => {
-                        const isActive = activeTab === tab.key;
+            <div className={`mt-6 ${tabBar}`}>
+                <nav className={tabNav} aria-label="User roles">
+                    {TAB_ROLES.map((roleKey) => {
+                        const isActive = activeTab === roleKey;
                         return (
                             <button
-                                key={tab.key}
+                                key={roleKey}
                                 type="button"
-                                onClick={() => setActiveTab(tab.key)}
+                                onClick={() => setActiveTab(roleKey)}
                                 aria-current={isActive ? 'page' : undefined}
-                                className={[
-                                    'flex shrink-0 items-center gap-2 border-b-2 px-1 pb-3 text-sm transition-colors',
-                                    isActive
-                                        ? 'border-brand-600 font-medium text-brand-700'
-                                        : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700',
-                                ].join(' ')}
+                                className={`${tabItem} ${isActive ? tabActive : tabIdle}`}
                             >
-                                {tab.label}
-                                <span className={[
-                                    'rounded-full px-2 py-0.5 text-xs',
-                                    isActive ? 'bg-brand-50 text-brand-700' : 'bg-slate-100 text-slate-500',
-                                ].join(' ')}>
-                                    {countFor(tab.key)}
+                                {roleLabel(roleKey)}
+                                <span className={`${countPill} ${isActive ? TONE.brand : TONE.neutral}`}>
+                                    {countFor(roleKey)}
                                 </span>
                             </button>
                         );
@@ -310,9 +305,7 @@ const Users = () => {
                                     )}
                                 </td>
                                 <td className="px-4 py-3">
-                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${ROLE_BADGE[u.role] ?? 'bg-slate-100 text-slate-600'}`}>
-                                        {u.role.replace('_', ' ')}
-                                    </span>
+                                    <RoleBadge role={u.role} />
                                 </td>
                                 <td className="px-4 py-3">
                                     <EmploymentStatus
@@ -331,7 +324,7 @@ const Users = () => {
                     </tbody>
             </TableShell>
 
-            <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <div className={`mt-4 flex items-start gap-2 rounded-lg border border-warning-200 p-3 text-xs ${TONE_ALERT.warning}`}>
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                     Passwords are stored with reversible encryption, so they can be shown here.
@@ -344,49 +337,41 @@ const Users = () => {
 
             {/* ── reset password dialog ──────────────────────────── */}
             {resetTarget && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-                    <form onSubmit={handleReset} className="w-full max-w-sm rounded-xl bg-white p-6 shadow-xl">
-                        <h2 className="text-base font-semibold text-slate-900">Reset password</h2>
-                        <p className="mt-1 text-sm text-slate-500">
-                            Set a new password for <strong>{resetTarget.name}</strong> ({resetTarget.email}).
-                        </p>
-
-                        {resetError && (
-                            <div className="mt-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{resetError}
-                            </div>
-                        )}
-
-                        <label className="mt-4 block">
-                            <span className="text-sm text-slate-600">New password</span>
-                            <input
-                                required type="text" minLength={8} autoFocus
-                                value={newPassword}
-                                onChange={(e) => setNewPassword(e.target.value)}
-                                className={input}
-                                placeholder="min 8 characters"
-                            />
-                        </label>
-
-                        <div className="mt-6 flex justify-end gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setResetTarget(null)}
-                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="submit"
-                                disabled={resetting}
-                                className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
-                            >
-                                {resetting && <Loader2 className="h-4 w-4 animate-spin" />}
-                                Reset password
-                            </button>
+                <Modal
+                    size="sm"
+                    icon={Lock}
+                    tone="brand"
+                    title="Reset password"
+                    subtitle={`Set a new password for ${resetTarget.name} (${resetTarget.email}).`}
+                    as="form"
+                    onSubmit={handleReset}
+                    onClose={() => setResetTarget(null)}
+                    footer={(
+                        <ModalActions
+                            onCancel={() => setResetTarget(null)}
+                            confirmType="submit"
+                            confirmLabel="Reset password"
+                            busy={resetting}
+                        />
+                    )}
+                >
+                    {resetError && (
+                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{resetError}
                         </div>
-                    </form>
-                </div>
+                    )}
+
+                    <label className="block">
+                        <span className={fieldLabel}>New password</span>
+                        <input
+                            required type="text" minLength={8} autoFocus
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            className={input}
+                            placeholder="min 8 characters"
+                        />
+                    </label>
+                </Modal>
             )}
         </div>
     );

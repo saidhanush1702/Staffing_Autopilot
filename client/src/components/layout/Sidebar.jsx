@@ -5,6 +5,7 @@ import {
     ShieldCheck, ClipboardCheck, X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { RoleBadge } from '../ui/Badge.jsx';
 import api from '../../api/axios.js';
 
 /**
@@ -37,13 +38,6 @@ const NAV_ITEMS = [
         roles: ['CONSULTANT'], badge: 'incomplete',
     },
 ];
-
-const ROLE_STYLES = {
-    SUPER_ADMIN: 'bg-role-super/10 text-role-super',
-    ORG_ADMIN: 'bg-role-orgadmin/10 text-role-orgadmin',
-    RECRUITER: 'bg-role-recruiter/10 text-role-recruiter',
-    CONSULTANT: 'bg-role-consultant/10 text-role-consultant',
-};
 
 const POLL_MS = 30_000;
 
@@ -180,9 +174,7 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
             <div className="border-t border-slate-200 p-4">
                 <p className="truncate text-sm font-medium text-slate-900">{user.name}</p>
                 <p className="truncate text-xs text-slate-500">{user.email}</p>
-                <span className={`mt-2 inline-block rounded px-2 py-0.5 text-[11px] font-medium ${ROLE_STYLES[user.role]}`}>
-                    {user.role.replace('_', ' ')}
-                </span>
+                <RoleBadge role={user.role} className="mt-2" />
             </div>
             </aside>
         </>

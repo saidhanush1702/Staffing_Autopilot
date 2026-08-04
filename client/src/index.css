@@ -9,6 +9,40 @@
     --color-brand-600: #2563eb;
     --color-brand-700: #1d4ed8;
 
+    /* ── Semantic tones ───────────────────────────────────────────────
+       Five meanings, not fifty colours. Every badge, alert, banner and
+       button in the app resolves to one of these, so "what colour is a
+       warning?" has exactly one answer. Values match the Tailwind palette
+       the app already used by hand (emerald / amber / red / sky), so this
+       is a rename of existing intent rather than a visual redesign.
+
+       Use these, never a raw palette colour, for anything that carries
+       MEANING. Raw slate stays fine for structure — borders, page
+       chrome, muted text. */
+    --color-success-50:  #ecfdf5;
+    --color-success-100: #d1fae5;
+    --color-success-200: #a7f3d0;
+    --color-success-600: #059669;
+    --color-success-700: #047857;
+
+    --color-warning-50:  #fffbeb;
+    --color-warning-100: #fef3c7;
+    --color-warning-200: #fde68a;
+    --color-warning-600: #d97706;
+    --color-warning-700: #b45309;
+
+    --color-danger-50:   #fef2f2;
+    --color-danger-100:  #fee2e2;
+    --color-danger-200:  #fecaca;
+    --color-danger-600:  #dc2626;
+    --color-danger-700:  #b91c1c;
+
+    --color-info-50:     #f0f9ff;
+    --color-info-100:    #e0f2fe;
+    --color-info-200:    #bae6fd;
+    --color-info-600:    #0284c7;
+    --color-info-700:    #0369a1;
+
     /* Role accent colours — used by badges and the sidebar */
     --color-role-super:      #a855f7;
     --color-role-orgadmin:   #2563eb;

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Loader2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
+import { card } from '../../design/tokens.js';
 
 /**
  * Collapsible audit panel, dropped at the bottom of every module page:
@@ -60,7 +61,7 @@ const AuditLogPanel = ({ module }) => {
     };
 
     return (
-        <div className="mt-8 overflow-hidden rounded-xl border border-slate-200 bg-white">
+        <div className={`mt-8 overflow-hidden ${card}`}>
             <button
                 type="button"
                 onClick={toggle}

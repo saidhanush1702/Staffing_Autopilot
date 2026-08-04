@@ -7,15 +7,12 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
-
-const ROLE_BADGE = {
-    ORG_ADMIN: 'bg-role-orgadmin/10 text-role-orgadmin',
-    RECRUITER: 'bg-role-recruiter/10 text-role-recruiter',
-    CONSULTANT: 'bg-role-consultant/10 text-role-consultant',
-};
+import EmploymentStatus from '../../components/EmploymentStatus.jsx';
+import { RoleBadge } from '../../components/ui/Badge.jsx';
+import { badge, card, cardPad, TONE } from '../../design/tokens.js';
 
 const StatCard = ({ icon: Icon, label, value, sub }) => (
-    <div className="rounded-xl border border-slate-200 bg-white p-5">
+    <div className={`${card} ${cardPad}`}>
         <div className="flex items-center gap-3">
             <span className="rounded-lg bg-brand-50 p-2">
                 <Icon className="h-5 w-5 text-brand-600" />
@@ -67,7 +64,7 @@ const OrganizationDetail = () => {
                     <h1 className="text-xl font-semibold text-slate-900">{org.name}</h1>
                     <p className="mt-1 text-sm text-slate-500">/{org.slug}</p>
                 </div>
-                <span className={`rounded px-2.5 py-1 text-xs font-medium ${org.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                <span className={`${badge} ${org.is_active ? TONE.success : TONE.danger}`}>
                     {org.is_active ? 'Active' : 'Disabled'}
                 </span>
             </div>
@@ -97,7 +94,7 @@ const OrganizationDetail = () => {
             </div>
 
             {/* ── org details ──────────────────────────────────── */}
-            <div className="mt-6 rounded-xl border border-slate-200 bg-white p-5">
+            <div className={`mt-6 ${card} ${cardPad}`}>
                 <p className="text-sm font-medium text-slate-700">Organization details</p>
                 <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                     {[
@@ -142,9 +139,7 @@ const OrganizationDetail = () => {
                                 <td className="px-4 py-3 font-medium text-slate-900">{u.name}</td>
                                 <td className="px-4 py-3 text-slate-500">{u.email}</td>
                                 <td className="px-4 py-3">
-                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${ROLE_BADGE[u.role] ?? 'bg-slate-100 text-slate-600'}`}>
-                                        {u.role.replace('_', ' ')}
-                                    </span>
+                                    <RoleBadge role={u.role} />
                                 </td>
                                 <td className="px-4 py-3">
                                     <EmploymentStatus

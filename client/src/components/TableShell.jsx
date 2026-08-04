@@ -1,3 +1,5 @@
+import { card } from '../design/tokens.js';
+
 /**
  * Card wrapper + horizontal scroll container for a data table.
  *
@@ -12,7 +14,7 @@
  * would silently produce no CSS at all.
  */
 const TableShell = ({ minWidth = 720, children, footer, className = '' }) => (
-    <div className={`overflow-hidden rounded-xl border border-slate-200 bg-white ${className}`}>
+    <div className={`overflow-hidden ${card} ${className}`}>
         <div className="overflow-x-auto">
             <table className="w-full text-sm" style={{ minWidth }}>
                 {children}

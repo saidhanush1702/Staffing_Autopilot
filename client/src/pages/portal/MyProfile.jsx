@@ -6,6 +6,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import ProfileField from '../../components/ProfileField.jsx';
+import { TONE_ALERT, card, cardPad, cardPadRoomy } from '../../design/tokens.js';
 
 /**
  * Consultant self-service profile.
@@ -200,9 +201,9 @@ const MyProfile = () => {
             })()}
 
             {/* ── editable form ─────────────────────────────────── */}
-            <form onSubmit={submit} className="mt-6 rounded-xl border border-slate-200 bg-white p-6">
+            <form onSubmit={submit} className={`mt-6 ${card} ${cardPadRoomy}`}>
                 {formError && (
-                    <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                    <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
                         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                     </div>
                 )}
@@ -242,12 +243,12 @@ const MyProfile = () => {
 
             {/* ── read-only info ────────────────────────────────── */}
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <div className="rounded-xl border border-slate-200 bg-white p-5">
+                <div className={`${card} ${cardPad}`}>
                     <p className="text-sm font-medium text-slate-700">My recruiter</p>
                     <p className="mt-2 text-sm text-slate-800">{recruiter?.name ?? 'Not assigned yet'}</p>
                     <p className="text-xs text-slate-500">{recruiter?.email ?? ''}</p>
                 </div>
-                <div className="rounded-xl border border-slate-200 bg-white p-5">
+                <div className={`${card} ${cardPad}`}>
                     <p className="text-sm font-medium text-slate-700">Set by your agency</p>
                     <dl className="mt-2 space-y-1 text-sm">
                         <div className="flex justify-between">
