@@ -203,19 +203,28 @@ export const downloadResume = async (req, res, next) => {
             return res.status(410).json({ error: 'The stored file is missing from disk.' });
         }
 
+        // ?disposition=inline renders in an <iframe> preview instead of
+        // triggering a download. Same authorisation either way — only the
+        // response headers and the audit VERB differ.
+        const inline = req.query.disposition === 'inline';
+
+        // M-3. Both are audited — a preview is still someone reading a CV, and
+        // silence would be a worse answer than noise. But they are logged as
+        // DIFFERENT actions, because an iframe re-renders on every page open
+        // and every full-screen toggle. Logging both as "Sent Resume" buried
+        // real downloads under preview traffic and made the one event anybody
+        // actually audits for impossible to pick out.
         logAction({
-            orgId, module: 'resumes', action: 'Sent Resume',
+            orgId, module: 'resumes',
+            action: inline ? 'Viewed Resume' : 'Sent Resume',
             entityType: 'ResumeArtifact', entityId: artifact.id,
             entityName: artifact.original_name,
             performedBy: req.user.id, performedByRole: req.user.role,
-            description: `Downloaded resume "${artifact.original_name}" of ${artifact.consultant_name}`,
+            description: inline
+                ? `Previewed resume "${artifact.original_name}" of ${artifact.consultant_name}`
+                : `Downloaded resume "${artifact.original_name}" of ${artifact.consultant_name}`,
             ipAddress: req.ip,
         }).catch(() => {});
-
-        // ?disposition=inline renders in an <iframe> preview instead of
-        // triggering a download. Same authorisation, same audit row — only the
-        // response headers differ.
-        const inline = req.query.disposition === 'inline';
 
         res.setHeader('Content-Type', artifact.mime_type);
         res.setHeader('Content-Disposition',

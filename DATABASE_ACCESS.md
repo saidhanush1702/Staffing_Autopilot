@@ -1,6 +1,6 @@
 # Database Access — Credentials & Roles
 
-Local development reference for the Staffing Autopilot PostgreSQL database.
+Local development reference for the SmartApply PostgreSQL database.
 
 > ⚠️ **Local development only.** These are throwaway development passwords. Never use them in staging or production, and never commit real credentials to this file.
 

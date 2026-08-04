@@ -6,8 +6,8 @@
 |---|---|---|
 | **1** | Multi-tenant RBAC — 4 roles, 3 portals, audit log | ✅ Complete |
 | **2** | Consultant profiles + self-service edit & approval workflow | ✅ Complete |
-| 3 | Search criteria | ⬜ Next |
-| 4 | Answer bank + approvals | ⬜ Planned |
+| **3** | Search criteria — versioned, recruiter-owned | ✅ Complete |
+| 4 | Answer bank + approvals | ⬜ Next — see `PHASE_4_PROPOSAL.md` |
 | 5 | Job queue + application records | ⬜ Planned |
 | 6 | Contacts | ⬜ Planned |
 
@@ -255,8 +255,15 @@ Mitigations: reveal is ORG_ADMIN-only, org-scoped, one user per request, never i
 | 19 | consultant1 | `GET /api/super-admin/stats` | **403** |
 | 20 | admin@molina | `GET /api/super-admin/organizations` | **403** |
 | 21 | superadmin | `GET /api/management/users` | **403** |
-| 22 | superadmin | `GET /api/lookups` | **403** |
+| 22 | superadmin | `GET /api/lookups` | ~~403~~ → **200** ⚠️ |
 | 23 | no cookie | `GET /api/auth/me` | **401** |
+
+> ⚠️ **Test 22 was wrong and has been corrected.** `/api/lookups` carries only
+> `verifyToken`, not `isTenantUser`, so a SUPER_ADMIN gets **200** — verified against
+> a running server. That is the intended behaviour: lookups are global reference
+> data, and the super admin's own screens need role labels. The *claim* was the
+> error, not the guard. Same class of false assurance as the A-1 claim already
+> corrected in Phase 2.1.
 
 ### Layer 2 — tenant isolation (critical)
 | # | As | Do | Expect |
@@ -699,12 +706,201 @@ ACTIVE → SUSPENDED → TERMINATED.
 ---
 ---
 
+# PHASE 3 — Search Criteria ✅
+
+## The problem solved
+
+After Phase 2 the system knew **who** a consultant is and **what they look like on
+paper**. It did not know **what job they are actually looking for**. Phase 3 is that
+missing record — and it is the input every later phase consumes.
+
+Proposed in `PHASE_3_PROPOSAL.md` and built as proposed.
+
+## The workflow
+
+```
+ORG_ADMIN creates consultant        → criteria row created lazily on first touch,
+        │                             PAUSED and empty
+        ▼
+RECRUITER opens Consultant Detail   → new "Search Criteria" tab
+        │
+Fills titles, keywords, locations,
+work types, min pay, exclusions
+        │
+Clicks "Save criteria"              → creates VERSION 1, an immutable snapshot
+        │
+Flips "Activate discovery"          → only now is anything in force
+        │
+        ├─→ CONSULTANT sees it READ-ONLY at /portal/criteria (R-23)
+        │
+        └─→ Later edit               → VERSION 2. v1 still readable, diffable,
+                                       restorable. Every save audited.
+```
+
+**No approval step**, unlike Phase 2 — see the decisions table below.
+
+## What was built
+
+### Migrations `016`–`018` — 6 tables
+
+| Migration | Creates |
+|---|---|
+| `016_work_types_lookup.sql` | `lkp_work_types` — CONTRACT, FULL_TIME, PART_TIME, C2C, W2 |
+| `017_search_criteria.sql` | `search_criteria` (mutable parent) + `search_criteria_versions` (append-only) |
+| `018_search_criteria_children.sql` | `search_criteria_terms`, `..._locations`, `..._work_types` |
+
+Two invariants the database enforces, not the controller:
+
+```sql
+CREATE UNIQUE INDEX uq_one_current_version_per_consultant
+    ON search_criteria_versions (consultant_id) WHERE is_current;
+
+CONSTRAINT chk_pay_amount_needs_unit
+    CHECK ((min_pay_amount IS NULL) = (min_pay_unit IS NULL));
+```
+
+Plus location rules mirrored as CHECKs: onsite/hybrid need a city, remote cannot
+carry a radius.
+
+### The criteria shape — `backend/config/criteriaSchema.js`
+
+Same idea as `profileFields.js`: validation, normalisation, the content fingerprint
+and the diff engine all read one definition, so the API, the change detector and the
+client cannot disagree about what a criteria set is.
+
+### Endpoints
+
+```
+GET    /api/management/consultants/:id/criteria                  current version, expanded
+PUT    /api/management/consultants/:id/criteria                  save → NEW version
+POST   /api/management/consultants/:id/criteria/toggle-active    pause / resume
+GET    /api/management/consultants/:id/criteria/versions         history
+GET    /api/management/consultants/:id/criteria/versions/:vid    one version, read-only
+POST   /api/management/consultants/:id/criteria/versions/:vid/restore
+GET    /api/portal/criteria                                      CONSULTANT — own, read-only
+GET    /api/lookups                                              + workTypes
+```
+
+Guarded by `isManagement`, **not** `isOrgAdmin` — P-10 gives recruiters edit rights
+over their own consultants, narrowed by `canAccessConsultant` so an out-of-scope id
+returns **404** rather than confirming it exists.
+
+### Screens
+
+| Route | Role | What changed |
+|---|---|---|
+| `/management/consultants/:id` | ORG_ADMIN + RECRUITER | **Now tabbed.** New Search Criteria tab: editor, live version, history, diff, restore |
+| `/portal/criteria` | CONSULTANT | **New.** Read-only view of what is being searched for |
+| `/management/consultants` | both | New **Criteria** column — Active / Paused / Not set up |
+| Sidebar | CONSULTANT | New "My Search Criteria" entry |
+
+## Permission matrix
+
+| Action | SUPER_ADMIN | ORG_ADMIN | RECRUITER | CONSULTANT |
+|---|:---:|:---:|:---:|:---:|
+| View criteria | ✗ | all in org | **assigned only** | **own, read-only** |
+| Edit criteria | ✗ | ✓ | **✓ assigned** | **✗ never** (R-23) |
+| Pause / resume | ✗ | ✓ | ✓ assigned | ✗ |
+| Restore a version | ✗ | ✓ | ✓ assigned | ✗ |
+| Propose a change | ✗ | ✗ | ✗ | **✗ — no endpoint exists** |
+
+## Design decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Approval workflow | **None** — recruiters write directly | A profile field is a fact the consultant asserts and a reviewer checks. Criteria are a business decision about how to spend the application budget; the consultant is not the author, so there is nothing to approve (R-23). Safety net is versioning + audit, not a gate. |
+| Version storage | **Immutable snapshots**, not a mutable row + change log | "Why did this job match?" is answerable only if the version in force at match time still exists verbatim. Phase 5 queue items will carry a foreign key to it. |
+| Pause | On the **parent**, never forks a version | Pausing is an operational state, not a change to what is being searched for. Forking would fill the history with entries that say nothing. |
+| Empty criteria | Match **nothing**, and sets start PAUSED | A consultant with no criteria must never receive every job on the internet. Fails closed. |
+| Minimum pay | Amount + unit or neither, enforced by CHECK | "60" alone is either an hourly rate or a catastrophic salary expectation. There is no safe default to guess. |
+| Restore | **Copies forward** as a new version | History stays append-only; "we reverted to v2 on Tuesday" stays visible as v5. |
+| Parent row creation | **Lazy**, on first touch | Covers consultants created before Phase 3 with no backfill, and keeps the Phase 2 rule that no read path meets a missing row. Cost: a GET writes — recorded as `ISSUES.md` L-1. |
+| Term de-duplication | Case-insensitive | "React" and "react" are one term to any matcher. |
+| Three list states | `Active` / `Paused` / `Not set up` | "Never configured" is a different problem from "deliberately off". |
+
+## Manual test gate — Phase 3
+
+Automated coverage: **57 assertions, all green**, plus 12 re-verifying the permission
+matrix after the H-2 refactor.
+
+### Editing and versioning
+| # | As | Do | Expect |
+|---|---|---|---|
+| 1 | admin@molina | Consultant → Search Criteria, never configured | Empty, `Not set up`, Activate disabled |
+| 2 | admin@molina | Add titles, keywords, a location → Save | `v1`; editor name, role and timestamp shown |
+| 3 | admin@molina | Edit one title → Save | `v2`; `v1` still readable in full |
+| 4 | admin@molina | Compare v1 ↔ v2 | Only what moved is highlighted |
+| 5 | admin@molina | Reorder job titles → Save | Order persists; it is the priority |
+| 6 | admin@molina | Save with nothing changed | **409** — no identical version minted |
+| 7 | admin@molina | Restore v1 | Becomes `v3`; v2 still in history, pointer not rewound |
+| 8 | admin@molina | Restore what is already live | **409** |
+| 9 | — | Watch `search_criteria_versions` in DBeaver | Row count only ever grows |
+
+### Pay and location validation
+| # | Do | Expect |
+|---|---|---|
+| 10 | Min pay `60`, no unit | **422** — not defaulted |
+| 11 | Unit with no amount | **422** |
+| 12 | Negative amount | **422** |
+| 13 | Onsite location with no city | **422** |
+| 14 | Remote location with a radius | **422** |
+| 15 | Remote with no city at all | **201** — "remote, anywhere" is a real answer |
+
+### Pause semantics
+| # | Do | Expect |
+|---|---|---|
+| 16 | Activate a configured set | `Active` on the list and the tab |
+| 17 | Pause it | `Paused`; **version count unchanged** |
+| 18 | Pause twice | No-op, 200 |
+| 19 | Activate a set with no version | **409** — set it up first |
+
+### Permissions — the negative tests
+| # | As | Do | Expect |
+|---|---|---|---|
+| 20 | recruiter | Assigned consultant's criteria | Full editor |
+| 21 | recruiter | **Un**assigned consultant, by URL | **404** |
+| 22 | recruiter | `PUT` / `toggle-active` on them by hand | **404**, nothing written |
+| 23 | admin@apex | Any Molina consultant id | **404** — cross-tenant |
+| 24 | admin@molina | Another tenant's *version* id | **404** |
+| 25 | superadmin | Any criteria endpoint | **403** |
+| 26 | consultant | `/portal/criteria` | Read-only. No inputs, no save |
+| 27 | consultant | `GET`/`PUT` the management route | **403** |
+| 28 | consultant | Try to read someone else's | No id parameter is accepted at all |
+
+### Lifecycle *(added after `ISSUES.md` H-1/H-2)*
+| # | Do | Expect |
+|---|---|---|
+| 29 | Terminate a consultant with active criteria | Criteria **paused in the same transaction**; response reports `pausedCriteria` |
+| 30 | Try to re-activate them | **409** |
+| 31 | Try to save or restore for them | **409** |
+| 32 | Read their criteria or version history | **200** — reads stay open, the record is kept |
+| 33 | Suspend (not terminate) a consultant | Criteria **left alone** — reversible, still an employee |
+
+### Audit
+| # | Do | Expect |
+|---|---|---|
+| 34 | Save, open Activity log | `Updated Search Criteria` naming the version and what moved |
+| 35 | Pause, then resume | `Paused Search Criteria` / `Resumed Search Criteria` |
+| 36 | As a RECRUITER, look for the panel | **Not rendered** — ORG_ADMIN only |
+
+## Known gaps carried out of Phase 3
+
+| Gap | Where |
+|---|---|
+| Nothing **reads** criteria yet — the consuming engine is Phase 5 | By design, stated in the proposal |
+| The "postings that would have matched" preview was not built | No job postings exist; a fabricated number is worse than none |
+| A GET creates the parent row | `ISSUES.md` **L-1** |
+| Client dirty-check disagrees with server normalisation | `ISSUES.md` **L-2** |
+| Concurrent double-save returns a generic 409 | `ISSUES.md` **L-3** |
+
+---
+---
+
 # Upcoming
 
 | Phase | Scope |
 |---|---|
-| **3** | **Search criteria** — job titles, keywords, locations, work types, min pay, excluded companies, with version history |
-| 4 | Answer bank + approval workflow (two-person rule, salary/work-auth routed to owner) |
+| 4 | Answer bank + approval workflow (two-person rule, salary/work-auth routed to owner) — proposed in `PHASE_4_PROPOSAL.md` |
 | 5 | Job postings, queue items, application records + Q&A |
 | 6 | Contacts, do-not-contact, contact store |
 | later | Two-step verification · forgot-password over SMTP · job discovery engine · resume tailoring · consultant desktop app |

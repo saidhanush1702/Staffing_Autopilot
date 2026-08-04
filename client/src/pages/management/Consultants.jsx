@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     Search, Users as UsersIcon, CheckCircle2, AlertCircle, Clock,
-    FileText, ChevronRight, Eye, EyeOff,
+    FileText, ChevronRight, Eye, EyeOff, Play, Pause,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -10,6 +10,7 @@ import Pagination from '../../components/Pagination.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { badge, TONE } from '../../design/tokens.js';
 
 /**
  * Consultant profiles.
@@ -138,13 +139,14 @@ const Consultants = () => {
                             <th className="px-4 py-3">Resume</th>
                             {!isRecruiter && <th className="px-4 py-3">Recruiter</th>}
                             <th className="px-4 py-3">Profile</th>
+                            <th className="px-4 py-3">Criteria</th>
                             <th className="w-10 px-3 py-3" />
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                         {rows.length === 0 && (
                             <tr>
-                                <td colSpan={7} className="px-4 py-12 text-center">
+                                <td colSpan={8} className="px-4 py-12 text-center">
                                     <UsersIcon className="mx-auto h-8 w-8 text-slate-300" />
                                     <p className="mt-2 text-sm text-slate-500">
                                         {search || filter ? 'No consultants match that.' : 'No consultants yet.'}
@@ -193,19 +195,19 @@ const Consultants = () => {
                                 <td className="px-4 py-3">
                                     <div className="flex flex-wrap items-center gap-1.5">
                                         {c.is_complete ? (
-                                            <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                                            <span className={`${badge} ${TONE.success}`}>
                                                 <CheckCircle2 className="h-3 w-3" /> Complete
                                             </span>
                                         ) : (
                                             <span
                                                 title={`Missing: ${c.missing_fields.join(', ')}`}
-                                                className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700"
+                                                className={`${badge} ${TONE.warning}`}
                                             >
                                                 <AlertCircle className="h-3 w-3" /> {c.missing_fields.length} missing
                                             </span>
                                         )}
                                         {c.has_pending_changes && (
-                                            <span className="inline-flex items-center gap-1 rounded bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-700">
+                                            <span className={`${badge} ${TONE.info}`}>
                                                 <Clock className="h-3 w-3" /> Pending
                                             </span>
                                         )}
@@ -213,6 +215,26 @@ const Consultants = () => {
                                             <EmploymentStatus status={c.employment_status} />
                                         )}
                                     </div>
+                                </td>
+                                {/* Phase 3. Three states, not two: "never set up"
+                                    is a different problem from "deliberately off". */}
+                                <td className="px-4 py-3">
+                                    {!c.criteria_configured ? (
+                                        <span
+                                            title="No search criteria saved yet — nothing is being looked for"
+                                            className={`${badge} ${TONE.neutral}`}
+                                        >
+                                            Not set up
+                                        </span>
+                                    ) : c.criteria_active ? (
+                                        <span className={`${badge} ${TONE.success}`}>
+                                            <Play className="h-3 w-3" /> Active
+                                        </span>
+                                    ) : (
+                                        <span className={`${badge} ${TONE.warning}`}>
+                                            <Pause className="h-3 w-3" /> Paused
+                                        </span>
+                                    )}
                                 </td>
                                 <td className="px-3 py-3 text-slate-400">
                                     <ChevronRight className="h-4 w-4" />

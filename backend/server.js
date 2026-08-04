@@ -1,5 +1,5 @@
 /**
- * Staffing Autopilot — API server.
+ * SmartApply — API server.
  *
  * URL namespaces (Layer 1 enforcement is visible right here in the route table):
  *   /api/auth/*         public (login) or any authenticated user
@@ -42,6 +42,13 @@ import {
     createUserSchema, updateUserSchema, assignSchema, resetPasswordSchema,
     lifecycleSchema, recruiterRosterSchema, consultantRecruiterSchema,
 } from './controllers/managementController.js';
+import {
+    getCriteria, saveCriteria, toggleCriteriaActive,
+    listCriteriaVersions, getCriteriaVersion, restoreCriteriaVersion, getMyCriteria,
+} from './controllers/criteriaController.js';
+import {
+    criteriaSchema, toggleActiveSchema, restoreSchema,
+} from './config/criteriaSchema.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -204,9 +211,34 @@ app.post('/api/management/consultants/:id/resume',
     [verifyToken, isManagement], resumeUpload, uploadResume);
 app.get('/api/resumes/:artifactId/download', [verifyToken], downloadResume);
 
+/* ──────────────── search criteria (Phase 3) ────────────────────── */
+//
+// isManagement, NOT isOrgAdmin: P-10 gives a recruiter edit rights over their
+// own consultants. The narrowing to *their* consultants happens in the
+// controller via canAccessConsultant, which is also what makes an out-of-scope
+// id return 404 instead of leaking that it exists.
+//
+// There is no consultant-facing WRITE route here or anywhere else. R-23 is
+// enforced by the endpoint not existing.
+
+app.get('/api/management/consultants/:id/criteria',
+    [verifyToken, isManagement], getCriteria);
+app.put('/api/management/consultants/:id/criteria',
+    [verifyToken, isManagement, validate(criteriaSchema)], saveCriteria);
+app.post('/api/management/consultants/:id/criteria/toggle-active',
+    [verifyToken, isManagement, validate(toggleActiveSchema)], toggleCriteriaActive);
+
+app.get('/api/management/consultants/:id/criteria/versions',
+    [verifyToken, isManagement], listCriteriaVersions);
+app.get('/api/management/consultants/:id/criteria/versions/:versionId',
+    [verifyToken, isManagement], getCriteriaVersion);
+app.post('/api/management/consultants/:id/criteria/versions/:versionId/restore',
+    [verifyToken, isManagement, validate(restoreSchema)], restoreCriteriaVersion);
+
 /* ─────────────────────── consultant portal ─────────────────────── */
 
 app.get('/api/portal/me', [verifyToken, isConsultant], myProfile);
+app.get('/api/portal/criteria', [verifyToken, isConsultant], getMyCriteria);
 app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
 app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
 app.post('/api/portal/profile/change-request',

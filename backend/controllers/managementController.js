@@ -399,7 +399,9 @@ export const terminateUser = async (req, res, next) => {
             return res.status(409).json({ error: 'This person is already terminated.' });
         }
 
-        const { releasedAssignments, cancelledRequests } = await withTransaction(async (client) => {
+        const {
+            releasedAssignments, cancelledRequests, pausedCriteria,
+        } = await withTransaction(async (client) => {
             await client.query(
                 `UPDATE users
                     SET employment_status = 'TERMINATED',
@@ -443,7 +445,28 @@ export const terminateUser = async (req, res, next) => {
                 [req.user.id, target.id, orgId],
             );
 
-            return { releasedAssignments: released, cancelledRequests: cancelled };
+            // H-1. Search criteria are the input to job discovery. Left active,
+            // Phase 5 would keep finding jobs — and Phase 6 tailoring resumes —
+            // for someone who no longer works here. Same transaction as the
+            // termination, for the same reason the change request is cancelled
+            // in it: the two states must never disagree.
+            //
+            // Deliberately NOT done on suspend. Suspension is reversible and the
+            // person is still an employee; auto-pausing would then need an
+            // auto-resume, and silently resuming discovery on reactivation is a
+            // decision the admin should make, not one to infer.
+            const { rowCount: paused } = await client.query(
+                `UPDATE search_criteria
+                    SET is_active = FALSE, paused_at = now(), paused_by = $1, updated_by = $1
+                  WHERE organization_id = $2 AND consultant_id = $3 AND is_active`,
+                [req.user.id, orgId, target.id],
+            );
+
+            return {
+                releasedAssignments: released,
+                cancelledRequests: cancelled,
+                pausedCriteria: paused,
+            };
         });
 
         logAction({
@@ -453,7 +476,8 @@ export const terminateUser = async (req, res, next) => {
             description: `Terminated ${target.role.toLowerCase()} "${target.name}"`
                 + (req.body.reason ? ` — ${req.body.reason}` : '')
                 + (releasedAssignments ? ` (${releasedAssignments} assignment(s) released)` : '')
-                + (cancelledRequests ? ' (pending profile changes cancelled)' : ''),
+                + (cancelledRequests ? ' (pending profile changes cancelled)' : '')
+                + (pausedCriteria ? ' (job discovery paused)' : ''),
             ipAddress: req.ip,
         }).catch(() => {});
 
@@ -462,6 +486,7 @@ export const terminateUser = async (req, res, next) => {
             employmentStatus: 'TERMINATED',
             releasedAssignments,
             cancelledRequests,
+            pausedCriteria,
         });
     } catch (err) {
         return next(err);

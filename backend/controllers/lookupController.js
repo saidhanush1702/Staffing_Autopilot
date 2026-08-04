@@ -7,11 +7,12 @@ import { query } from '../db.js';
 
 export const getLookups = async (req, res, next) => {
     try {
-        const [genders, userStatuses, workAuth, roles] = await Promise.all([
+        const [genders, userStatuses, workAuth, roles, workTypes] = await Promise.all([
             query('SELECT id, name FROM lkp_genders ORDER BY id'),
             query('SELECT id, name, label FROM lkp_user_statuses ORDER BY id'),
             query('SELECT id, name FROM lkp_work_auth_statuses ORDER BY id'),
             query('SELECT id, name, label FROM lkp_roles ORDER BY id'),
+            query('SELECT id, name, label FROM lkp_work_types ORDER BY id'),
         ]);
 
         return res.json({
@@ -19,6 +20,7 @@ export const getLookups = async (req, res, next) => {
             userStatuses: userStatuses.rows,
             workAuthStatuses: workAuth.rows,
             roles: roles.rows,
+            workTypes: workTypes.rows,
         });
     } catch (err) {
         return next(err);

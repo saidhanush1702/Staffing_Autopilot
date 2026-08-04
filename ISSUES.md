@@ -1,133 +1,165 @@
-# Workflow Audit — after Phase 2 remediation
+# Workflow Audit — after Phase 3
 
-Full end-to-end trace of every user journey, with the suspicious paths tested against a running server rather than assumed. Supersedes the earlier register.
+**Supersedes the post-Phase-2 register.** Everything in the previous file has been
+re-checked: fixed items are recorded as closed with evidence, unfixed ones are
+carried forward, and the Phase 3 code is audited for the first time.
+
+**Method.** Static read of the whole codebase, plus live probes against a running
+server on `localhost:5001` with the seeded two-org demo data. Findings marked
+**tested** were reproduced against that server; findings marked **read-only** come
+from reading the code and have not been executed. The distinction is deliberate —
+the last audit's credibility came from not asserting what it had not run.
 
 | Severity | Count | |
 |---|---|---|
-| 🔴 Critical — security | 2 | session revocation, login lockout |
-| 🟠 High — workflow breaks | 5 | one is a regression from the pagination work |
-| 🟡 Medium | 5 | |
-| 🔵 Low / debt | 4 | |
-| 💬 Workflow gaps (by design, not bugs) | 4 | |
-| **Total** | **20** | |
+| 🔴 Critical — security | 0 | both prior criticals verified fixed |
+| 🟠 High — workflow breaks | **2** | H-1 and H-2 fixed; 2 carried forward still open |
+| 🟡 Medium | **4** | M-3 fixed |
+| 🔵 Low / debt | 6 | |
+| ⚫ Environment | 1 | has interrupted work three times |
+| 💬 By design, not bugs | 3 | |
+| **Total open** | **13** | |
+
+**Fixed in this round:** H-1, H-2, M-3 — see their entries below. 28 assertions
+verifying the three, plus a 12-assertion re-run of the criteria permission matrix
+to confirm the `resolveConsultant` refactor caused no regression.
 
 ---
 
-## What works — verified end to end
+## Closed since the last audit
 
-These journeys were traced and behave correctly:
-
-| Journey | Status |
-|---|---|
-| SUPER_ADMIN creates org + first admin in one transaction | ✅ |
-| ORG_ADMIN creates recruiter and consultant; profile row auto-created | ✅ |
-| Assignment and reassignment; history preserved, access moves immediately | ✅ |
-| Consultant fills profile → only changed fields submitted | ✅ |
-| Live profile untouched while pending; DB-enforced single pending request | ✅ |
-| Recruiter sees only assigned consultants' requests; cross-tenant returns 404 | ✅ |
-| Per-field approve/reject; approved values applied in the same transaction | ✅ |
-| Rejected fields return with the reviewer's note and name/role | ✅ |
-| Resume: magic-byte validation, one file per consultant, old file deleted | ✅ |
-| Peer-admin password takeover blocked on all four endpoints | ✅ |
-| Audit log append-only — blocked even for the superuser | ✅ |
-
-The architecture holds. Everything below is a gap in it, not a flaw of it.
-
----
-
-## 🔴 CRITICAL
-
-### A-1 · Disabling an account does not end that person's session — ✅ FIXED (Phase 2.1)
-
-> Fixed. `verifyToken` re-checks the account on every request and returns **401**
-> so the client drops the session. See Phase 2.1 in PHASEWISE_IMPLEMENTATION.md.
-
-**Tested against a live server:**
-
-```
-recruiter signs in, reads data      : 200
-ORG_ADMIN disables the account      : done
-SAME cookie, reads data again       : 200   ← still working
-SAME cookie, opens approvals        : 200   ← still working
-only /auth/me notices               : 401
-fresh login attempt                 : 403
-```
-
-`verifyToken` verifies the JWT signature and nothing else — it never touches the database. The token stays valid for its full **24-hour** lifetime.
-
-**Impact:** dismiss an employee and they keep full access for up to a day. They can read every consultant's data, download resumes, and approve profile changes. Only a page refresh (which triggers `/auth/me`) logs them out — and they have no reason to refresh.
-
-The same applies to two other cases:
-- **Organisation disabled** — login is blocked, existing sessions are not
-- **Role changed** — demote a recruiter to consultant and their JWT still says `RECRUITER` for 24 hours
-
-**Note:** `PHASEWISE_IMPLEMENTATION.md` test 13 claims *"Disable a user while they have a live session → their next action is rejected."* That has never been true. The doc is wrong and should be corrected alongside the fix.
-
-**Fix:** have `verifyToken` load the user and check `is_active`, the organisation's `is_active`, and that the role still matches the token. That is one indexed primary-key lookup per request — sub-millisecond at this scale, and it closes all three cases at once.
-
----
-
-### A-2 · Login lockout protects the wrong thing, and locks out the wrong people — ✅ FIXED (Phase 2.1)
-
-> Fixed. Lockout is now per account via the `login_attempts` table, not per IP.
-
-**Tested:**
-
-```
-12 wrong passwords -> 3 were 429 (IP limit)
-correct password now : 429   ← the correct password is now refused
-```
-
-Two separate problems:
-
-**The limit is per IP, not per account.** A staffing agency sits behind one NAT'd office IP. One person mistyping their password ten times locks out *everyone in the building* for 15 minutes — including the admin who would fix it.
-
-**There is no per-account lockout at all.** `login_attempts` was specified in the phase plan and never built — migrations jump from `006_lookups` to `007_resume_artifacts`. `LOGIN_MAX_ATTEMPTS` and `LOGIN_LOCKOUT_MINUTES` sit unused in `.env.example`.
-
-So the protection that blocks colleagues exists, and the protection that would actually stop credential stuffing does not.
-
-**Fix:** key the limiter on `email + IP` rather than IP alone, and add the per-account lockout the plan already describes.
+| Ref | Was | Evidence it is closed |
+|---|---|---|
+| **A-1** | A disabled account kept its live session | `middleware/verifyToken.js` re-reads the user on every request and checks `employment_status`, org `is_active`, and that the token's role still matches. Returns **401** so the client drops the session. **Tested** in Phase 2.1. |
+| **A-2** | Lockout was per-IP, locking out colleagues behind one NAT | `login_attempts` (migration 013) + `checkLockout(email)`. Per-IP limiter demoted to a volumetric backstop. |
+| **B-1** | Users role tabs broken by pagination | `?role=` filters in SQL; tab badges come from an org-wide counts aggregate. |
+| **C-2** | A pending request outlived the person who submitted it | Terminate cancels it in the same transaction (`CANCELLED`, migration 014); suspend deliberately keeps it and flags the reviewer. |
+| **NEW-during-audit** | `OrganizationDetail.jsx` used `<EmploymentStatus>` without importing it — the super admin's org detail page threw `ReferenceError` on any org with users. Present since commit `bd90dd8`. | Fixed during the design-system work. Import added. A sweep of all 28 JSX files found no other undefined component. |
 
 ---
 
 ## 🟠 HIGH — workflow breaks
 
-### B-1 · Users page role tabs are broken by pagination — *regression I introduced* — ✅ FIXED (Phase 2.1)
+### H-1 · Terminating a consultant leaves their search criteria ACTIVE — ✅ FIXED
 
-> Fixed. `?role=` filters in SQL; tab badges come from an org-wide counts aggregate.
+> Fixed. `terminateUser` now pauses the criteria in the **same transaction** as the
+> termination, alongside releasing assignments and cancelling pending change
+> requests — so the two states can never disagree. `paused_by` records who, and the
+> audit line gains "(job discovery paused)".
+>
+> **Tested:**
+> ```
+> active before terminate      : true
+> terminate                    : 200, pausedCriteria = 1
+> criteria after terminate     : isActive = false, paused_at recorded
+> ```
+>
+> **Deliberately NOT applied to suspend.** Suspension is reversible and the person
+> is still an employee. Auto-pausing would need an auto-resume, and silently
+> restarting job discovery on reactivation is a decision the admin should make
+> rather than one to infer. Say the word if you want suspend to pause too.
 
-`Users.jsx` fetches 25 rows, then filters client-side:
-
-```js
-const visible = users.filter((u) => u.role === activeTab);
+```
+before terminate: active = true
+terminate        -> 200
+AFTER terminate : criteria still active = true
 ```
 
-With 30 consultants and 2 admins, page 1 is mostly consultants — the **Org Admins tab can show zero rows** even though admins exist. The tab count badges are also per-page, not per-organisation, so they under-report.
+`terminateUser` closes assignments and cancels pending change requests in its
+transaction. It never touches `search_criteria`. The row keeps `is_active = true`
+and a current version pointer.
 
-**Fix:** send `role` to the server and paginate within the tab. The endpoint already accepts `?role=`; the page just doesn't use it.
+Today that is inert — nothing reads criteria yet. **From Phase 5 it means the
+discovery engine generates job matches for someone who no longer works there**,
+and Phase 6 would tailor resumes for them. The whole point of Phase 2.1's
+lifecycle work was that termination takes effect everywhere at once; criteria were
+added afterwards and missed that rule.
 
-### B-2 · An unassigned consultant's request is invisible to every recruiter
+**Fix:** in the same transaction as the termination, set
+`search_criteria.is_active = FALSE` and record `paused_by`. Suspend should
+probably do the same — but that is a product call: suspension is reversible, and
+silently resuming discovery on reactivation may be either the desired behaviour or
+a nasty surprise.
 
-`listChangeRequests` narrows a recruiter by *current* assignment. A consultant with no assignment — newly created, or whose recruiter was reassigned or disabled — submits a request that **only ORG_ADMIN can see**.
+### H-2 · `toggle-active` lets you activate discovery for a terminated consultant — ✅ FIXED
 
-No error is raised. The consultant's screen says "awaiting approval" with no hint that nobody is watching. In a large organisation it sits indefinitely.
+> Fixed, and fixed structurally rather than by adding a third copy of the same
+> check. `resolveConsultant` now takes `{ forWrite }` and owns the rule; the three
+> write paths opt in, the three read paths do not. A new write endpoint has to opt
+> **out** of the guard rather than remember to opt in — which is precisely how this
+> was missed the first time.
+>
+> Return shape mirrors `resolveManageableUser` in `utils/scope.js`
+> (`{ consultant }` or `{ error: { status, message } }`) so the 404/409 distinction
+> survives.
+>
+> **Tested:**
+> ```
+> re-activate a terminated consultant : 409
+> pause          (also a write path)  : 409
+> save                                : 409
+> restore                             : 409
+> read criteria / list versions       : 200  ← read paths unaffected
+> ```
 
-**Fix:** surface unassigned consultants with pending requests on the ORG_ADMIN dashboard, and tell the consultant their request is waiting on the admin rather than a recruiter.
+```
+re-ACTIVATE a terminated consultant -> 200  ALLOWED
+save        for a terminated consultant -> 409  (correctly refused)
+```
 
-### B-3 · A concurrent admin edit makes the reviewer's diff wrong
+`saveCriteria` and `restoreCriteriaVersion` both refuse on
+`employment_status === 'TERMINATED'`. `toggleCriteriaActive` has no such check, so
+the one endpoint that decides *whether the system acts on the criteria at all* is
+the one without the guard.
+
+The inconsistency is the tell: the rule was applied to the paths that felt like
+"editing" and missed the one that felt like a toggle.
+
+**Fix:** the same TERMINATED guard in `toggleCriteriaActive`. Better, hoist it into
+`resolveConsultant` with an `allowTerminated` opt-out for the read paths, so a
+future endpoint cannot forget it. Sibling of H-1 and worth fixing together.
+
+### H-3 · An unassigned consultant's change request is invisible to every recruiter — *carried forward, still open*
+
+`listChangeRequests` narrows a recruiter by **current** assignment:
+
+```sql
+AND ($3::text IS NULL OR a.recruiter_id = $3)
+```
+
+A consultant with no current assignment — newly created, or whose recruiter was
+terminated, which now releases the assignment — submits a request that only
+ORG_ADMIN can see. No error is raised. The consultant's screen says "awaiting
+approval" and nobody is watching.
+
+Phase 2.1 made this **more** likely, not less: terminating a recruiter now closes
+their assignments, orphaning every consultant they held.
+
+**Fix:** surface unassigned consultants with pending requests on the ORG_ADMIN
+dashboard, and tell the consultant their request sits with the admin.
+
+### H-4 · A concurrent admin edit makes the reviewer's diff wrong — *carried forward, still open*
 
 1. Consultant submits `phone: A → B`
-2. ORG_ADMIN directly edits the same field to `C`
-3. The pending request still displays `A → B`
-4. Reviewer approves — `C` is silently overwritten by `B`
+2. ORG_ADMIN edits the same field directly to `C`
+3. The pending request still displays `A → B` — `old_display` is a snapshot taken
+   at submit time and never re-read
+4. Reviewer approves, and `C` is silently overwritten by `B`
 
-The reviewer was shown an old value that is no longer current, and made a decision on it.
+The reviewer was shown a value that is no longer current and decided on it.
 
-**Fix:** re-read the live value when rendering the review screen and flag any field that has moved since submission.
+**Fix:** re-read the live value when rendering the review screen and flag any field
+that moved since submission.
 
-### B-4 · The field registry no longer drives the complete/incomplete filter
+---
 
-`config/profileFields.js` is documented as *the* single source of required fields. But the SQL filter hardcodes them:
+## 🟡 MEDIUM
+
+### M-1 · The field registry no longer drives the complete/incomplete filter — *carried forward*
+
+`config/profileFields.js` is documented as the single source of required fields,
+and `REQUIRED_FIELDS` is imported into `profileController.js` — but the SQL filter
+hardcodes the list anyway:
 
 ```sql
 ($4 = 'complete' AND p.phone IS NOT NULL AND p.city IS NOT NULL
@@ -135,118 +167,262 @@ The reviewer was shown an old value that is no longer current, and made a decisi
  AND p.base_resume_artifact_id IS NOT NULL)
 ```
 
-Add a required field to the registry and the **badge** updates while the **filter** does not — the two then disagree about who is complete.
+Add a required field and the **badge** updates while the **filter** does not. The
+two then disagree about who is complete — directly contradicting the extensibility
+guarantee the registry exists for.
 
-This directly contradicts the extensibility guarantee the registry was built for.
+**Fix:** generate the predicate from `REQUIRED_FIELDS`, or drop the SQL filter and
+compute completeness in one place.
 
-**Fix:** generate the predicate from `REQUIRED_FIELDS`, or drop the SQL filter and compute completeness in one place.
+### M-2 · No way to upload a resume on a consultant's behalf — *carried forward*
 
-### B-5 · No way to upload a resume on a consultant's behalf
+`POST /management/consultants/:id/resume` works and is tested. Nothing in the UI
+calls it. The consultant detail page shows "No resume uploaded yet" and dead-ends.
+An agency onboarding someone who emailed their CV has no route in.
 
-The consultant detail page shows **"No resume uploaded yet"** with no action beside it. `POST /management/consultants/:id/resume` works and is tested — nothing in the UI calls it.
+### M-3 · The resume preview floods the audit log — ✅ FIXED
 
-An agency onboarding someone who emailed their CV has no way to attach it. The consultant must do it themselves and wait for approval.
+> Fixed. `?disposition=inline` now logs **`Viewed Resume`** / "Previewed resume …";
+> a real download still logs `Sent Resume` / "Downloaded resume …". Same
+> authorisation on both paths — the fix is distinguishability, not silence, because
+> a preview is still someone reading a CV.
+>
+> **Tested** — 2 previews + 1 download issued:
+> ```
+> Viewed Resume  +2
+> Sent Resume    +1   ← was +3 before the fix
+> ```
+>
+> `Viewed` falls through to the neutral colour in `AuditLogPanel`, matching the
+> existing `Viewed Password` action. No colour-map change needed.
 
-Now more visible than before, because the detail page exists and dead-ends.
+### M-4 · The test suites live in a scratchpad, not the repo
+
+Phase 2.1's 48 assertions, the 33 assignment assertions, and Phase 3's 57 are all
+throwaway scripts in a temp directory. Nothing in the repository can re-run them.
+Every regression check so far has depended on a script that no longer exists by the
+next session.
+
+**Fix:** move them to `backend/tests/` behind `npm test`. They need only Node's
+built-in runner and a seeded database.
+
+### M-5 · The design-system refactor has never been rendered in a browser
+
+Eighteen files were changed to route every popup through one `Modal`, every card
+and button through `design/tokens.js`, and every role/status label through
+`LookupContext`. It builds, and static analysis confirms no token is used without
+being imported and no component is referenced without being in scope.
+
+**But no page has been opened.** Build success does not catch a mis-nested dialog
+or a layout that collapses. The four dialogs, the Users role tabs, and the super
+admin org detail page all warrant a manual pass.
+
+**Fix:** install Playwright and add a smoke test that loads each route per role, or
+click through the six screens by hand once and record it.
 
 ---
 
-## 🟡 MEDIUM
+## 🔵 LOW / debt
 
-### C-1 · The resume preview floods the audit log
+### L-1 · `GET /criteria` writes to the database
 
-**Tested:** `3 preview renders -> audit rows went 6 -> 9 (+3)`
+`ensureCriteriaRow` is called from every read path, including `getCriteria` and
+`getMyCriteria`. A plain read creates a `search_criteria` row with the reader as
+`created_by`.
 
-Every iframe render writes a `Sent Resume` row. Opening the detail page logs one, clicking full-screen logs another, navigating back and forth logs more. Genuine downloads become impossible to pick out of the noise.
+It was chosen so no read path meets a missing row — the Phase 2 principle — and it
+avoided a backfill migration. The cost is a non-idempotent GET: a recruiter merely
+looking at a consultant leaves a row behind, attributed to them.
 
-**Fix:** log previews as a distinct action (`Viewed Resume`) so the two are separable, or skip logging the inline variant.
+**Fix if it matters:** create the row in `createUser` alongside the profile, and
+backfill once. The lazy path can then become a read that tolerates `null`.
 
-### C-2 · A disabled consultant keeps a live pending request — ✅ FIXED (Phase 2.1)
+### L-2 · The client's "unsaved changes" check disagrees with the server's
 
-> Fixed, and split by intent rather than treated as one case:
-> **terminate** cancels the pending request in the same transaction (new
-> `CANCELLED` status, migration 014); **suspend** deliberately keeps it, and
-> the reviewer's queue flags the consultant as suspended instead. The review
-> endpoint also refuses a stale decision on a terminated consultant.
+`CriteriaEditor` compares a `JSON.stringify` of the draft against the loaded
+version. The server compares a **normalised** fingerprint — de-duplicated, with
+`workTypeIds` sorted.
 
-Nothing cancels or flags it. A reviewer can approve profile changes for someone who can no longer sign in.
+Untick and re-tick two work types in a different order and the client says
+"unsaved changes", the Save button enables, and the server answers **409 Nothing
+has changed**. Harmless but confusing.
 
-### C-3 · Reassignment mid-request transfers the reviewer silently
+**Fix:** apply the same normalisation client-side before comparing. The rules are
+already in `config/criteriaSchema.js` and could be shared.
 
-Consultant reassigned R1 → R2 with a request pending: R1 loses it from their queue, R2 gains it, neither is told. Defensible behaviour, but invisible — R1 may believe they still owe a decision.
+### L-3 · A concurrent double-save returns a generic 409
 
-### C-4 · Approvals rows don't link to the consultant's profile
+`writeVersion` computes `MAX(version_no) + 1` and inserts. Two simultaneous saves
+both read the same max; `uq_version_no_per_consultant` catches the collision, and
+`errorHandler` maps `23505` to *"That record already exists."*
 
-`ConsultantDetail` now exists, but a reviewer deciding whether "Green Card" is plausible still cannot open the profile or resume from the approval row. One link would close it.
+Correct, but the message tells the user nothing. Vanishingly unlikely with one
+editor per consultant.
 
-### C-5 · No loading state while paginating
+**Fix:** catch `23505` in `saveCriteria` and retry once, or return "Someone else
+saved at the same moment — reload and try again."
 
-Clicking **Next** leaves the previous page's rows on screen until the request returns. On a slow connection it looks like the click did nothing.
+### L-4 · `AuditLogPanel` reads `localStorage` instead of the auth context
+
+```js
+if (localStorage.getItem('userRole') !== 'ORG_ADMIN') return null;
+```
+
+It works — `AuthContext` writes `userRole` on login and on `/auth/me` — and the
+server enforces `isOrgAdmin` regardless, so this is cosmetic. But it is the only
+component reading role from storage rather than `useAuth()`, and storage can be
+stale where the context cannot.
+
+### L-5 · Lookup labels differ before the lookup arrives
+
+`LookupContext` falls back to `humanise()` when `/api/lookups` has not landed,
+turning `ORG_ADMIN` into "Org Admin". The lookup says "Organization Admin". A brief
+flash of the wrong label on first paint, and the permanent label if the fetch
+fails.
+
+**Fix:** hold the badge blank until `ready`, or seed the fallback from the same
+labels. Not worth much — but worth knowing why the text sometimes differs.
+
+### L-6 · The demo database has degraded past the point of being a good demo — **worse than first recorded**
+
+A count of Molina users during the fix round:
+
+```
+TERMINATED  CONSULTANT  × 20   (mostly temp.consultant.* from old suite runs)
+TERMINATED  RECRUITER   ×  7
+TERMINATED  RECRUITER   recruiter1@molina.local     ← the primary demo recruiter
+ACTIVE      CONSULTANT  ×  5
+ACTIVE      RECRUITER   ×  3
+```
+
+**`recruiter1@molina.local` (Riya Recruiter) is terminated.** She is the recruiter
+named in the login table of `PHASEWISE_IMPLEMENTATION.md`, the one every manual test
+gate uses, and the one holding consultants 1–2. Termination is permanent by design,
+so she cannot be brought back — the seeded scenario the docs describe no longer
+exists in this database.
+
+This is not a code fault. Automated suites across several sessions create and
+terminate accounts, and nothing resets between runs. It broke the Phase 3 suite
+during this round: it could not log in as `recruiter1` and aborted before its first
+assertion. The permission matrix was re-verified against `recruiter2` instead, and
+passed 12/12 — but the suite as written is now unrunnable.
+
+**Fix:** re-seed. The seeds are idempotent and would restore Riya as a fresh ACTIVE
+row only if the email were free, which it is not — so this needs a real reset:
+
+```powershell
+wsl -d Ubuntu -u root -- su - postgres -c "dropdb staffing_autopilot && createdb staffing_autopilot"
+# then re-grant roles per DATABASE_ACCESS.md, and:
+cd backend ; npm run migrate
+```
+
+Destructive and therefore yours to run. Worth pairing with **M-4** — suites that
+live in the repo can be written to create and clean up their own fixtures instead of
+consuming the demo data.
 
 ---
 
-## 🔵 LOW / DEBT
+## ⚫ ENVIRONMENT
 
-| # | Issue |
+### E-1 · WSL tears down the distro ~10 seconds after the last session exits — **tested**
+
+This has interrupted work three times and looked like a database fault every time.
+
+```
+booted-and-ready
++  5s -> distro Running=True   port5432=True
++ 15s -> distro Running=False  port5432=False
+```
+
+Postgres is not at fault. It starts correctly and systemd already has
+`postgresql.service` **enabled**. WSL terminates the whole Ubuntu VM once no
+`wsl.exe` client session is attached, and port 5432 disappears with it. The backend
+then fails at boot with `ECONNREFUSED` on both `::1` and `127.0.0.1`, and nodemon
+exits.
+
+Because the VM must be *running* for the port to exist, **a connection attempt
+cannot wake it** — there is nothing listening to trigger a start.
+
+**Two consequences to fix:**
+
+1. `/etc/wsl.conf` now has a **duplicate `[boot]` section**, appended during
+   troubleshooting on top of an existing one:
+   ```ini
+   [boot]
+   systemd=true
+
+   [user]
+   default=dhanush
+
+   [boot]
+   command = service postgresql start
+   ```
+   The second section is ignored by the INI parser and is redundant anyway, since
+   systemd already starts Postgres. Restore it with:
+   ```powershell
+   wsl -d Ubuntu -u root -- bash -c "printf '[boot]\nsystemd=true\n\n[user]\ndefault=dhanush\n' > /etc/wsl.conf"
+   ```
+
+2. Something must hold the distro open. A hidden startup entry running a
+   long-lived session is the reliable fix:
+   ```powershell
+   $s = (New-Object -ComObject WScript.Shell).CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\wsl-keepalive.lnk")
+   $s.TargetPath  = "$env:SystemRoot\System32\wsl.exe"
+   $s.Arguments   = "-d Ubuntu -u root -- sleep infinity"
+   $s.WindowStyle = 7
+   $s.Save()
+   ```
+   Delete any earlier `wsl-postgres.lnk` — it ran `wsl … -- true`, which exits
+   immediately and lets the distro die seconds later.
+
+---
+
+## 💬 By design — not bugs
+
+### D-1 · Nothing reads search criteria yet
+
+Phase 3 delivers the editor, the versioning and the schema. The consuming engine is
+Phase 5. Stated in the proposal and accepted before implementation.
+
+### D-2 · The "postings that would have matched" preview was not built
+
+Plan item 25. There are no job postings in the database, so the number could only
+be fabricated. A fake number on a real screen is worse than no number.
+
+### D-3 · Consultants cannot propose criteria changes
+
+R-23. A profile field is a fact about the consultant, so they assert it and a
+reviewer checks. Criteria are a business decision about how to spend the
+application budget, so the recruiter owns them outright. Enforced by there being no
+consultant-facing write endpoint — **tested**: a consultant hitting the management
+write route gets 403, and the portal route accepts no id parameter at all.
+
+---
+
+## Documentation corrections needed
+
+| Doc | Claim | Reality |
+|---|---|---|
+| `PHASEWISE_IMPLEMENTATION.md` test **#22** | superadmin → `GET /api/lookups` → **403** | Returns **200** — **tested**. The route carries only `verifyToken`, not `isTenantUser`. Arguably correct behaviour (lookups are global reference data, and the super admin's own screens need role labels), so the **doc** is what should change, not the guard. Same class of false assurance as the A-1 claim already corrected. |
+| `PHASEWISE_IMPLEMENTATION.md` | Phase 3 listed as ⬜ Next | Phase 3 is complete: migrations 016–018 applied, 57 assertions green. The phase record has not been appended to. |
+
+---
+
+## What was verified working, end to end
+
+Traced and behaving correctly:
+
+| Journey | Status |
 |---|---|
-| **D-1** | Sidebar polls `/portal/me` every 30s purely to count missing fields — amplified by the badge-refresh fix. A `{ missingCount }` endpoint would be a fraction of the payload |
-| **D-2** | The iframe preview relies on the API and client being same-site. Works now (localhost ports, and `api.x.com`/`app.x.com` later); breaks if the API ever moves to a different registrable domain — would need a signed URL or a same-origin proxy |
-| **D-3** | `sha256` computed and stored on every upload, still never read |
-| **D-4** | `ProfileField` hardcodes `POST /portal/resume`, so it cannot be reused for B-5 or the parked admin editor |
+| Session revocation — suspend/terminate/demote ends the session on the next request | ✅ |
+| Per-account lockout; a different user on the same machine still signs in | ✅ |
+| Cross-tenant isolation across every Phase 3 endpoint (404, never 403) | ✅ tested |
+| Recruiter scoping — assigned consultants only, by URL as well as by list | ✅ tested |
+| Bulk assignment editing from either end, reconciling to a desired end state | ✅ 33 assertions |
+| Criteria versioning — append-only, one current version, restore copies forward | ✅ tested |
+| Pause does not fork a version; an unconfigured set cannot be activated | ✅ tested |
+| Pay and location rules refused at the API and unstorable at the database | ✅ tested |
+| Audit rows for save, pause and resume, naming the editor and what moved | ✅ tested |
+| Audit log append-only — blocked even for the superuser | ✅ |
 
----
-
-## 💬 WORKFLOW GAPS — not bugs, but the flow is incomplete
-
-### E-1 · No notifications anywhere
-A consultant submits; the recruiter finds out only by visiting the Approvals page. A request is approved; the consultant finds out only by reopening their profile. No email, no in-app alert. Nothing is lost, but the loop depends on people checking.
-
-### E-2 · Pending requests have no ageing signal
-The row shows a submitted timestamp, but a request waiting five days looks identical to one from five minutes ago. There is no "oldest waiting" indicator to work from.
-
-### E-3 · The consultant cannot explain a change
-The reviewer sees `H1-B → Green Card` with no context. There is no note field on submission, so the reviewer must either guess or reject and ask.
-
-### E-4 · The reviewer can only approve or reject
-There is no "ask a question" state. Needing clarification means rejecting, which reads as a refusal and forces a full resubmission.
-
----
-
-## Recommended order
-
-**Before anything else — the two security items:**
-
-| # | Issue | Effort |
-|---|---|---|
-| 1 | **A-1** session revocation | 1 hr |
-| 2 | **A-2** per-account lockout + email-keyed rate limit | 2 hr |
-
-**Then the workflow breaks:**
-
-| # | Issue | Effort |
-|---|---|---|
-| 3 | **B-1** role tabs vs pagination *(my regression)* | 30 min |
-| 4 | **B-4** registry-driven completeness filter | 45 min |
-| 5 | **B-3** stale diff warning | 1 hr |
-| 6 | **B-5** admin resume upload *(needs D-4 first)* | 1.5 hr |
-| 7 | **B-2** unassigned-consultant visibility | 1 hr |
-
-**Then the cheap quality wins:** C-1 (audit noise), C-4 (link to profile), C-5 (loading state) — about an hour together.
-
-Roughly **one and a half days** for everything above the Low tier.
-
-**E-1 through E-4 are product decisions, not defects** — worth deciding before Phase 3, since notifications in particular get harder to retrofit once more workflows depend on them.
-
----
-
-## Correction to the docs — ✅ DONE
-
-`PHASEWISE_IMPLEMENTATION.md` claimed two things that were not true:
-
-- that a live session was rejected once the account was disabled (A-1: it was not)
-- that lockout behaviour existed (A-2: it had never been built)
-
-Both claims are gone, and both behaviours now genuinely exist — built in Phase
-2.1 and covered by the automated suite plus the 2.1 manual gate. The Phase 1
-"Account state" table is marked superseded rather than deleted, so the record of
-what that phase actually covered stays honest.
+The architecture holds. Every item above is a gap in it, not a flaw of it.

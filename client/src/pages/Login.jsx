@@ -54,7 +54,7 @@ const Login = () => {
                     <div className="order-first flex justify-center lg:order-last">
                         <img
                             src="/image.png"
-                            alt="Molina Technologies"
+                            alt="SmartApply"
                             className="h-28 w-auto max-w-full object-contain sm:h-40 lg:h-auto lg:max-h-96"
                         />
                     </div>

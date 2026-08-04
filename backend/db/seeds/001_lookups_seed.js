@@ -42,6 +42,24 @@ export const runSeed001 = async (connection) => {
         );
     }
 
+    // Engagement types a consultant will accept — Phase 3 search criteria.
+    // `name` is what search_criteria_work_types references; `label` is the
+    // only text any screen shows.
+    const workTypes = [
+        { name: 'CONTRACT', label: 'Contract' },
+        { name: 'FULL_TIME', label: 'Full-time' },
+        { name: 'PART_TIME', label: 'Part-time' },
+        { name: 'C2C', label: 'Corp-to-Corp (C2C)' },
+        { name: 'W2', label: 'W2' },
+    ];
+    for (const w of workTypes) {
+        await connection.query(
+            `INSERT INTO lkp_work_types (name, label) VALUES ($1, $2)
+             ON CONFLICT (name) DO UPDATE SET label = EXCLUDED.label`,
+            [w.name, w.label],
+        );
+    }
+
     const roles = [
         { name: 'SUPER_ADMIN', label: 'Super Admin' },
         { name: 'ORG_ADMIN', label: 'Organization Admin' },

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
-    ShieldCheck, ClipboardCheck, X,
+    ShieldCheck, ClipboardCheck, X, Search,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -37,6 +37,8 @@ const NAV_ITEMS = [
         to: '/portal/profile', label: 'My Profile', icon: UserCircle,
         roles: ['CONSULTANT'], badge: 'incomplete',
     },
+    // Read-only for the consultant — their recruiter owns the criteria (R-23).
+    { to: '/portal/criteria', label: 'My Search Criteria', icon: Search, roles: ['CONSULTANT'] },
 ];
 
 const POLL_MS = 30_000;
@@ -118,7 +120,7 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
             >
             <div className="flex items-start justify-between gap-2 border-b border-slate-200 px-5 py-4">
                 <div className="min-w-0">
-                    <p className="text-sm font-semibold text-slate-900">Staffing Autopilot</p>
+                    <p className="text-sm font-semibold text-slate-900">SmartApply</p>
                     <p className="mt-0.5 truncate text-xs text-slate-500">
                         {user.organizationName ?? 'Platform'}
                     </p>

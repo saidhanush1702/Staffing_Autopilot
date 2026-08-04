@@ -21,6 +21,7 @@ const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
 const MyProfile = lazy(() => import('./pages/portal/MyProfile.jsx'));
+const MyCriteria = lazy(() => import('./pages/portal/MyCriteria.jsx'));
 
 /** Wrap a lazy page in its guard + layout + suspense boundary. */
 const route = (C, roles) => (
@@ -67,6 +68,7 @@ const App = () => (
                 {/* CONSULTANT — self-service portal */}
                 <Route path="/portal" element={route(ConsultantDashboard, CONSULTANT)} />
                 <Route path="/portal/profile" element={route(MyProfile, CONSULTANT)} />
+                <Route path="/portal/criteria" element={route(MyCriteria, CONSULTANT)} />
 
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

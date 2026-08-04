@@ -2,14 +2,24 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
     ArrowLeft, CheckCircle2, AlertCircle, Clock, Mail, Phone,
-    MapPin, ShieldCheck, Linkedin, Gauge, Pause,
+    MapPin, ShieldCheck, Linkedin, Gauge, Pause, UserCircle, Search,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
+import CriteriaEditor from '../../components/criteria/CriteriaEditor.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { card, cardPad } from '../../design/tokens.js';
+import {
+    card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle,
+    tabBar, tabNav, tabItem, tabActive, tabIdle,
+} from '../../design/tokens.js';
+
+/** Sub-tabs of one consultant's workspace. Phase 3 adds Search Criteria. */
+const TABS = [
+    { key: 'PROFILE', label: 'Profile', icon: UserCircle },
+    { key: 'CRITERIA', label: 'Search Criteria', icon: Search },
+];
 
 const Row = ({ icon: Icon, label, value, muted }) => (
     <div className="flex items-start gap-3 py-2.5">
@@ -36,6 +46,7 @@ const ConsultantDetail = () => {
     const [data, setData] = useState(null);
     const [schema, setSchema] = useState(null);
     const [error, setError] = useState('');
+    const [tab, setTab] = useState('PROFILE');
 
     useEffect(() => {
         Promise.all([
@@ -74,21 +85,21 @@ const ConsultantDetail = () => {
 
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className="text-xl font-semibold text-slate-900">{profile.name}</h1>
-                    <p className="mt-1 text-sm text-slate-500">{profile.email}</p>
+                    <h1 className={pageTitle}>{profile.name}</h1>
+                    <p className={pageSubtitle}>{profile.email}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                     {isComplete ? (
-                        <span className="inline-flex items-center gap-1.5 rounded bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
+                        <span className={`${badge} ${TONE.success}`}>
                             <CheckCircle2 className="h-3.5 w-3.5" /> Profile complete
                         </span>
                     ) : (
-                        <span className="inline-flex items-center gap-1.5 rounded bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                        <span className={`${badge} ${TONE.warning}`}>
                             <AlertCircle className="h-3.5 w-3.5" /> {missingFields.length} field(s) missing
                         </span>
                     )}
                     {profile.is_paused && (
-                        <span className="inline-flex items-center gap-1.5 rounded bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                        <span className={`${badge} ${TONE.neutral}`}>
                             <Pause className="h-3.5 w-3.5" /> Paused
                         </span>
                     )}
@@ -102,8 +113,32 @@ const ConsultantDetail = () => {
                 </div>
             </div>
 
+            {/* ── sub-tabs ────────────────────────────────── */}
+            <div className={`mt-6 ${tabBar}`}>
+                <nav className={tabNav} aria-label="Consultant sections">
+                    {TABS.map((t) => (
+                        <button
+                            key={t.key}
+                            type="button"
+                            onClick={() => setTab(t.key)}
+                            aria-current={tab === t.key ? 'page' : undefined}
+                            className={`${tabItem} ${tab === t.key ? tabActive : tabIdle}`}
+                        >
+                            <t.icon className="h-4 w-4" />
+                            {t.label}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+
+            {tab === 'CRITERIA' ? (
+                <div className="mt-6">
+                    <CriteriaEditor consultantId={id} />
+                </div>
+            ) : (
+            <>
             {!isComplete && (
-                <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <div className={`mt-4 flex items-start gap-2 rounded-lg border border-warning-200 p-3 text-sm ${TONE_ALERT.warning}`}>
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
                         Still needed: {missingFields.map(fieldLabel).join(', ')}.
@@ -178,6 +213,8 @@ const ConsultantDetail = () => {
                     />
                 </div>
             </div>
+            </>
+            )}
         </div>
     );
 };

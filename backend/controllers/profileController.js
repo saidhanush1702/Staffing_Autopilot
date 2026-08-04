@@ -83,6 +83,11 @@ export const listConsultants = async (req, res, next) => {
                     w.name AS work_auth_name,
                     rec.name AS recruiter_name, rec.id AS recruiter_id,
                     r.original_name AS resume_name,
+                    -- Phase 3. A LEFT JOIN because the parent row is created
+                    -- lazily on first touch: no row means "never set up",
+                    -- which is a different state from "set up but paused".
+                    sc.is_active        AS criteria_active,
+                    sc.current_version_id IS NOT NULL AS criteria_configured,
                     EXISTS (
                         SELECT 1 FROM profile_change_requests c
                          WHERE c.consultant_id = p.user_id AND c.status = 'PENDING'
@@ -91,6 +96,7 @@ export const listConsultants = async (req, res, next) => {
                JOIN users u ON u.id = p.user_id
           LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
           LEFT JOIN resume_artifacts r ON r.id = p.base_resume_artifact_id
+          LEFT JOIN search_criteria sc ON sc.consultant_id = p.user_id
           LEFT JOIN assignments a
                  ON a.consultant_id = p.user_id AND a.effective_to IS NULL
           LEFT JOIN users rec ON rec.id = a.recruiter_id
