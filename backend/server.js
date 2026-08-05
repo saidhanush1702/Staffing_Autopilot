@@ -49,6 +49,15 @@ import {
 import {
     criteriaSchema, toggleActiveSchema, restoreSchema,
 } from './config/criteriaSchema.js';
+import {
+    myQuestions, myOutstandingCount, submitAnswer,
+    listAnswersForReview, pendingAnswerCount, reviewAnswer, listConsultantAnswers,
+    submitAnswerSchema, reviewAnswerSchema,
+} from './controllers/answerController.js';
+import {
+    listQuestions, createQuestion, updateQuestion, raiseQuestionForConsultant,
+    createQuestionSchema, updateQuestionSchema, raiseQuestionSchema,
+} from './controllers/questionController.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -235,10 +244,46 @@ app.get('/api/management/consultants/:id/criteria/versions/:versionId',
 app.post('/api/management/consultants/:id/criteria/versions/:versionId/restore',
     [verifyToken, isManagement, validate(restoreSchema)], restoreCriteriaVersion);
 
+/* ─────────────── answer bank (Phase 4) ─────────────────────────── */
+//
+// isManagement on the review routes, NOT isOrgAdmin: P-04 lets a recruiter
+// approve for their own consultants. The two narrowings that matter happen
+// inside the controller, because neither can be expressed as a route guard:
+//
+//   scope    canAccessConsultant — a recruiter only their assigned people
+//   routing  R-07 — a category with requires_owner_approval is ORG_ADMIN only,
+//            and a recruiter must still SEE those items (flagged, locked) so
+//            they know what their consultant is waiting on
+//
+// There is no consultant-facing review route anywhere. R-06 additionally
+// refuses a reviewer who wrote the answer.
+
+app.get('/api/management/answers', [verifyToken, isManagement], listAnswersForReview);
+app.get('/api/management/answers/count', [verifyToken, isManagement], pendingAnswerCount);
+app.post('/api/management/answers/:id/review',
+    [verifyToken, isManagement, validate(reviewAnswerSchema)], reviewAnswer);
+
+app.get('/api/management/consultants/:id/answers',
+    [verifyToken, isManagement], listConsultantAnswers);
+app.post('/api/management/consultants/:id/questions',
+    [verifyToken, isManagement, validate(raiseQuestionSchema)], raiseQuestionForConsultant);
+
+// The bank itself is ORG_ADMIN's to curate — recruiters raise questions at a
+// consultant (above) rather than editing the shared set.
+app.get('/api/management/questions', [verifyToken, isManagement], listQuestions);
+app.post('/api/management/questions',
+    [verifyToken, isOrgAdmin, validate(createQuestionSchema)], createQuestion);
+app.patch('/api/management/questions/:id',
+    [verifyToken, isOrgAdmin, validate(updateQuestionSchema)], updateQuestion);
+
 /* ─────────────────────── consultant portal ─────────────────────── */
 
 app.get('/api/portal/me', [verifyToken, isConsultant], myProfile);
 app.get('/api/portal/criteria', [verifyToken, isConsultant], getMyCriteria);
+app.get('/api/portal/questions', [verifyToken, isConsultant], myQuestions);
+app.get('/api/portal/answers/count', [verifyToken, isConsultant], myOutstandingCount);
+app.post('/api/portal/answers',
+    [verifyToken, isConsultant, validate(submitAnswerSchema)], submitAnswer);
 app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
 app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
 app.post('/api/portal/profile/change-request',

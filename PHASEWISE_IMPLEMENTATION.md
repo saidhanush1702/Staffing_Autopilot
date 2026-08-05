@@ -7,8 +7,8 @@
 | **1** | Multi-tenant RBAC — 4 roles, 3 portals, audit log | ✅ Complete |
 | **2** | Consultant profiles + self-service edit & approval workflow | ✅ Complete |
 | **3** | Search criteria — versioned, recruiter-owned | ✅ Complete |
-| 4 | Answer bank + approvals | ⬜ Next — see `PHASE_4_PROPOSAL.md` |
-| 5 | Job queue + application records | ⬜ Planned |
+| **4** | Answer bank + approvals — R-06, R-07 routing | ✅ Complete *(one screen deferred)* |
+| 5 | Job queue + application records | ⬜ Next |
 | 6 | Contacts | ⬜ Planned |
 
 **Stack:** Node 24 · Express 5 · PostgreSQL (WSL2) · React 19 · Vite · Tailwind v4 · JWT httpOnly cookie · raw parameterised SQL, no ORM
@@ -896,11 +896,221 @@ matrix after the H-2 refactor.
 ---
 ---
 
+# PHASE 4 — Answer Bank & Approvals ✅
+
+## The problem solved
+
+Every application form asks the same questions — *"Years of React experience?"*,
+*"Do you require sponsorship?"*, *"Expected hourly rate?"*. Phase 4 is SmartApply's
+memory of how each consultant answers them: the consultant writes it, **someone else
+approves it**, and only then may it fill a form. Salary and work-authorisation answers
+go to the organisation admin rather than the recruiter, because those two carry
+commercial and legal consequences a recruiter should not settle alone.
+
+It is the last piece before unattended form-filling: discovery can find a job and
+tailoring can produce a resume, but the moment a form asks *"Do you require
+sponsorship?"* the pipeline stops without a pre-approved answer.
+
+Proposed in `PHASE_4_PROPOSAL.md`, built as **option A** from §9 of that document.
+
+## The workflow
+
+```
+Question exists                     → seeded standard set, raised by a recruiter,
+        │                             or (Phase 5) asked by a real form
+        ▼
+CONSULTANT answers it               → PENDING. Never used to fill anything.
+        │
+Routing decided by CATEGORY         → GENERAL   → the assigned recruiter
+        │                             SALARY    → ORG_ADMIN only  (R-07)
+        │                             WORK_AUTH → ORG_ADMIN only  (R-07)
+        │                             unclear   → ORG_ADMIN, deliberately
+        ▼
+REVIEWER picks one of three         ┌─ Approve as-is
+        │                           ├─ Correct and approve  (edit recorded as theirs,
+        │                           │                        original text kept)
+        │                           └─ Reject with note     (note mandatory)
+        ▼
+APPROVED → enters the bank          → only now may a form be filled with it
+        │
+        └─→ rejected? the consultant sees the note, rewrites, resubmits
+```
+
+## What was built
+
+### Migrations `019`–`021` — 5 tables
+
+| Migration | Creates |
+|---|---|
+| `019_answer_lookups.sql` | `lkp_answer_statuses`, `lkp_question_categories` |
+| `020_questions.sql` | `questions` (+ normalised key), `consultant_questions` |
+| `021_answers.sql` | `answers` — append-only revisions |
+
+Database-enforced invariants, in the same shape as Phases 2 and 3:
+
+```sql
+CREATE UNIQUE INDEX uq_one_current_answer
+    ON answers (consultant_id, question_id) WHERE is_current;
+
+CREATE UNIQUE INDEX uq_question_key_per_org
+    ON questions (organization_id, normalised_key);
+```
+
+### Seed — the standard question set
+
+`db/seeds/004_common_questions_seed.js` seeds **26 questions per organisation** (18
+general, 4 salary, 4 work-auth). This is what makes the phase usable before Phase 5:
+questions are meant to arrive from real forms, and there are none yet, so without a
+starting set the inbox would ship permanently empty. Consultants answer them during
+onboarding — which is what a staffing firm does anyway — and Phase 5 then finds
+answers already waiting instead of stalling on its first application.
+
+### `config/questionNormaliser.js`
+
+Two pure functions that decide most of what the bank is worth, kept free of database
+access so they stay unit-testable against real form wording later.
+
+### Endpoints
+
+```
+GET    /api/portal/questions                       outstanding + my bank
+GET    /api/portal/answers/count                   sidebar badge
+POST   /api/portal/answers                         submit or revise
+
+GET    /api/management/answers                     inbox, recruiter-narrowed
+GET    /api/management/answers/count               badge — ACTIONABLE items only
+POST   /api/management/answers/:id/review          approve | correct+approve | reject
+GET    /api/management/consultants/:id/answers     one consultant's bank
+POST   /api/management/consultants/:id/questions   raise a question at one person
+
+GET    /api/management/questions                   the org bank
+POST   /api/management/questions                   ORG_ADMIN only
+PATCH  /api/management/questions/:id               ORG_ADMIN only
+GET    /api/lookups                                + answerStatuses, questionCategories
+```
+
+Review routes are `isManagement`, not `isOrgAdmin` — P-04 lets a recruiter approve for
+their own consultants. The two narrowings that cannot be expressed as route guards
+happen in the controller: **scope** via `canAccessConsultant`, and **routing** via the
+category's `requires_owner_approval`.
+
+### Screens
+
+| Route | Role | What |
+|---|---|---|
+| `/portal/answers` | CONSULTANT | **New.** To-answer list and their own bank, with reviewer notes and both texts when corrected |
+| `/management/answers` | ORG_ADMIN + RECRUITER | **New.** Inbox with similar-question grouping, waiting age, and locked sensitive items |
+| `/management/consultants/:id` | ORG_ADMIN + RECRUITER | **Third tab** — Answers. Read-only bank plus "Ask a question" |
+| Sidebar | both | Two new badges |
+
+## Permission matrix
+
+| Action | SUPER_ADMIN | ORG_ADMIN | RECRUITER | CONSULTANT |
+|---|:---:|:---:|:---:|:---:|
+| Answer a question | ✗ | ✗ | ✗ | **✓ own only** |
+| Approve GENERAL | ✗ | ✓ all | **✓ assigned** | ✗ |
+| Approve SALARY / WORK_AUTH | ✗ | **✓ only** | **✗ visible but locked** | ✗ |
+| Correct while approving | ✗ | ✓ | ✓ non-sensitive | ✗ |
+| View a consultant's bank | ✗ | ✓ all | ✓ assigned | ✓ own |
+| Curate the shared question bank | ✗ | **✓ only** | ✗ (may raise at a consultant) | ✗ |
+
+## Design decisions
+
+| Decision | Choice | Why |
+|---|---|---|
+| Sensitivity routing | **`requires_owner_approval` on the category row** | The rule is data, not a hardcoded list of names. Making "Notice period" owner-only later is a seed change. |
+| Unclassifiable questions | Route to **owner approval**, not GENERAL | The two errors are not the same size. A GENERAL question wrongly sent to the admin costs thirty seconds; a salary question wrongly marked GENERAL lets a recruiter commit a rate on the consultant's behalf, which is what R-07 exists to prevent. |
+| Question matching | **Exact normalised match** — no stemming, synonyms or fuzzy distance | Too loose reuses an answer for a question that merely looked similar, putting words in someone's mouth on a real application. Too tight leaves a duplicate. Accepting duplicates is the cheaper failure. Fuzzy matching waits for real form data to tune against. |
+| Answer storage | **Append-only revisions** | The audit question is "who approved this exact wording?". A mutable row cannot answer it. |
+| Correct and approve | Keeps **both** texts + `was_corrected` | Overwriting the consultant's words would make the trail lie about who said what — same reasoning as Phase 2.1's distinct `CANCELLED` status. |
+| Sensitive items in a recruiter's inbox | **Visible, locked, with a reason** | Hiding them leaves the recruiter wondering why their consultant is stuck. |
+| Recruiter badge count | **Actionable items only** | Counting locked items would send them to an inbox where nothing is clickable. |
+| Two-person rule (R-06) | Checked server-side **even though unreachable** | Consultants have no review endpoint today. A guarantee resting on "there is currently no route" stops being one the moment somebody adds a route. |
+
+## Manual test gate — Phase 4
+
+Automated coverage: **60 HTTP assertions + 5 normaliser unit checks**, passing twice
+consecutively. Lives in `backend/tests/answers.test.mjs`, runnable with
+`npm run test:answers`.
+
+### Answering
+| # | As | Do | Expect |
+|---|---|---|---|
+| 1 | consultant | Open My Answers | 26 standard questions listed to answer |
+| 2 | consultant | Answer one | PENDING; not in the approved bank |
+| 3 | consultant | Resubmit identical text | **409** |
+| 4 | consultant | Submit different text | Revision 2; exactly one current row |
+| 5 | consultant | Submit blank | **422** |
+
+### Routing (R-07)
+| # | As | Do | Expect |
+|---|---|---|---|
+| 6 | recruiter | Open the inbox | GENERAL items actionable |
+| 7 | recruiter | Look at a SALARY item | **Visible, locked**, reason shown |
+| 8 | recruiter | `POST .../review` on it by hand | **403** |
+| 9 | recruiter | Same for WORK_AUTH | **403** |
+| 10 | admin | Approve the SALARY item | **200** |
+| 11 | admin | Add a question the classifier cannot place | Filed owner-only, **not** GENERAL |
+
+### Reviewing
+| # | Do | Expect |
+|---|---|---|
+| 12 | Approve as-is | Enters the bank, `wasCorrected` false |
+| 13 | Correct and approve | Bank holds the edit; consultant's original preserved |
+| 14 | Reject with no note | **422** |
+| 15 | Reject with a note | Consultant sees the note |
+| 16 | Decide an already-decided answer | **409** |
+| 17 | Consultant re-answers after rejection | Allowed, new revision |
+| 18 | Same question pending for several consultants | Grouped; each approved and audited **separately** |
+
+### Permissions — negatives
+| # | As | Do | Expect |
+|---|---|---|---|
+| 19 | consultant | Open the management inbox | **403** |
+| 20 | consultant | Review anything | **403** |
+| 21 | recruiter (unassigned) | Open the inbox | **Empty**, not everyone's |
+| 22 | recruiter (unassigned) | Review by id | **404** |
+| 23 | admin@apex | Any Molina answer id | **404** |
+| 24 | superadmin | Any answers endpoint | **403** |
+| 25 | recruiter | `POST /management/questions` | **403** — the shared bank is ORG_ADMIN's |
+| 26 | recruiter | Raise a question at an **unassigned** consultant | **404** |
+
+### Question bank
+| # | Do | Expect |
+|---|---|---|
+| 27 | Add "What is your desired base salary…?" | Auto-categorised **SALARY** |
+| 28 | Add the same question differently punctuated and cased | **409** duplicate |
+| 29 | Check `corporate` / `PayPal` do not trip `rate` / `pay` | Stay GENERAL |
+
+### Lifecycle
+| # | Do | Expect |
+|---|---|---|
+| 30 | Terminate a consultant with pending answers | Cancelled in the **same transaction**; `cancelledAnswers` reported |
+| 31 | Check their bank afterwards | Nothing left PENDING |
+
+### Audit
+| # | Do | Expect |
+|---|---|---|
+| 32 | Submit, approve, reject | `Submitted Answer` / `Approved Answer` / `Rejected Answer` |
+| 33 | Read a correction entry | Records **before and after** text |
+
+## Known gaps carried out of Phase 4
+
+| Gap | Detail |
+|---|---|
+| **`/management/questions` has no page** | Proposal §4 item 23. Endpoints exist and are tested; the ORG_ADMIN curation screen is not built. Nothing is blocked — recruiters raise questions from the consultant tab — but the shared bank is not editable through the UI. |
+| **The UI has never been rendered in a browser** | Builds and passes static analysis. See `ISSUES.md` **M-5**. |
+| Usage counts ("used 14 times") | Needs application records — Phase 5. |
+| Auto-release of queue items parked on an unknown | Proposal item 49. No queue exists yet; a one-line hook once Phase 5 does. |
+| Fuzzy question matching | Deliberate — needs real form data to tune against. |
+
+---
+---
+
 # Upcoming
 
 | Phase | Scope |
 |---|---|
-| 4 | Answer bank + approval workflow (two-person rule, salary/work-auth routed to owner) — proposed in `PHASE_4_PROPOSAL.md` |
 | 5 | Job postings, queue items, application records + Q&A |
 | 6 | Contacts, do-not-contact, contact store |
 | later | Two-step verification · forgot-password over SMTP · job discovery engine · resume tailoring · consultant desktop app |

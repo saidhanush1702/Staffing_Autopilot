@@ -14,15 +14,26 @@ the last audit's credibility came from not asserting what it had not run.
 |---|---|---|
 | 🔴 Critical — security | 0 | both prior criticals verified fixed |
 | 🟠 High — workflow breaks | **2** | H-1 and H-2 fixed; 2 carried forward still open |
-| 🟡 Medium | **4** | M-3 fixed |
+| 🟡 Medium | **5** | M-3 fixed; M-4 partly fixed; M-6 new in Phase 4 |
 | 🔵 Low / debt | 6 | |
 | ⚫ Environment | 1 | has interrupted work three times |
 | 💬 By design, not bugs | 3 | |
-| **Total open** | **13** | |
+| **Total open** | **14** | |
 
-**Fixed in this round:** H-1, H-2, M-3 — see their entries below. 28 assertions
-verifying the three, plus a 12-assertion re-run of the criteria permission matrix
-to confirm the `resolveConsultant` refactor caused no regression.
+**Fixed:** H-1, H-2, M-3 — 28 assertions verifying the three, plus a 12-assertion
+re-run of the criteria permission matrix confirming the `resolveConsultant` refactor
+caused no regression.
+
+**Partly fixed:** M-4 — Phase 4's suite is in the repo behind `npm test`; three
+earlier suites are not.
+
+**New in Phase 4:** M-6 (question-bank screen not built). M-5 widened — five more
+screens and four more dialogs now exist that have never been rendered.
+
+Three bugs were found and fixed *during* Phase 4 rather than surviving into this
+register: `pageResult` called with the wrong signature (inbox pagination metadata was
+garbage), `cancelledAnswers` missing from the terminate response, and a malformed
+predicate in `classifyQuestion`.
 
 ---
 
@@ -196,15 +207,24 @@ An agency onboarding someone who emailed their CV has no route in.
 > `Viewed` falls through to the neutral colour in `AuditLogPanel`, matching the
 > existing `Viewed Password` action. No colour-map change needed.
 
-### M-4 · The test suites live in a scratchpad, not the repo
+### M-4 · The test suites live in a scratchpad, not the repo — ◐ PARTLY FIXED
 
-Phase 2.1's 48 assertions, the 33 assignment assertions, and Phase 3's 57 are all
-throwaway scripts in a temp directory. Nothing in the repository can re-run them.
-Every regression check so far has depended on a script that no longer exists by the
-next session.
-
-**Fix:** move them to `backend/tests/` behind `npm test`. They need only Node's
-built-in runner and a seeded database.
+> **Phase 4's suite is in the repo**: `backend/tests/answers.test.mjs`, 60 HTTP
+> assertions, wired to `npm test` and `npm run test:answers`. It passes **twice
+> consecutively** — deliberately verified, because a suite that only passes on a
+> clean database is not a regression check.
+>
+> It also **creates its own fixtures** rather than consuming the seeded demo
+> accounts. That is a direct consequence of **L-6**: a suite naming
+> `recruiter1@molina.local` breaks permanently the first time some other run
+> terminates that account, which is exactly what happened to Phase 3's suite.
+>
+> **Still outstanding:** Phase 2.1's 48 assertions, the 33 assignment assertions,
+> and Phase 3's 57 remain throwaway scripts in a temp directory. Phase 3's is
+> additionally **unrunnable** now, since it logs in as a terminated account.
+>
+> **Remaining fix:** port those three to `backend/tests/`, using the
+> self-provisioning fixture pattern the Phase 4 suite establishes.
 
 ### M-5 · The design-system refactor has never been rendered in a browser
 
@@ -217,8 +237,29 @@ being imported and no component is referenced without being in scope.
 or a layout that collapses. The four dialogs, the Users role tabs, and the super
 admin org detail page all warrant a manual pass.
 
+**Phases 3 and 4 have widened this considerably.** Never rendered, on top of the
+refactor: the Search Criteria tab with its editor, version history, diff and restore
+dialogs; `/portal/criteria`; the answer inbox with grouping and locked sensitive
+items; `/portal/answers`; the Answers tab on Consultant Detail. That is five new
+screens and four new dialogs verified only by `vite build` and static analysis.
+
 **Fix:** install Playwright and add a smoke test that loads each route per role, or
-click through the six screens by hand once and record it.
+click through the screens by hand once and record it.
+
+### M-6 · Phase 4's question-bank screen was not built
+
+`/management/questions` — proposal §4 item 23, the ORG_ADMIN screen for curating the
+shared question set. The endpoints exist and are covered by tests (`GET`, `POST`,
+`PATCH`, duplicate detection, the recruiter 403), but there is no page behind them.
+
+Nothing is blocked: recruiters raise questions from the consultant's Answers tab, and
+the 26 seeded standard questions cover the common cases. But an ORG_ADMIN cannot
+retire a stale question or fix a mis-categorised one without calling the API directly
+— and recategorising is exactly what the fail-safe classifier is designed to invite,
+since it deliberately over-assigns unclear questions to owner review.
+
+**Fix:** a list screen over `GET /management/questions` with an inline category select
+and an active toggle.
 
 ---
 

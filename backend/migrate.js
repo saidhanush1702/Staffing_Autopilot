@@ -26,6 +26,7 @@ import pg from 'pg';
 import { runSeed001 } from './db/seeds/001_lookups_seed.js';
 import { runSeed002 } from './db/seeds/002_super_admin_seed.js';
 import { runSeed003 } from './db/seeds/003_demo_org_seed.js';
+import { runSeed004 } from './db/seeds/004_common_questions_seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'db', 'migrations');
@@ -105,6 +106,9 @@ const main = async () => {
         await runSeed001(client);   // lookups
         await runSeed002(client);   // super admin
         await runSeed003(client);   // demo organisation + users + assignments
+        // Runs after 003 because it seeds a question set PER ORGANISATION,
+        // so the organisations have to exist first.
+        await runSeed004(client);   // standard application questions
         console.log('\n✅ All migrations and seeds completed.');
     } catch (err) {
         failed = true;

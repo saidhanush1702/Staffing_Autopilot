@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
-    ShieldCheck, ClipboardCheck, X, Search,
+    ShieldCheck, ClipboardCheck, X, Search, MessageSquare,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -15,6 +15,10 @@ import api from '../../api/axios.js';
  * `badge` names a counter fetched below:
  *   approvals — pending profile change requests awaiting this reviewer
  *   incomplete — required profile fields the consultant still has to fill
+ *   answers — answers this reviewer can actually act on (locked sensitive
+ *             items are excluded, so the badge never sends a recruiter to an
+ *             inbox where nothing is clickable)
+ *   unanswered — questions the consultant has not answered yet
  */
 const NAV_ITEMS = [
     { to: '/super-admin', label: 'Platform', icon: ShieldCheck, roles: ['SUPER_ADMIN'] },
@@ -30,6 +34,10 @@ const NAV_ITEMS = [
         to: '/management/approvals', label: 'Approvals', icon: ClipboardCheck,
         roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'approvals',
     },
+    {
+        to: '/management/answers', label: 'Answer approvals', icon: MessageSquare,
+        roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'answers',
+    },
     { to: '/management/assignments', label: 'Assignments', icon: Link2, roles: ['ORG_ADMIN'] },
 
     { to: '/portal', label: 'Dashboard', icon: LayoutDashboard, roles: ['CONSULTANT'] },
@@ -39,6 +47,10 @@ const NAV_ITEMS = [
     },
     // Read-only for the consultant — their recruiter owns the criteria (R-23).
     { to: '/portal/criteria', label: 'My Search Criteria', icon: Search, roles: ['CONSULTANT'] },
+    {
+        to: '/portal/answers', label: 'My Answers', icon: MessageSquare,
+        roles: ['CONSULTANT'], badge: 'unanswered',
+    },
 ];
 
 const POLL_MS = 30_000;
@@ -51,17 +63,35 @@ const POLL_MS = 30_000;
 const Sidebar = ({ open = false, onClose = () => {} }) => {
     const { user } = useAuth();
     const location = useLocation();
-    const [badges, setBadges] = useState({ approvals: 0, incomplete: 0 });
+    const [badges, setBadges] = useState({ approvals: 0, incomplete: 0, answers: 0, unanswered: 0 });
 
     const refreshBadges = useCallback(async () => {
         if (!user) return;
         try {
             if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
-                const { data } = await api.get('/management/profile-changes/count');
-                setBadges((b) => ({ ...b, approvals: data.pending }));
+                const [changes, answers] = await Promise.all([
+                    api.get('/management/profile-changes/count'),
+                    api.get('/management/answers/count'),
+                ]);
+                setBadges((b) => ({
+                    ...b,
+                    approvals: changes.data.pending,
+                    // `pending` counts only what THIS reviewer can act on. A
+                    // recruiter's badge deliberately excludes locked sensitive
+                    // items — sending them to an inbox where nothing is
+                    // clickable would be worse than no badge.
+                    answers: answers.data.pending,
+                }));
             } else if (user.role === 'CONSULTANT') {
-                const { data } = await api.get('/portal/me');
-                setBadges((b) => ({ ...b, incomplete: data.missingFields.length }));
+                const [me, unanswered] = await Promise.all([
+                    api.get('/portal/me'),
+                    api.get('/portal/answers/count'),
+                ]);
+                setBadges((b) => ({
+                    ...b,
+                    incomplete: me.data.missingFields.length,
+                    unanswered: unanswered.data.outstanding,
+                }));
             }
         } catch { /* a stale badge must never break the shell */ }
     }, [user]);

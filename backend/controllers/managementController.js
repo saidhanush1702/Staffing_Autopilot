@@ -400,7 +400,7 @@ export const terminateUser = async (req, res, next) => {
         }
 
         const {
-            releasedAssignments, cancelledRequests, pausedCriteria,
+            releasedAssignments, cancelledRequests, pausedCriteria, cancelledAnswers,
         } = await withTransaction(async (client) => {
             await client.query(
                 `UPDATE users
@@ -462,10 +462,26 @@ export const terminateUser = async (req, res, next) => {
                 [req.user.id, orgId, target.id],
             );
 
+            // Phase 4, same reasoning as the change request above: a pending
+            // answer from someone who no longer works here is not decidable.
+            // Approving would put a non-employee's words into the bank for a
+            // form filler to use; rejecting sends a note nobody can read.
+            const { rowCount: cancelledAnswers } = await client.query(
+                `UPDATE answers
+                    SET status_id = (SELECT id FROM lkp_answer_statuses WHERE name = 'REJECTED'),
+                        reviewed_by = $1, reviewed_at = now(),
+                        review_note = 'Cancelled automatically — the consultant was terminated.'
+                  WHERE consultant_id = $2 AND organization_id = $3
+                    AND is_current
+                    AND status_id = (SELECT id FROM lkp_answer_statuses WHERE name = 'PENDING')`,
+                [req.user.id, target.id, orgId],
+            );
+
             return {
                 releasedAssignments: released,
                 cancelledRequests: cancelled,
                 pausedCriteria: paused,
+                cancelledAnswers,
             };
         });
 
@@ -477,7 +493,8 @@ export const terminateUser = async (req, res, next) => {
                 + (req.body.reason ? ` — ${req.body.reason}` : '')
                 + (releasedAssignments ? ` (${releasedAssignments} assignment(s) released)` : '')
                 + (cancelledRequests ? ' (pending profile changes cancelled)' : '')
-                + (pausedCriteria ? ' (job discovery paused)' : ''),
+                + (pausedCriteria ? ' (job discovery paused)' : '')
+                + (cancelledAnswers ? ` (${cancelledAnswers} pending answer(s) cancelled)` : ''),
             ipAddress: req.ip,
         }).catch(() => {});
 
@@ -487,6 +504,7 @@ export const terminateUser = async (req, res, next) => {
             releasedAssignments,
             cancelledRequests,
             pausedCriteria,
+            cancelledAnswers,
         });
     } catch (err) {
         return next(err);
