@@ -58,6 +58,13 @@ import {
     listQuestions, createQuestion, updateQuestion, raiseQuestionForConsultant,
     createQuestionSchema, updateQuestionSchema, raiseQuestionSchema,
 } from './controllers/questionController.js';
+import {
+    triggerRun, listRuns, listSources, getSchedule, updateSchedule, scheduleSchema,
+} from './controllers/discoveryController.js';
+import {
+    listPostings, getPosting, listConsultantQueue, updateSource, toggleSourceSchema,
+} from './controllers/postingController.js';
+import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -276,6 +283,31 @@ app.post('/api/management/questions',
 app.patch('/api/management/questions/:id',
     [verifyToken, isOrgAdmin, validate(updateQuestionSchema)], updateQuestion);
 
+/* ─────────────── job discovery (Phase 5) ───────────────────────── */
+//
+// Triggering a run reaches out to the open web and consumes rate budget at
+// every enabled board, so it is ORG_ADMIN only. Reading run history and board
+// health is open to management, because a recruiter wondering why their
+// consultant's queue is empty should be able to see that a source is failing.
+
+app.post('/api/management/discovery/run', [verifyToken, isOrgAdmin], triggerRun);
+app.get('/api/management/discovery/runs', [verifyToken, isManagement], listRuns);
+app.get('/api/management/discovery/sources', [verifyToken, isManagement], listSources);
+// Enabling a board is when this system starts reaching out to the open web,
+// so it is ORG_ADMIN only and audited.
+app.patch('/api/management/discovery/sources/:id',
+    [verifyToken, isOrgAdmin, validate(toggleSourceSchema)], updateSource);
+
+// The automatic 4-hour cycle. Readable by management so a recruiter can see
+// whether it is on; switching it belongs to ORG_ADMIN, like enabling a board.
+app.get('/api/management/discovery/schedule', [verifyToken, isManagement], getSchedule);
+app.patch('/api/management/discovery/schedule',
+    [verifyToken, isOrgAdmin, validate(scheduleSchema)], updateSchedule);
+
+app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
+app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
+app.get('/api/management/consultants/:id/queue', [verifyToken, isManagement], listConsultantQueue);
+
 /* ─────────────────────── consultant portal ─────────────────────── */
 
 app.get('/api/portal/me', [verifyToken, isConsultant], myProfile);
@@ -311,6 +343,8 @@ const start = async () => {
             process.exit(1);
         }
     }
+
+    startDiscoveryScheduler();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);
