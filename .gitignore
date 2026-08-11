@@ -12,3 +12,5 @@ coverage/
 .vite/
 .DS_Store
 Thumbs.db
+
+neon deploy cred.txt

@@ -44,6 +44,18 @@ git ls-files backend/connectors/
 If that prints nothing, the deploy will fail. `.gitignore` is not the cause;
 the files were simply never added.
 
+### Pick the right repository and branch
+
+Two traps, both of which deploy successfully and give you a working-looking site
+running the wrong code:
+
+- **Two remotes exist.** `origin` is `saidhanush1702/Staffing_Autopilot`;
+  `client` is `v4m5h1/SmartApply`. The branch below is pushed to **`origin`** —
+  connect Render and Vercel to that repository.
+- **The work is on `feature/webapplication`, which is 5 commits ahead of
+  `main`.** Both Render and Vercel default to `main`. Set the branch explicitly
+  in both dashboards, or merge to `main` first and deploy that.
+
 ---
 
 ## 1. Why this stack, and not Vercel functions
@@ -139,17 +151,39 @@ exactly 64 hex characters.
 
 ## 4. Run the migrations against Neon
 
-From your machine, pointing at the remote database. In PowerShell, from the
-`backend` folder:
+From your machine, pointing at the remote database.
+
+**The seeds run here, not on Render** — including the one that creates your
+super admin. Two consequences that cause most first-deploy login failures:
+
+- `PASSWORD_ENC_KEY` **must be set for this command**, and must be the *exact
+  same value* you later put on Render. Seed passwords are encrypted with it and
+  `verifyPassword` decrypts with it
+  ([crypto.js:83](backend/utils/crypto.js:83)). Two different keys means every
+  login fails, even though both values are individually valid.
+- The `SEED_SUPER_ADMIN_*` variables only have an effect **here**. Setting them
+  on Render does nothing, because the server never runs seeds.
+
+In PowerShell, from the `backend` folder:
 
 ```powershell
-$env:DATABASE_URL="postgresql://...your neon string..."; $env:DB_SSL="true"; node migrate.js
+$env:DATABASE_URL="postgresql://...your neon string..."
+$env:DB_SSL="true"
+$env:PASSWORD_ENC_KEY="<the 64-hex key from step 3>"
+$env:SEED_SUPER_ADMIN_EMAIL="you@yourdomain.com"
+$env:SEED_SUPER_ADMIN_PASSWORD="<a strong password you choose>"
+node migrate.js
 ```
 
-You should see 25 migrations applied, then the seeds. This creates the schema,
-the lookups, the super admin, and a demo organisation with users.
+You should see 26 migrations applied, then the seeds. This creates the schema,
+the lookups, the super admin, and a demo organisation with users. The last
+seed line prints the super admin email and password — that is your login.
 
-Two things worth knowing:
+> Seed 002 is idempotent and **never resets an existing password**. If you seed
+> with the wrong `PASSWORD_ENC_KEY`, re-running will not fix it — delete that
+> user row in the Neon SQL editor and seed again, or seed a different email.
+
+Two more things worth knowing:
 
 - `DATABASE_URL` overrides every `DB_*` variable, so your local `.env` is
   ignored for this run and your local database is untouched.
@@ -179,15 +213,16 @@ Add these environment variables:
 
 ```
 NODE_ENV=production
-DATABASE_URL=<your neon string>
+DATABASE_URL=<your neon string — identical to step 4>
 DB_SSL=true
 JWT_SECRET=<from step 3>
-PASSWORD_ENC_KEY=<from step 3>
+PASSWORD_ENC_KEY=<from step 3 — MUST match what you used in step 4>
 APP_TIMEZONE=Asia/Kolkata
 DISCOVERY_ENABLED=false
-SEED_SUPER_ADMIN_EMAIL=superadmin@staffing.local
-SEED_SUPER_ADMIN_PASSWORD=<a real password, not the .env.example one>
 ```
+
+No `SEED_SUPER_ADMIN_*` here. Those belong to the migration command in step 4;
+the server never runs seeds, so setting them on Render has no effect.
 
 Do **not** set `PORT` — Render injects it, and `server.js` already reads it.
 
@@ -327,6 +362,7 @@ Nothing here is a rewrite. In order of value:
 | `/api/health` returns `degraded` | Wrong `DATABASE_URL`, or `DB_SSL` not `true` |
 | Server exits at boot | `JWT_SECRET` or `PASSWORD_ENC_KEY` missing. Render logs name the one that is missing |
 | `PASSWORD_ENC_KEY` error at login | Not exactly 64 hex characters |
+| Correct password rejected at login | `PASSWORD_ENC_KEY` on Render differs from the one used to seed in step 4. Re-seeding will not fix it — delete the user row and seed again |
 | Refreshing a deep link 404s | The SPA rewrite in `vercel.json` is missing or ordered before `/api` |
 | PDF preview blank, rest of app fine | Third-party cookie blocked in the iframe — you are on split domains |
 | First request of the day times out | Cold start; check the keep-alive job is running |
