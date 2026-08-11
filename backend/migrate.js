@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
+import { dbConnection } from './db.js';
 import { runSeed001 } from './db/seeds/001_lookups_seed.js';
 import { runSeed002 } from './db/seeds/002_super_admin_seed.js';
 import { runSeed003 } from './db/seeds/003_demo_org_seed.js';
@@ -32,14 +33,33 @@ import { runSeed005 } from './db/seeds/005_job_sources_seed.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'db', 'migrations');
 
-const pool = new pg.Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT ?? 5432),
-    database: process.env.DB_NAME,
-    user: process.env.DB_MIGRATION_USER,
-    password: process.env.DB_MIGRATION_PASS,
-    max: 2,
-});
+/**
+ * migrator_role owns the schema; the runtime app_role only does CRUD. That
+ * split is what lets migration 005 revoke UPDATE/DELETE on audit_logs from the
+ * user the server itself connects as.
+ *
+ * A managed database typically issues one role and one connection string, so
+ * there is nothing to split and the same URL does both jobs — migration 005
+ * already guards its GRANT behind a pg_roles check, so it simply skips.
+ * MIGRATION_DATABASE_URL covers the case where the provider does let you
+ * create a second, more privileged role.
+ */
+const migrationConnection = () => {
+    const base = dbConnection();
+
+    if (base.connectionString) {
+        const url = process.env.MIGRATION_DATABASE_URL;
+        return url ? { ...base, connectionString: url } : base;
+    }
+
+    return {
+        ...base,
+        user: process.env.DB_MIGRATION_USER,
+        password: process.env.DB_MIGRATION_PASS,
+    };
+};
+
+const pool = new pg.Pool({ ...migrationConnection(), max: 2 });
 
 const ensureMigrationsTable = async (client) => {
     await client.query(`

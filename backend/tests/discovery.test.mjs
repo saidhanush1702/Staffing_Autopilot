@@ -1,20 +1,24 @@
 /**
- * Phase 5 — job discovery. Unit + pipeline suite.
+ * Phase 5 — job discovery. Unit suite.
  *
  *   node tests/discovery.test.mjs
  *
- * The pure layers (fingerprint, JSON-LD extraction, matching) are tested
- * directly. The pipeline is tested by seeding postings straight into the
- * database and running the match-and-queue half of the cycle — deliberately
- * WITHOUT touching the real boards, because a suite whose result depends on
- * what LinkedIn served this morning is not a regression test.
+ * Everything here is pure: fingerprinting, the Google Jobs adapter, and the
+ * matcher. Nothing touches the network or the database.
  *
- * Live board reachability is a separate, manual check: `node tests/probe-boards.mjs`.
+ * That is deliberate. The acquisition layer is now a paid API, so a suite that
+ * called it would cost credits to run and would fail on the day the vendor had
+ * an outage — neither of which is a regression in this codebase. The adapter is
+ * tested against captured response shapes instead, which is the part that
+ * actually breaks when a contract drifts.
  */
 import { fingerprintPosting, normaliseTitle, normaliseCompany, normaliseLocation } from '../config/fingerprint.js';
-import { parsePageJobPostings, __test as jsonldTest } from '../connectors/jsonld.js';
-import { evaluate, hardFilter, preFilter, scoreMatch } from '../config/jobMatcher.js';
-import { BOARDS, boardByName } from '../connectors/boards.js';
+import { evaluate, scoreMatch } from '../config/jobMatcher.js';
+import {
+    jobResultToPosting, resultsToPostings, detectSource, detectPortalType,
+    parsePay, parsePostedAt, PRIORITY_SOURCES,
+} from '../connectors/googleJobs.js';
+import { __test as serpTest, providerConfig } from '../connectors/serpapi.js';
 
 let pass = 0; let fail = 0;
 const check = (label, actual, expected) => {
@@ -27,7 +31,7 @@ const section = (t) => console.log(`\n— ${t} —`);
 
 /* ── fingerprint / R-15 ───────────────────────────────────────────────── */
 
-section('fingerprint — the same job seen on two boards');
+section('fingerprint — the same job seen twice');
 
 const linkedinView = {
     company: 'Acme Technologies, Inc.',
@@ -56,64 +60,210 @@ const other = { company: 'Acme', title: 'Senior React Developer', locationText: 
 check('seniority is not noise', fingerprintPosting(senior) !== fingerprintPosting(junior), true);
 check('location is part of the key (R-15)', fingerprintPosting(senior) !== fingerprintPosting(other), true);
 
-/* ── JSON-LD ──────────────────────────────────────────────────────────── */
+/* ── the Google Jobs adapter ──────────────────────────────────────────── */
 
-section('JSON-LD extraction');
+section('adapter — a complete result');
 
-const page = (obj) => `<html><head><script type="application/ld+json">${JSON.stringify(obj)}</script></head></html>`;
-
-const full = page({
-    '@context': 'https://schema.org',
-    '@type': 'JobPosting',
-    title: 'React Developer',
-    hiringOrganization: { '@type': 'Organization', name: 'Globex' },
-    jobLocation: { '@type': 'Place', address: { addressLocality: 'Dallas', addressRegion: 'TX' } },
-    employmentType: 'CONTRACTOR',
-    datePosted: '2026-08-01',
-    baseSalary: {
-        '@type': 'MonetaryAmount',
-        currency: 'USD',
-        value: { '@type': 'QuantitativeValue', minValue: 60, maxValue: 75, unitText: 'HOUR' },
-    },
+/** A captured-shape SerpApi `jobs_results` entry. */
+const result = {
+    title: 'Senior React Developer',
+    company_name: 'Globex',
+    location: '   Dallas, TX   ',
+    via: 'via LinkedIn',
+    share_link: 'https://www.google.com/search?q=senior+react+developer',
     description: '<p>Build <b>things</b>. Ship <i>often</i>.</p>',
-});
-const [p1] = parsePageJobPostings(full, 'https://x/job/1');
-check('company', p1.company, 'Globex');
-check('title', p1.title, 'React Developer');
-check('location', p1.locationText, 'Dallas, TX');
-check('work type mapped', p1.workType, 'CONTRACT');
-check('pay unit', p1.payUnit, 'HOURLY');
-check('pay range', [p1.payMin, p1.payMax], [60, 75]);
-check('description de-tagged cleanly', p1.description, 'Build things. Ship often.');
+    job_id: 'eyJqb2JfdGl0bGUiOiJTZW5pb3IgUmVhY3QgRGV2ZWxvcGVyIn0=',
+    extensions: ['3 days ago', 'Full-time', '$60–$75 an hour'],
+    detected_extensions: {
+        posted_at: '3 days ago',
+        schedule_type: 'Contractor',
+        salary: '$60–$75 an hour',
+    },
+    apply_options: [
+        { title: 'Indeed', link: 'https://www.indeed.com/viewjob?jk=abc' },
+        { title: 'LinkedIn', link: 'https://www.linkedin.com/jobs/view/123456' },
+    ],
+    job_highlights: [
+        { title: 'Qualifications', items: ['5+ years of React', 'TypeScript'] },
+    ],
+};
 
-check('@graph wrapper found', parsePageJobPostings(page({
-    '@context': 'https://schema.org',
-    '@graph': [{ '@type': 'WebPage' }, {
-        '@type': 'JobPosting', title: 'QA Engineer',
-        hiringOrganization: { name: 'Initech' },
-    }],
-}), 'u').length, 1);
+const NOW = new Date('2026-08-11T12:00:00Z');
+const adapted = jobResultToPosting(result, { now: NOW });
 
-check('TELECOMMUTE detected as remote', parsePageJobPostings(page({
-    '@type': 'JobPosting', title: 'Dev', hiringOrganization: { name: 'X' },
-    jobLocationType: 'TELECOMMUTE',
-}), 'u')[0].isRemote, true);
+check('company', adapted.posting.company, 'Globex');
+check('title', adapted.posting.title, 'Senior React Developer');
+check('location is trimmed', adapted.posting.locationText, 'Dallas, TX');
+check('source read from `via`', adapted.source, 'LINKEDIN');
+check('portal type read from the apply host', adapted.portalType, 'LINKEDIN');
+check('work type mapped', adapted.posting.workType, 'CONTRACT');
+check('pay unit', adapted.posting.payUnit, 'HOURLY');
+check('pay range', [adapted.posting.payMin, adapted.posting.payMax], [60, 75]);
+check('provider job id kept', adapted.posting.providerJobId, result.job_id);
+check('posted_at resolved against `now`',
+    adapted.posting.postedAt, new Date('2026-08-08T12:00:00Z').toISOString());
 
-check('posting with no company is rejected', parsePageJobPostings(page({
-    '@type': 'JobPosting', title: 'Orphan',
-}), 'u').length, 0);
+// The apply link matching the detected board wins over the first one listed —
+// a LinkedIn posting should send a person to LinkedIn, not to Indeed.
+check('apply URL prefers the detected board',
+    adapted.posting.sourceUrl, 'https://www.linkedin.com/jobs/view/123456');
 
-check('salary without a unit is discarded, not guessed', parsePageJobPostings(page({
-    '@type': 'JobPosting', title: 'Dev', hiringOrganization: { name: 'X' },
-    baseSalary: { value: { minValue: 100000 } },
-}), 'u')[0].payUnit, null);
+check('description is de-tagged and keeps highlights',
+    adapted.posting.description,
+    'Build things. Ship often.\n\nQualifications:\n• 5+ years of React\n• TypeScript');
 
-check('malformed block does not lose a good one',
-    parsePageJobPostings(
-        '<script type="application/ld+json">{oops</script>' + full, 'u',
-    ).length, 1);
+section('adapter — attribution');
 
-check('page with no JSON-LD yields nothing', parsePageJobPostings('<html>nothing</html>', 'u').length, 0);
+const via = (v, options = []) => detectSource({ via: v, apply_options: options, share_link: 'https://x/y' });
+
+check('"via Built In" → BUILTIN', via('via Built In').source, 'BUILTIN');
+check('"via BuiltIn Chicago" → BUILTIN', via('via BuiltIn Chicago').source, 'BUILTIN');
+check('"via Linkedin Jobs" → LINKEDIN', via('via Linkedin Jobs').source, 'LINKEDIN');
+check('"via Wellfound" → WELLFOUND', via('via Wellfound').source, 'WELLFOUND');
+check('"via The Ladders" → THELADDERS', via('via The Ladders').source, 'THELADDERS');
+check('"via CrunchBoard" → CRUNCHBOARD', via('via CrunchBoard').source, 'CRUNCHBOARD');
+check('"via Indeed" → INDEED', via('via Indeed').source, 'INDEED');
+
+// The whole point of the correction: an unrecognised board is still a real job.
+check('an unknown board falls back to OTHER, never a drop',
+    via('via Some Niche Board').source, 'OTHER');
+
+// `via` is a display string; the apply host is the steadier signal.
+check('an unrecognised `via` is rescued by the apply host',
+    via('via Jobs Portal', [{ title: 'x', link: 'https://www.dice.com/job/1' }]).source, 'DICE');
+
+check('the five named boards are the priority set', PRIORITY_SOURCES,
+    ['LINKEDIN', 'WELLFOUND', 'BUILTIN', 'THELADDERS', 'CRUNCHBOARD']);
+
+section('adapter — portal type is the ATS, not the board');
+
+check('Greenhouse', detectPortalType('https://boards.greenhouse.io/acme/jobs/1'), 'GREENHOUSE');
+check('Lever', detectPortalType('https://jobs.lever.co/acme/abc'), 'LEVER');
+check('Workday', detectPortalType('https://acme.wd1.myworkdayjobs.com/en-US/careers/job/1'), 'WORKDAY');
+check('Ashby', detectPortalType('https://jobs.ashbyhq.com/acme/1'), 'ASHBY');
+// A host that is neither a board nor a known ATS is almost always the
+// employer's own site, which is more useful to record than a shrug.
+check('an unknown host reads as the company careers page',
+    detectPortalType('https://careers.globex.com/apply/9'), 'COMPANY_SITE');
+check('no URL at all is OTHER', detectPortalType(null), 'OTHER');
+
+// A job listed on LinkedIn but applied for through Greenhouse is both, and the
+// two fields must not collapse into one.
+const split = jobResultToPosting({
+    title: 'Platform Engineer',
+    company_name: 'Initech',
+    via: 'via LinkedIn',
+    apply_options: [{ title: 'Greenhouse', link: 'https://boards.greenhouse.io/initech/jobs/7' }],
+}, { now: NOW });
+check('source and portal type are independent',
+    [split.source, split.portalType], ['LINKEDIN', 'GREENHOUSE']);
+
+section('adapter — what it refuses');
+
+check('a result with no company is rejected',
+    jobResultToPosting({ title: 'Orphan', share_link: 'https://x/y' }), null);
+check('a result with no title is rejected',
+    jobResultToPosting({ company_name: 'Globex', share_link: 'https://x/y' }), null);
+check('a result nobody can open is rejected',
+    jobResultToPosting({ company_name: 'Globex', title: 'Dev' }), null);
+check('a bad entry does not lose the good ones in the same page',
+    resultsToPostings([{ title: 'Orphan' }, result], { now: NOW }).length, 1);
+
+section('adapter — remote detection');
+
+check('work_from_home is authoritative', jobResultToPosting({
+    company_name: 'X', title: 'Dev', share_link: 'https://x/y',
+    detected_extensions: { work_from_home: true },
+}).posting.isRemote, true);
+
+// Location is part of the R-15 fingerprint; leaving it null would make every
+// remote job at a company collide differently from the "Anywhere" ones.
+check('a remote job with no location reads as "Anywhere"', jobResultToPosting({
+    company_name: 'X', title: 'Dev', share_link: 'https://x/y',
+    detected_extensions: { work_from_home: true },
+}).posting.locationText, 'Anywhere');
+
+check('"Remote" in the title is enough', jobResultToPosting({
+    company_name: 'X', title: 'Dev (Remote)', location: 'United States', share_link: 'https://x/y',
+}).posting.isRemote, true);
+
+/* ── pay parsing ──────────────────────────────────────────────────────── */
+
+section('pay — parsed strictly or not at all');
+
+const pay = (s) => { const p = parsePay(s); return p ? [p.min, p.max, p.unit] : null; };
+
+check('K range, annual', pay('$120K–$150K a year'), [120000, 150000, 'ANNUAL']);
+check('hourly range', pay('$60–$75 an hour'), [60, 75, 'HOURLY']);
+check('single figure fills both ends', pay('$95,000 a year'), [95000, 95000, 'ANNUAL']);
+check('decimals survive', pay('$25.50 an hour'), [25.5, 25.5, 'HOURLY']);
+check('no currency symbol is still parseable', pay('35–40 an hour'), [35, 40, 'HOURLY']);
+check('"Up to" is a ceiling with no floor', pay('Up to $180K a year'), [null, 180000, 'ANNUAL']);
+check('"From" is a floor with no ceiling', pay('From $100K a year'), [100000, null, 'ANNUAL']);
+
+// The rule that matters: a number without a period is worse than nothing,
+// because the minimum-pay filter would compare it against the wrong floor.
+check('an amount with no period is discarded, not guessed', pay('$150,000'), null);
+check('prose with no number is discarded', pay('Competitive salary'), null);
+check('a monthly figure is discarded — the schema has no unit for it',
+    pay('$8,000 a month'), null);
+check('empty input', pay(null), null);
+
+// "401k" in trailing prose used to parse as $401,000 and become the maximum.
+check('trailing benefits prose cannot inflate the range',
+    pay('$120,000 - $150,000 a year plus 401k matching'), [120000, 150000, 'ANNUAL']);
+
+check('currency is recorded', parsePay('£70K a year').currency, 'GBP');
+check('C$ is not mistaken for USD', parsePay('C$90K a year').currency, 'CAD');
+
+check('salary is found in `extensions` when detected_extensions has none',
+    jobResultToPosting({
+        company_name: 'X', title: 'Dev', share_link: 'https://x/y',
+        extensions: ['2 days ago', 'Full-time', '$110K–$130K a year'],
+    }).posting.payMin, 110000);
+
+/* ── posted date ──────────────────────────────────────────────────────── */
+
+section('posted date');
+
+const days = (n) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+check('"3 days ago"', parsePostedAt('3 days ago', NOW).toISOString(), days(3));
+check('"22 hours ago"', parsePostedAt('22 hours ago', NOW).toISOString(),
+    new Date(NOW.getTime() - 22 * 3_600_000).toISOString());
+check('"30+ days ago" floors at 30', parsePostedAt('30+ days ago', NOW).toISOString(), days(30));
+check('"an hour ago"', parsePostedAt('an hour ago', NOW).toISOString(),
+    new Date(NOW.getTime() - 3_600_000).toISOString());
+check('"Just posted" is now', parsePostedAt('Just posted', NOW).toISOString(), NOW.toISOString());
+check('unparseable is null, not today', parsePostedAt('sometime', NOW), null);
+check('absent is null', parsePostedAt(null, NOW), null);
+
+/* ── the provider client ──────────────────────────────────────────────── */
+
+section('provider — the API key must never be stored');
+
+const withKey = 'https://serpapi.com/search.json?engine=google_jobs&q=dev&api_key=SECRET123';
+check('api_key is redacted', serpTest.redactUrl(withKey).includes('SECRET123'), false);
+check('  and replaced with a marker', serpTest.redactUrl(withKey).includes('api_key=***'), true);
+check('  while the rest of the URL survives',
+    serpTest.redactUrl(withKey).includes('engine=google_jobs'), true);
+check('a malformed URL is still redacted',
+    serpTest.redactUrl('not a url?api_key=SECRET123').includes('SECRET123'), false);
+
+section('provider — request building');
+
+process.env.SERPAPI_KEY = 'TESTKEY';
+const cfg = providerConfig();
+const url = new URL(serpTest.buildUrl({ q: 'react developer', location: 'Dallas' }, cfg));
+check('engine is google_jobs', url.searchParams.get('engine'), 'google_jobs');
+check('query passed through', url.searchParams.get('q'), 'react developer');
+check('location passed through', url.searchParams.get('location'), 'Dallas');
+check('key attached', url.searchParams.get('api_key'), 'TESTKEY');
+// Google discontinued offset pagination; a `start` param would be silently ignored.
+check('no offset pagination', url.searchParams.has('start'), false);
+check('page 2 carries the token',
+    new URL(serpTest.buildUrl({ q: 'x', nextPageToken: 'TOK' }, cfg)).searchParams.get('next_page_token'),
+    'TOK');
 
 /* ── matching ─────────────────────────────────────────────────────────── */
 
@@ -175,76 +325,23 @@ check('empty criteria do not match everything',
         excludedCompanies: [], locations: [], workTypeNames: [], minPay: null,
     }).matched, false);
 
-/* ── board definitions ────────────────────────────────────────────────── */
+/* ── end to end, without the network ──────────────────────────────────── */
 
-section('board definitions');
-check('all five boards defined', Object.keys(BOARDS).length, 5);
+section('a provider result reaches the matcher intact');
 
-// Each board is read one of two ways, and must be fully equipped for whichever
-// it declares. A board half-converted between the two is the failure this
-// catches — e.g. a FEED board still carrying only a searchUrl.
-for (const name of ['LINKEDIN', 'WELLFOUND', 'BUILTIN', 'THELADDERS', 'CRUNCHBOARD']) {
-    const b = boardByName(name);
+const endToEnd = jobResultToPosting({
+    title: 'React Developer',
+    company_name: 'Globex',
+    location: 'Dallas, TX',
+    via: 'via Built In',
+    description: 'Working in React and TypeScript on a modern stack.',
+    detected_extensions: { schedule_type: 'Contractor', salary: '$65–$80 an hour' },
+    apply_options: [{ title: 'Built In', link: 'https://builtin.com/job/react-developer/1' }],
+}, { now: NOW });
 
-    if (b.mode === 'FEED') {
-        const ok = typeof b.feedUrl === 'function'
-            && b.feedUrl({}).startsWith('https://')
-            && typeof b.parseFeedItem === 'function';
-        check(`${name} is a complete FEED board`, ok, true);
-    } else {
-        // Entry pages come either from a search URL or from a sitemap resolver.
-        const hasEntry = typeof b.searchUrl === 'function' || typeof b.entryUrls === 'function';
-        const url = typeof b.searchUrl === 'function'
-            ? b.searchUrl({ q: 'react developer', l: 'Dallas' })
-            : 'https://placeholder';
-        const ok = hasEntry && url.startsWith('https://')
-            && b.linkPattern instanceof RegExp && b.maxDetailPages > 0;
-        check(`${name} is a complete HTML board`, ok, true);
-    }
-}
-
-check('LinkedIn is flagged conservative (R-22)', BOARDS.LINKEDIN.conservative, true);
-check('LinkedIn crawls fewest detail pages',
-    BOARDS.LINKEDIN.maxDetailPages <= Math.min(
-        ...Object.values(BOARDS)
-            .filter((b) => b.name !== 'LINKEDIN' && b.maxDetailPages)
-            .map((b) => b.maxDetailPages),
-    ), true);
-
-// Built In's own robots.txt disallows `/jobs*?search=`. Using it again would
-// be a silent compliance regression, so it is asserted rather than remembered.
-check('Built In does not use the disallowed ?search= URL',
-    typeof BOARDS.BUILTIN.searchUrl, 'undefined');
-check('Built In resolves entry pages from the sitemap',
-    typeof BOARDS.BUILTIN.entryUrls, 'function');
-
-// CrunchBoard serves 403 for every HTML page but 200 for its feed.
-check('CrunchBoard reads from the RSS feed',
-    BOARDS.CRUNCHBOARD.feedUrl({ q: 'sharepoint', l: 'remote' }),
-    'https://www.crunchboard.com/jobs.rss');
-
-const cb = (title) => BOARDS.CRUNCHBOARD.parseFeedItem({
-    title, link: 'https://www.crunchboard.com/jobs/1-x', description: null, publishedAt: null,
-});
-check('CrunchBoard title → title/company/location',
-    (() => { const p = cb('Systems Technician at City of Urbana (Urbana, Illinois, USA)');
-        return [p.title, p.company, p.locationText]; })(),
-    ['Systems Technician', 'City of Urbana', 'Urbana, Illinois, USA']);
-// Greedy split: the LAST " at " separates role from company.
-check('CrunchBoard splits on the last " at "',
-    (() => { const p = cb('Engineer at Scale at Acme Corp (Remote)');
-        return [p.title, p.company]; })(),
-    ['Engineer at Scale', 'Acme Corp']);
-check('CrunchBoard detects remote from the location', cb('Dev at Acme (Remote)').isRemote, true);
-check('CrunchBoard rejects an unparseable title', cb('Just some heading'), null);
-
-// Boards that no HTTP client can reach must say so, so the screen can explain
-// itself instead of showing a bare 403.
-for (const name of ['WELLFOUND', 'THELADDERS']) {
-    check(`${name} is marked as needing a browser`,
-        BOARDS[name].requiresBrowser === true && typeof BOARDS[name].browserNote === 'string',
-        true);
-}
+check('adapted', endToEnd !== null, true);
+check('  matches the same criteria a scraped posting did',
+    evaluate(endToEnd.posting, criteria, { workTypeName: endToEnd.posting.workType }).matched, true);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

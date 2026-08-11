@@ -22,15 +22,10 @@
  */
 import jwt from 'jsonwebtoken';
 import { query } from '../db.js';
+import { COOKIE_NAME, clearCookieOptions } from '../config/cookie.js';
 
 const clearCookie = (res) => {
-    res.cookie('token', '', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'Lax',
-        expires: new Date(0),
-        path: '/',
-    });
+    res.cookie(COOKIE_NAME, '', clearCookieOptions());
 };
 
 const STATUS_MESSAGE = {

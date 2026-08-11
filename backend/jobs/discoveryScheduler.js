@@ -66,9 +66,10 @@ export const runCycle = async () => {
                 }
                 const r = result.run;
                 console.log(
-                    `[discovery] ${org.name}: ${r.postings_new} new, ${r.postings_duplicate} repeat, `
+                    `[discovery] ${org.name}: ${r.provider_calls} API call(s), `
+                    + `${r.postings_new} new, ${r.postings_duplicate} repeat, `
                     + `${r.matches_found} matched, ${r.queued} queued, ${r.held_by_cap} held`
-                    + (r.sources_failed ? `, ${r.sources_failed} source(s) failed` : ''),
+                    + (r.queries_failed ? `, ${r.queries_failed} search(es) failed` : ''),
                 );
             } catch (err) {
                 // One tenant's failure must not stop the others.

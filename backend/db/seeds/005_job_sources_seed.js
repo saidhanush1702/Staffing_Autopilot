@@ -1,113 +1,129 @@
 /**
- * Seed 005 — job boards, portal types, queue states.
- * Phase: 5
+ * Seed 005 — the search provider, the boards it attributes to, portal types,
+ * and the queue vocabulary.
+ * Phase: 5 (v2)
  *
- * ── EVERY BOARD IS SEEDED DISABLED ────────────────────────────────────
+ * ── ONE PROVIDER, MANY BOARDS ─────────────────────────────────────────
  *
- * `is_enabled = FALSE` for all five. Nothing is fetched from the open web
- * until somebody turns a board on deliberately, which makes the first outbound
- * request a decision somebody made rather than a side effect of running a
- * migration.
+ * Exactly one row is ever fetched: GOOGLE_JOBS, and it ships DISABLED. Nothing
+ * reaches the network until somebody turns it on deliberately, so the first
+ * outbound request — and the first API credit spent — is a decision rather than
+ * a side effect of running the migrations.
  *
- * Rate limits are deliberately slow. LinkedIn is slowest and shallowest of the
- * five, per R-22's demand for "the most conservative treatment" — lowest
- * volume, and a full stop for the rest of the run on any bot-check challenge.
+ * Every other row is a PORTAL: a board Google attributes postings to. Portals
+ * are never fetched, so they ship ENABLED. The five named in the specification
+ * are flagged `is_priority` and lead the list; the rest are bonus coverage that
+ * the crawler era could not reach at all.
  *
- * ── WHAT EACH BOARD ACTUALLY DOES, AS VERIFIED BY LIVE PROBE ──────────
+ * ── WHY EVERYTHING IS KEPT ────────────────────────────────────────────
  *
- * The notes below are the honest state of each board rather than an
- * aspiration, because they are what an operator reads before deciding what to
- * switch on. Two boards work over plain HTTP; three cannot, for two quite
- * different reasons — one policy, two technical. See connectors/boards.js.
+ * A job is a job. If Google surfaces a good role from Indeed, a Greenhouse
+ * board or an employer's own careers page, that is a real lead for a real
+ * consultant and throwing it away to honour a list of five would be the tail
+ * wagging the dog. The five boards are the PRIORITY set — what we make sure to
+ * cover — not an allowlist that discards the rest.
+ *
+ * The switches still exist, per board, for the operator who wants them.
  */
 
-const SOURCES = [
-    {
-        name: 'LINKEDIN',
-        label: 'LinkedIn Jobs',
-        fetch_mode: 'HTTP',
-        base_url: 'https://www.linkedin.com',
-        rate_limit_ms: 15000,
-        max_pages: 1,
-        notes: 'Not fetchable. LinkedIn\'s robots.txt is a single site-wide '
-            + '"Disallow: /" for all crawlers, so every request is refused before it '
-            + 'is sent, and an auth wall sits behind it regardless. R-22 anticipated '
-            + 'this. Use manual entry for LinkedIn roles.',
-    },
-    {
-        name: 'WELLFOUND',
-        label: 'Wellfound',
-        fetch_mode: 'HTTP',
-        base_url: 'https://wellfound.com',
-        rate_limit_ms: 8000,
-        max_pages: 2,
-        notes: 'Needs a rendered browser. robots.txt permits the job paths, but '
-            + 'Cloudflare answers 403 to every HTTP client — including the sitemap '
-            + 'Wellfound declares itself. No RSS feed. Skipped until browser '
-            + 'rendering exists; enabling it now costs nothing and yields nothing.',
-    },
-    {
-        name: 'BUILTIN',
-        label: 'Built In',
-        fetch_mode: 'HTTP',
-        base_url: 'https://builtin.com',
-        rate_limit_ms: 6000,
-        max_pages: 2,
-        notes: 'Working — the board to enable first. Entry pages come from Built In\'s '
-            + 'published job-board sitemap, since robots.txt disallows the ?search= URL. '
-            + 'Most detail pages carry schema.org JobPosting; the rest fall back to the '
-            + 'meta description.',
-    },
-    {
-        name: 'THELADDERS',
-        label: 'TheLadders',
-        fetch_mode: 'HTTP',
-        base_url: 'https://www.theladders.com',
-        rate_limit_ms: 8000,
-        max_pages: 2,
-        notes: 'Needs a rendered browser. Cloudflare answers 403 to everything, '
-            + 'including robots.txt itself — so their crawl policy cannot even be read, '
-            + 'and we correctly stay away. Subscription board; most detail is behind a '
-            + 'login even for a person.',
-    },
-    {
-        name: 'CRUNCHBOARD',
-        label: 'CrunchBoard',
-        fetch_mode: 'HTTP',
-        base_url: 'https://www.crunchboard.com',
-        rate_limit_ms: 5000,
-        max_pages: 2,
-        notes: 'Working, via RSS. Every HTML page answers 403, but the feed at '
-            + '/jobs.rss returns 200 — so the feed is the only door, and it is one meant '
-            + 'for machines. The feed ignores search terms and carries very few jobs, so '
-            + 'expect low volume rather than a broken board.',
-    },
-    {
-        name: 'MANUAL',
-        label: 'Added by hand',
-        fetch_mode: 'MANUAL',
-        base_url: null,
-        rate_limit_ms: 1000,
-        max_pages: 1,
-        notes: 'Always available. Never fetched.',
-    },
-    {
-        name: 'CSV',
-        label: 'CSV import',
-        fetch_mode: 'CSV',
-        base_url: null,
-        rate_limit_ms: 1000,
-        max_pages: 1,
-        notes: 'Bulk import. Never fetched.',
-    },
+/** Fetched. Exactly one, and it starts switched off. */
+const PROVIDER = {
+    name: 'GOOGLE_JOBS',
+    label: 'Google Jobs (SerpApi)',
+    fetch_mode: 'PROVIDER',
+    base_url: 'https://serpapi.com/search.json',
+    // Pacing between successive API calls. A paid API does not need the long
+    // courtesy gaps a crawler did — this only smooths bursts.
+    rate_limit_ms: 1000,
+    // Result pages per search term, ten results each. EVERY PAGE IS ONE CREDIT,
+    // so this is a budget dial before it is a coverage dial.
+    max_pages: 2,
+    is_enabled: false,
+    is_priority: false,
+    notes: 'The only source that is fetched. Needs SERPAPI_KEY in .env. '
+        + 'Every other row below is attribution: which board Google says a '
+        + 'posting came from. Credits per run = search terms x pages.',
+};
+
+/** The five named in the specification, in the priority order given. */
+const PRIORITY_PORTALS = [
+    ['LINKEDIN', 'LinkedIn', 'Reached through Google\'s index. LinkedIn refuses every '
+        + 'crawler at robots.txt, so this was unreachable before — and no request is '
+        + 'ever made to LinkedIn now, which satisfies R-22 more cleanly than a slow '
+        + 'crawler did. Dense in Google Jobs.'],
+    ['WELLFOUND', 'Wellfound', 'Reached through Google\'s index. Cloudflare blocks all '
+        + 'direct access. Moderate volume — startup roles, often remote.'],
+    ['BUILTIN', 'Built In', 'Reached through Google\'s index, including their per-city '
+        + 'sites (Chicago, NYC, Austin and the rest), which count as one board here. '
+        + 'Dense in Google Jobs.'],
+    ['THELADDERS', 'TheLadders', 'Reached through Google\'s index. Thin — TheLadders is '
+        + 'a subscription board and Google indexes little of it. Expect quiet, not broken.'],
+    ['CRUNCHBOARD', 'CrunchBoard', 'Reached through Google\'s index. Thin — a small board '
+        + 'with low posting volume. Expect quiet, not broken.'],
 ];
 
+/**
+ * Boards Google Jobs surfaces often. None of these were reachable under the
+ * crawler design; all of them carry real roles.
+ */
+const OTHER_PORTALS = [
+    ['INDEED', 'Indeed', 'High volume. The largest single contributor in most searches.'],
+    ['GLASSDOOR', 'Glassdoor', 'Good volume, frequently mirrors employer career pages.'],
+    ['ZIPRECRUITER', 'ZipRecruiter', 'Good volume, strong on contract and staffing roles.'],
+    ['DICE', 'Dice', 'Technology contract roles — a close fit for most consultant benches.'],
+    ['MONSTER', 'Monster', 'Moderate volume.'],
+    ['SIMPLYHIRED', 'SimplyHired', 'Aggregator; often duplicates other boards, which R-15 collapses.'],
+    ['TALENT_COM', 'Talent.com', 'Aggregator, moderate volume.'],
+    ['JOOBLE', 'Jooble', 'Aggregator, moderate volume.'],
+    ['CAREERBUILDER', 'CareerBuilder', 'Moderate volume.'],
+    ['SNAGAJOB', 'Snagajob', 'Mostly hourly and shift work. Low relevance to most benches.'],
+    ['GREENHOUSE_BOARD', 'Greenhouse job board', 'Employer boards hosted on Greenhouse.'],
+    ['LEVER_BOARD', 'Lever job board', 'Employer boards hosted on Lever.'],
+    ['OTHER', 'Other source', 'Anything Google attributes to a board not listed above — '
+        + 'most often an employer\'s own careers page. Kept, because a good job is a '
+        + 'good job wherever it was listed.'],
+];
+
+/** Never fetched, always available. */
+const ENTRY_SOURCES = [
+    ['MANUAL', 'Added by hand', 'Always available. Never fetched.'],
+    ['CSV', 'CSV import', 'Bulk import. Never fetched.'],
+];
+
+/**
+ * Which system the application is actually filled on — read from the apply
+ * link's host, not from the board.
+ *
+ * A job listed on LinkedIn that applies through Workday is a LINKEDIN source
+ * and a WORKDAY portal type. The distinction is load-bearing for the phase that
+ * fills forms: a Workday form and a Greenhouse form share nothing.
+ */
 const PORTAL_TYPES = [
+    // Applicant tracking systems.
+    ['GREENHOUSE', 'Greenhouse'],
+    ['LEVER', 'Lever'],
+    ['WORKDAY', 'Workday'],
+    ['ASHBY', 'Ashby'],
+    ['SMARTRECRUITERS', 'SmartRecruiters'],
+    ['ICIMS', 'iCIMS'],
+    ['TALEO', 'Oracle Taleo'],
+    ['JOBVITE', 'Jobvite'],
+    ['WORKABLE', 'Workable'],
+    ['BAMBOOHR', 'BambooHR'],
+    ['RECRUITEE', 'Recruitee'],
+    ['BREEZY', 'Breezy HR'],
+    // Boards you can apply on without leaving them.
     ['LINKEDIN', 'LinkedIn'],
     ['WELLFOUND', 'Wellfound'],
     ['BUILTIN', 'Built In'],
     ['THELADDERS', 'TheLadders'],
     ['CRUNCHBOARD', 'CrunchBoard'],
+    ['INDEED', 'Indeed'],
+    ['GLASSDOOR', 'Glassdoor'],
+    ['ZIPRECRUITER', 'ZipRecruiter'],
+    ['DICE', 'Dice'],
+    ['MONSTER', 'Monster'],
+    // Fallbacks.
     ['COMPANY_SITE', 'Company careers page'],
     ['OTHER', 'Other'],
 ];
@@ -126,22 +142,55 @@ const QUEUE_STATUSES = [
     ['SKIPPED', 'Skipped', true, 6],
 ];
 
-export const runSeed005 = async (connection) => {
-    console.log('Seeding job sources and queue states...');
+const toRow = ([name, label, notes], isPriority) => ({
+    name,
+    label,
+    fetch_mode: 'PORTAL',
+    base_url: null,
+    rate_limit_ms: 1000,
+    max_pages: 1,
+    is_enabled: true,
+    is_priority: isPriority,
+    notes,
+});
 
-    for (const s of SOURCES) {
+export const runSeed005 = async (connection) => {
+    console.log('Seeding search provider, portals and queue states...');
+
+    const sources = [
+        PROVIDER,
+        ...PRIORITY_PORTALS.map((p) => toRow(p, true)),
+        ...OTHER_PORTALS.map((p) => toRow(p, false)),
+        ...ENTRY_SOURCES.map(([name, label, notes]) => ({
+            name,
+            label,
+            fetch_mode: name,
+            base_url: null,
+            rate_limit_ms: 1000,
+            max_pages: 1,
+            is_enabled: false,
+            is_priority: false,
+            notes,
+        })),
+    ];
+
+    for (const s of sources) {
         await connection.query(
             `INSERT INTO lkp_job_sources
-                (name, label, fetch_mode, base_url, rate_limit_ms, max_pages, notes)
-             VALUES ($1,$2,$3,$4,$5,$6,$7)
+                (name, label, fetch_mode, base_url, rate_limit_ms, max_pages,
+                 is_enabled, is_priority, notes)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
              ON CONFLICT (name) DO UPDATE
-                SET label = EXCLUDED.label,
-                    fetch_mode = EXCLUDED.fetch_mode,
-                    base_url = EXCLUDED.base_url,
-                    notes = EXCLUDED.notes`,
-            // is_enabled is absent on purpose: re-seeding must never silently
-            // switch a board back on that an operator turned off.
-            [s.name, s.label, s.fetch_mode, s.base_url, s.rate_limit_ms, s.max_pages, s.notes],
+                SET label       = EXCLUDED.label,
+                    fetch_mode  = EXCLUDED.fetch_mode,
+                    base_url    = EXCLUDED.base_url,
+                    is_priority = EXCLUDED.is_priority,
+                    notes       = EXCLUDED.notes`,
+            // is_enabled is absent from the UPDATE on purpose: re-seeding must
+            // never switch the provider back on, nor re-enable a board an
+            // operator deliberately turned off. It applies to new rows only.
+            [s.name, s.label, s.fetch_mode, s.base_url, s.rate_limit_ms,
+                s.max_pages, s.is_enabled, s.is_priority, s.notes],
         );
     }
 
@@ -165,6 +214,7 @@ export const runSeed005 = async (connection) => {
         );
     }
 
-    console.log(`  ✓ ${SOURCES.length} sources (all disabled), `
-        + `${PORTAL_TYPES.length} portal types, ${QUEUE_STATUSES.length} queue states`);
+    console.log(`  ✓ 1 provider (disabled), ${PRIORITY_PORTALS.length} priority portals, `
+        + `${OTHER_PORTALS.length} other portals, ${PORTAL_TYPES.length} portal types, `
+        + `${QUEUE_STATUSES.length} queue states`);
 };

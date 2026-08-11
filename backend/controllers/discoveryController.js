@@ -3,8 +3,8 @@
  *
  * Runs every 4 hours, or on demand. One pass:
  *
- *   for each enabled board
- *       fetch → parse → store raw payload
+ *   for each search term derived from the bench
+ *       ask the provider → adapt → store the raw response
  *   for each posting
  *       fingerprint → new, or a repeat sighting of one already known
  *   for each ACTIVE consultant with ACTIVE criteria
@@ -12,16 +12,31 @@
  *   for each consultant
  *       fill the queue up to their daily cap; HOLD the surplus (R-17)
  *
+ * ── ACQUISITION (PHASE 5 v2) ──────────────────────────────────────────
+ *
+ * Postings come from Google Jobs through a paid SERP API, not from crawling
+ * job boards. v1 crawled five boards directly; four refused every HTTP client
+ * and always would — LinkedIn at robots.txt, Wellfound and TheLadders behind
+ * Cloudflare. Google already indexes all of them and says which board listed
+ * each posting, so the boards live on as attribution rather than as targets.
+ *
+ * EVERYTHING THE PROVIDER RETURNS IS KEPT. The five named boards are the
+ * priority set, not an allowlist: a good role from Indeed, a Greenhouse board
+ * or an employer's own careers page is a real lead. Per-board switches exist
+ * for the operator who wants them, and default to on.
+ *
  * ── THE RULES THAT SHAPE IT ───────────────────────────────────────────
  *
- * · One board failing never aborts the run. Every failure is recorded against
- *   that board and the cycle carries on (spec feature 14).
+ * · A provider failure never aborts the run. It is recorded, and the matching
+ *   half still runs over postings already in the pool (spec feature 14).
  * · Two runs never overlap — `uq_one_running_discovery` makes a concurrent
  *   start impossible at the database rather than merely unlikely.
  * · Caps stop ASSIGNMENT, not discovery. A match over the cap is HELD and
  *   reconsidered next run rather than discarded (R-17).
  * · Overlap across consultants is expected, flagged, and never blocked
  *   (R-01, R-03).
+ * · Every API call is one paid credit, so the run is bounded twice: pages per
+ *   term, and a hard ceiling on calls for the whole run.
  *
  * Scope: this phase stops at finding and matching. Nothing here fills or
  * submits anything.
@@ -31,26 +46,35 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { fingerprintPosting } from '../config/fingerprint.js';
 import { evaluate } from '../config/jobMatcher.js';
-import { boardByName, runBoard } from '../connectors/boards.js';
+import { createSession, isConfigured, providerConfig } from '../connectors/serpapi.js';
+import { jobResultToPosting } from '../connectors/googleJobs.js';
 import {
     CYCLE_HOURS, schedulerTimezone, isSchedulerAvailable, nextRunAfter,
 } from '../config/discoverySchedule.js';
 import { logAction } from './auditLogController.js';
 
-/** Keep only enough of a payload to diagnose a parser later. */
+/** Keep only enough of a payload to diagnose an adapter later. */
 const PAYLOAD_KEEP_BYTES = 200_000;
 
 /* ── loading what a run needs ─────────────────────────────────────────── */
 
-const loadEnabledSources = async () => {
+/**
+ * Every source row, split by what it is for.
+ *
+ * `provider` is the only row that is fetched. `portals` are attribution plus an
+ * on/off switch. `byName` resolves what the adapter detected back to a row.
+ */
+const loadSources = async () => {
     const { rows } = await query(
-        `SELECT id, name, label, fetch_mode, is_enabled,
-                rate_limit_ms, max_pages, respect_robots, consecutive_failures
+        `SELECT id, name, label, fetch_mode, is_enabled, is_priority,
+                rate_limit_ms, max_pages, consecutive_failures
            FROM lkp_job_sources
-          WHERE is_enabled AND fetch_mode = 'HTTP'
           ORDER BY id`,
     );
-    return rows;
+    return {
+        provider: rows.find((r) => r.fetch_mode === 'PROVIDER') ?? null,
+        byName: new Map(rows.map((r) => [r.name, r])),
+    };
 };
 
 /**
@@ -121,11 +145,15 @@ const loadMatchableConsultants = async (orgId) => {
 };
 
 /**
- * The search terms to send to the boards.
+ * The search terms to send to the provider.
  *
  * Derived from the consultants' own job titles rather than hardcoded, so the
- * engine looks for what this bench actually wants. De-duplicated and capped,
- * because each term costs a round of requests at every board.
+ * engine looks for what this bench actually wants. De-duplicated and ranked by
+ * how many consultants want each title, then capped.
+ *
+ * The cap is now a spending limit as much as a scope limit: every term costs
+ * `max_pages` API credits, so a title nobody's criteria contain is money spent
+ * on a search nobody asked for.
  */
 const buildQueries = (consultants, limit = 6) => {
     const titles = new Map();
@@ -169,11 +197,16 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
         postingId = existing[0].id;
         isNew = false;
         // A repeat sighting updates last_seen. It never creates a second row.
+        //
+        // The provider id is backfilled when it is missing but never
+        // overwritten: the first sighting's id is the one every later reference
+        // was made against, and Google issues a different one per surfacing.
         await client.query(
             `UPDATE job_postings
-                SET last_seen_at = now(), times_seen = times_seen + 1, is_active = TRUE
+                SET last_seen_at = now(), times_seen = times_seen + 1, is_active = TRUE,
+                    provider_job_id = COALESCE(provider_job_id, $2)
               WHERE id = $1`,
-            [postingId],
+            [postingId, posting.providerJobId ?? null],
         );
     } else {
         postingId = uuidv4();
@@ -183,13 +216,13 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
                 (id, organization_id, company, title, location_text, is_remote,
                  description, source_url, work_type_id, portal_type_id,
                  pay_min, pay_max, pay_unit, pay_currency,
-                 fingerprint, first_source_id, posted_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+                 fingerprint, first_source_id, posted_at, provider_job_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
             [postingId, orgId, posting.company, posting.title, posting.locationText,
                 posting.isRemote, posting.description, posting.sourceUrl,
                 workTypeId, portalTypeId,
                 posting.payMin, posting.payMax, posting.payUnit, posting.payCurrency,
-                fingerprint, sourceId, posting.postedAt],
+                fingerprint, sourceId, posting.postedAt, posting.providerJobId ?? null],
         );
     }
 
@@ -231,10 +264,12 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
     }
 
     const stats = {
-        sources_attempted: 0,
-        sources_failed: 0,
+        queries_sent: 0,
+        queries_failed: 0,
+        provider_calls: 0,
         raw_items: 0,
         parsed_ok: 0,
+        filtered_by_portal: 0,
         quarantined: 0,
         postings_new: 0,
         postings_duplicate: 0,
@@ -248,7 +283,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
 
     try {
         const [sources, consultants, lookups] = await Promise.all([
-            loadEnabledSources(),
+            loadSources(),
             loadMatchableConsultants(orgId),
             (async () => {
                 const [wt, pt, qs] = await Promise.all([
@@ -268,114 +303,129 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
             notes.push('No consultant has active criteria — nothing to search for.');
         }
 
-        const queries = buildQueries(consultants);
+        const cfg = providerConfig();
+        const queries = buildQueries(consultants, cfg.maxQueries);
         if (queries.length === 0 && consultants.length > 0) {
             notes.push('Consultants have criteria but no job titles — no search terms to send.');
         }
 
-        /* ── fetch and store ──────────────────────────────────────── */
-        const freshPostingIds = new Set();
+        /* ── acquire ──────────────────────────────────────────────── */
+        //
+        // Every early return here is a NOTE, not a throw. A run that cannot
+        // reach the provider can still match yesterday's postings against
+        // criteria that changed this morning, and that is real work. A stack
+        // trace would throw it away and tell the operator nothing.
+        const provider = sources.provider;
+        let blocker = null;
+        if (!provider) {
+            blocker = 'No search provider row exists — re-run the seeds.';
+        } else if (!provider.is_enabled) {
+            blocker = `${provider.label} is switched off, so no jobs were fetched. `
+                + 'Turn it on from the discovery screen.';
+        } else if (!isConfigured()) {
+            blocker = `${provider.label} has no API key — set SERPAPI_KEY in .env. `
+                + 'Matching still ran over the postings already in the pool.';
+        }
+        if (blocker) notes.push(blocker);
 
-        for (const source of sources) {
-            const board = boardByName(source.name);
-            if (!board) {
-                notes.push(`No connector implemented for source "${source.name}".`);
-                continue;
-            }
+        if (!blocker && queries.length > 0) {
+            const session = createSession({
+                maxPages: provider.max_pages,
+                maxCalls: cfg.maxCallsPerRun,
+                pacingMs: provider.rate_limit_ms,
+            });
 
-            stats.sources_attempted += 1;
-            let boardFailed = false;
-            let boardSkipped = false;
+            let providerFailed = false;
 
             for (const q of queries) {
-                const result = await runBoard(board, q, {
-                    rateLimitMs: source.rate_limit_ms,
-                    respectRobots: source.respect_robots,
-                    maxPages: source.max_pages,
-                });
+                stats.queries_sent += 1;
 
-                // A board that cannot work over HTTP at all is reported once,
-                // with its reason, and not retried for every remaining query.
-                if (result.skipped) {
-                    boardSkipped = true;
-                    notes.push(`${board.label}: ${result.errors[0]}`);
-                    break;
-                }
+                const result = await session.search({ q: q.q, location: q.l });
+                stats.raw_items += result.results.length;
 
-                stats.raw_items += result.postings.length;
-
+                // Stored before anything is parsed. When the adapter turns out
+                // to be wrong next month, a fix can be replayed over retained
+                // history instead of losing every posting that arrived while it
+                // was wrong. The URL is already redacted — see serpapi.js.
                 for (const payload of result.payloads) {
                     await query(
                         `INSERT INTO job_source_payloads
                             (id, organization_id, source_id, run_id, request_url,
                              http_status, content_type, body, body_bytes, postings_found)
                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-                        [uuidv4(), orgId, source.id, runId, payload.url.slice(0, 1000),
+                        [uuidv4(), orgId, provider.id, runId, payload.url.slice(0, 1000),
                             payload.status, payload.contentType,
                             payload.body ? payload.body.slice(0, PAYLOAD_KEEP_BYTES) : null,
                             payload.bytes, payload.found],
                     );
                 }
 
-                for (const posting of result.postings) {
-                    // Belt and braces: the fingerprint needs both, and a
-                    // posting without them cannot be stored safely.
-                    if (!posting.company || !posting.title) {
+                if (result.errors.length > 0) {
+                    providerFailed = true;
+                    stats.queries_failed += 1;
+                    notes.push(`${provider.label}: ${result.errors.slice(0, 3).join(' | ')}`);
+                }
+
+                for (const raw of result.results) {
+                    const adapted = jobResultToPosting(raw);
+
+                    // Quarantined, never dropped. A result the adapter cannot
+                    // read is the first sign of a changed contract, and it is
+                    // only visible if somebody kept it.
+                    if (!adapted) {
                         stats.quarantined += 1;
                         await query(
                             `INSERT INTO job_parse_quarantine
                                 (id, organization_id, source_id, run_id, reason, raw_fragment)
                              VALUES ($1,$2,$3,$4,$5,$6)`,
-                            [uuidv4(), orgId, source.id, runId,
-                                'Missing company or title', JSON.stringify(posting).slice(0, 4000)],
+                            [uuidv4(), orgId, provider.id, runId,
+                                'Missing company, title or apply link',
+                                JSON.stringify(raw).slice(0, 4000)],
                         );
                         continue;
                     }
 
+                    // Attribution resolves to a row so per-board yield stays
+                    // measurable (spec item 16). An unrecognised board lands on
+                    // OTHER rather than being lost.
+                    const sourceRow = sources.byName.get(adapted.source)
+                        ?? sources.byName.get('OTHER')
+                        ?? provider;
+
+                    if (!sourceRow.is_enabled) {
+                        stats.filtered_by_portal += 1;
+                        continue;
+                    }
+
                     stats.parsed_ok += 1;
-                    const { id, isNew } = await withTransaction((client) => upsertPosting(client, {
+                    const { isNew } = await withTransaction((client) => upsertPosting(client, {
                         orgId,
-                        sourceId: source.id,
+                        sourceId: sourceRow.id,
                         runId,
-                        posting,
-                        workTypeId: lookups.workType[posting.workType] ?? null,
-                        portalTypeId: lookups.portalType[board.portalType] ?? null,
+                        posting: adapted.posting,
+                        workTypeId: lookups.workType[adapted.posting.workType] ?? null,
+                        portalTypeId: lookups.portalType[adapted.portalType] ?? null,
                     }));
 
                     if (isNew) stats.postings_new += 1; else stats.postings_duplicate += 1;
-                    freshPostingIds.add(id);
                 }
-
-                if (result.errors.length > 0) {
-                    boardFailed = true;
-                    notes.push(`${board.label}: ${result.errors.slice(0, 3).join(' | ')}`);
-                }
-                // R-22 and general good manners: a challenge page means stop
-                // asking this board today, not retry the next query.
-                if (result.blocked) break;
             }
 
-            // A skipped board records WHY it is contributing nothing, but does
-            // not accrue consecutive_failures: that counter exists to surface a
-            // board that is degrading, and "needs a browser" is a standing
-            // fact, not a degradation. Letting it climb every four hours would
-            // bury the boards that genuinely broke.
-            if (boardSkipped) {
-                await query(
-                    'UPDATE lkp_job_sources SET last_error = $2 WHERE id = $1',
-                    [source.id, notes[notes.length - 1]?.slice(0, 500) ?? null],
-                );
-            } else {
-                await query(
-                    `UPDATE lkp_job_sources
-                        SET last_success_at = CASE WHEN $2 THEN last_success_at ELSE now() END,
-                            consecutive_failures = CASE WHEN $2 THEN consecutive_failures + 1 ELSE 0 END,
-                            last_error = $3
-                      WHERE id = $1`,
-                    [source.id, boardFailed, boardFailed ? notes[notes.length - 1]?.slice(0, 500) : null],
-                );
-                if (boardFailed) stats.sources_failed += 1;
+            stats.provider_calls = session.calls;
+            if (session.budgetExhausted) {
+                notes.push(`Stopped at the per-run ceiling of ${cfg.maxCallsPerRun} API `
+                    + 'calls. Raise DISCOVERY_MAX_CALLS_PER_RUN, or send fewer search terms.');
             }
+
+            await query(
+                `UPDATE lkp_job_sources
+                    SET last_success_at = CASE WHEN $2 THEN last_success_at ELSE now() END,
+                        consecutive_failures = CASE WHEN $2 THEN consecutive_failures + 1 ELSE 0 END,
+                        last_error = $3
+                  WHERE id = $1`,
+                [provider.id, providerFailed,
+                    providerFailed ? notes[notes.length - 1]?.slice(0, 500) : null],
+            );
         }
 
         /* ── match ────────────────────────────────────────────────── */
@@ -531,9 +581,10 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
             entityName: `${trigger.toLowerCase()} run`,
             performedBy: userId, performedByRole: null,
             description: `Discovery ${trigger.toLowerCase()}: `
+                + `${stats.provider_calls} API call(s), `
                 + `${stats.postings_new} new postings, ${stats.postings_duplicate} repeats, `
                 + `${stats.matches_found} matches, ${stats.queued} queued, ${stats.held_by_cap} held by cap`
-                + (stats.sources_failed ? ` — ${stats.sources_failed} source(s) failed` : ''),
+                + (stats.queries_failed ? ` — ${stats.queries_failed} search(es) failed` : ''),
             ipAddress: null,
         }).catch(() => {});
     }
@@ -578,17 +629,48 @@ export const listRuns = async (req, res, next) => {
     }
 };
 
-/** GET /api/management/discovery/sources — board health. */
+/**
+ * GET /api/management/discovery/sources
+ *
+ * Provider health, and per-board yield.
+ *
+ * `postings` is the count actually attributed to each board, which is the only
+ * honest way to answer "is this board worth having on". A board switched on
+ * that has contributed nothing in a month is visible here and nowhere else.
+ */
 export const listSources = async (req, res, next) => {
     try {
         const { rows } = await query(
             `SELECT s.*,
                     (SELECT COUNT(*)::int FROM job_parse_quarantine q
-                      WHERE q.source_id = s.id AND NOT q.resolved) AS quarantined
+                      WHERE q.source_id = s.id AND NOT q.resolved) AS quarantined,
+                    (SELECT COUNT(*)::int FROM job_postings p
+                      WHERE p.first_source_id = s.id AND p.organization_id = $1) AS postings
                FROM lkp_job_sources s
-              ORDER BY s.id`,
+              ORDER BY s.fetch_mode = 'PROVIDER' DESC, s.is_priority DESC, s.label`,
+            [req.user.orgId],
         );
-        return res.json({ sources: rows });
+
+        const cfg = providerConfig();
+        const provider = rows.find((r) => r.fetch_mode === 'PROVIDER') ?? null;
+
+        return res.json({
+            sources: rows,
+            provider: {
+                name: cfg.name,
+                label: provider?.label ?? cfg.label,
+                // Whether a key is present. The key itself is never returned,
+                // and never leaves the server.
+                configured: isConfigured(),
+                enabled: provider?.is_enabled ?? false,
+                maxQueries: cfg.maxQueries,
+                maxPages: provider?.max_pages ?? cfg.maxPages,
+                maxCallsPerRun: cfg.maxCallsPerRun,
+                lastSuccessAt: provider?.last_success_at ?? null,
+                lastError: provider?.last_error ?? null,
+                consecutiveFailures: provider?.consecutive_failures ?? 0,
+            },
+        });
     } catch (err) {
         return next(err);
     }

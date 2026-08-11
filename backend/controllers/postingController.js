@@ -12,7 +12,10 @@ import { logAction } from './auditLogController.js';
 export const toggleSourceSchema = Joi.object({
     isEnabled: Joi.boolean(),
     rateLimitMs: Joi.number().integer().min(1000).max(120000),
-    maxPages: Joi.number().integer().min(1).max(20),
+    // Result pages per search term. Each one is a paid API credit, so the
+    // ceiling is deliberately low — 20 pages across 6 terms is 120 credits per
+    // run, which on most plans is a day's budget in a single cycle.
+    maxPages: Joi.number().integer().min(1).max(10),
 }).min(1);
 
 /** GET /api/management/postings */
@@ -163,22 +166,34 @@ export const listConsultantQueue = async (req, res, next) => {
 /**
  * PATCH /api/management/discovery/sources/:id — ORG_ADMIN only.
  *
- * Enabling a board is the moment this system starts reaching out to the open
- * web, so it is a deliberate, audited act rather than a config file nobody
- * reads.
+ * Two quite different switches share this route, and the audit description says
+ * which one was thrown:
+ *
+ *   PROVIDER  turning it on is the moment this system starts reaching out to
+ *             the network and spending API credits. Deliberate and audited.
+ *   PORTAL    an attribution filter. Turning one off makes the pipeline discard
+ *             postings from that board at ingest; it contacts nobody.
  */
 export const updateSource = async (req, res, next) => {
     try {
         const { rows } = await query(
-            'SELECT id, name, label, is_enabled FROM lkp_job_sources WHERE id = $1',
+            'SELECT id, name, label, is_enabled, fetch_mode FROM lkp_job_sources WHERE id = $1',
             [req.params.id],
         );
         const source = rows[0];
         if (!source) return res.status(404).json({ error: 'Source not found.' });
 
-        if (source.name === 'MANUAL' || source.name === 'CSV') {
+        if (source.fetch_mode === 'MANUAL' || source.fetch_mode === 'CSV') {
             return res.status(409).json({
                 error: 'Manual and CSV sources are never fetched, so they cannot be enabled.',
+            });
+        }
+
+        // max_pages is the provider's page depth. On a portal row it would mean
+        // nothing, and silently accepting it would suggest otherwise.
+        if (req.body.maxPages !== undefined && source.fetch_mode !== 'PROVIDER') {
+            return res.status(409).json({
+                error: 'Page depth belongs to the search provider, not to an individual board.',
             });
         }
 
@@ -197,12 +212,19 @@ export const updateSource = async (req, res, next) => {
         );
 
         if (req.body.isEnabled !== undefined && req.body.isEnabled !== source.is_enabled) {
+            const isProvider = source.fetch_mode === 'PROVIDER';
             logAction({
                 orgId: req.user.orgId, module: 'discovery',
                 action: req.body.isEnabled ? 'Enabled Source' : 'Disabled Source',
                 entityType: 'JobSource', entityId: String(source.id), entityName: source.label,
                 performedBy: req.user.id, performedByRole: req.user.role,
-                description: `${req.body.isEnabled ? 'Enabled' : 'Disabled'} job board "${source.label}"`,
+                description: isProvider
+                    ? `${req.body.isEnabled ? 'Switched on' : 'Switched off'} the search `
+                        + `provider "${source.label}" — ${req.body.isEnabled
+                            ? 'discovery runs will now call the API and spend credits'
+                            : 'discovery runs will fetch nothing'}`
+                    : `${req.body.isEnabled ? 'Started' : 'Stopped'} accepting postings `
+                        + `from "${source.label}"`,
                 ipAddress: req.ip,
             }).catch(() => {});
         }

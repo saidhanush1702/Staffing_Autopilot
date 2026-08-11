@@ -1,613 +1,507 @@
-# Phase 5 — Job Postings, Matching & the Application Queue
+# Phase 5 (v2) — Job Acquisition via Google Jobs, Matching & the Queue
 
-**Status: proposal, awaiting approval. No code has been written.**
+**Supersedes the v1 proposal, which specified direct scraping of five job
+boards. That approach was built, probed against the live boards, and does not
+work.** §1 is the post-mortem; everything after it is the replacement.
 
-This is the largest phase so far and the first one that makes SmartApply *do*
-something rather than record something. Read **§9** before anything else — it holds
-the two structural problems with building this now, and a recommended split.
-
----
-
-## 1. What this feature is, in one paragraph
-
-Everything built so far describes people. Phase 5 introduces the other half of the
-system: **jobs**. It ingests postings, throws away the ones already seen, matches the
-rest against each consultant's Phase 3 search criteria, and drops the survivors into a
-per-consultant **queue** that respects their daily cap. It then tracks each queue item
-through its life — queued, filled, parked on an unknown question, submitted, skipped —
-and writes a permanent **application record** with the exact questions asked and the
-exact answers given.
-
-This is where Phases 3 and 4 stop being inventory and start being inputs.
+The change is deliberately narrow. **Only the acquisition layer is being
+replaced.** De-duplication, matching, daily caps, the queue and its state
+machine were never the problem and are not being touched.
 
 ---
 
-## 2. Why this feature, and why now
+## 1. Why v1 failed
 
-Everything upstream is finished and idle:
+v1 fetched each board directly: request the search page, harvest detail links,
+parse `schema.org/JobPosting` JSON-LD out of each one. The engineering was
+sound. The boards simply do not permit it, and the probe results were
+unambiguous:
 
-```
-Phase 1  who they are          ─┐
-Phase 2  what they look like   ─┤
-Phase 3  what they want        ─┼─→  PHASE 5  find jobs, queue them, record outcomes
-Phase 4  how they answer       ─┘         │
-                                          ├─→ Phase 6  tailor a resume per queue item
-                                          ├─→ Phase 7  attach contacts to the job
-                                          └─→ later    desktop app fills the form
-```
+| Board | What actually happens | Verdict |
+|---|---|---|
+| **LinkedIn** | `robots.txt` is a single site-wide `User-agent: * / Disallow: /`. Every request is refused before it is sent, and an auth wall sits behind it regardless. | **Zero postings, ever** |
+| **Wellfound** | Cloudflare answers **403** to every HTTP client — including the sitemap Wellfound declares in its own `robots.txt`. No RSS feed exists. | **Zero postings** |
+| **TheLadders** | Cloudflare answers **403** to everything, *including `/robots.txt` itself*. Their crawl policy cannot even be read, so the polite fetcher fails closed. | **Zero postings** |
+| **Built In** | Works, partially. `?search=` is disallowed, so entry pages come from their sitemap; most detail pages carry JSON-LD, a minority need a meta-description fallback. | **Low yield, fragile** |
+| **CrunchBoard** | Every HTML page is 403; only `/jobs.rss` answers. The feed ignores search terms and carries very few jobs. | **Very low yield** |
 
-Search criteria have no consumer. The answer bank has no form to fill. Both were
-built to be read by this phase, and neither has been exercised against anything real.
-Until Phase 5 exists, every phase before it is a well-tested guess.
+**Four of five boards deliver nothing.** The two that respond do so through
+side doors — a sitemap and an RSS feed — that were never meant to serve as a
+search index, and that either board can close without notice.
 
-It also closes the last major gaps in the canonical rules: **R-15** (fingerprint
-de-duplication), **R-16** (cheap pre-filter before any AI call), **R-17** (daily caps
-enforced at the hub), **R-01/R-03** (overlap allowed, flagged, and never reassignable).
+The deeper problem is that this is not a bug list. It is the boards working as
+intended. Each failure would need a *different* circumvention — a headless
+browser for Cloudflare, an authenticated session for LinkedIn — and each of
+those is an arms race that has to be won again every time a vendor ships a
+detection update. Losing one costs the account.
 
----
-
-## 3. The pipeline
-
-```
-  sources ──► normalise ──► FINGERPRINT DEDUPE  (company + title + location)   R-15
-                                  │  already seen? update last_seen, no new row
-                                  ▼
-                          HARD FILTERS
-                                  │  excluded companies    ← never a soft signal
-                                  │  paused criteria       ← skip the consultant
-                                  ▼
-                          CHEAP PRE-FILTER  (title + location)                 R-16
-                                  │  drop rate reported per run
-                                  ▼
-                          SCORED MATCH per consultant
-                                  │  keywords, work type, minimum pay
-                                  │  decision + reason stored
-                                  ▼
-                          DAILY CAP CHECK                                      R-17
-                                  │  cap reached? HOLD for tomorrow, never discard
-                                  ▼
-                          QUEUE ITEM created (QUEUED)
-                          + criteria_version_id that matched it
-                          + overlap flag if it entered more than one queue
-```
-
-And then, per queue item:
-
-```
-QUEUED ──► FILLED ──► AWAITING_SUBMIT ──► SUBMITTED ──► application record (permanent)
-   │          │
-   │          └──► PARKED_UNKNOWN ──(Phase 4 answer approved)──► back to FILLED
-   │
-   └──► SKIPPED (with a reason, always)
-```
+So the acquisition method changes, and the boards stop being things we crawl.
 
 ---
 
-## 4. Scope — what gets built
+## 2. What replaces it
 
-### Postings and ingestion
-| # | Item |
+**Google indexes all five boards already.** Google Jobs is an aggregator whose
+entire purpose is to surface postings from LinkedIn, Wellfound, Built In,
+TheLadders, CrunchBoard and several hundred others, with an attribution line
+saying which board each came from and a direct apply link for each.
+
+We buy that index through a SERP API instead of rebuilding it.
+
+```
+       v1 — five crawlers, four walls
+  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ LinkedIn │ │Wellfound │ │ Built In │ │TheLadders│ │Crunchbrd │
+  │  robots  │ │   403    │ │  partial │ │   403    │ │ rss only │
+  └────╳─────┘ └────╳─────┘ └────┬─────┘ └────╳─────┘ └────┬─────┘
+                                 └──────────┬─────────────┘
+                                        thin trickle
+
+       v2 — one provider, five portals as attribution
+  ┌──────────────────────────────────────────────────────────────┐
+  │  SerpApi  ·  engine=google_jobs  ·  q + location + pages      │
+  └───────────────────────────────┬──────────────────────────────┘
+                                  │  jobs_results[]
+                                  ▼
+                     via: "LinkedIn" │ "Built In" │ "Wellfound" │ …
+                     apply_options[]: direct link per portal
+                                  │
+                                  ▼
+                        PORTAL ALLOWLIST (operator-controlled)
+                                  │
+                                  ▼
+                   the pipeline that already works, unchanged
+```
+
+The five named boards remain first-class in the product. They stop being
+*crawl targets* and become **portals** — the attribution recorded on each
+posting, and the allowlist an operator controls. Per-board yield stays
+measurable, which was spec item 16's whole purpose.
+
+### Why this is the right shape, not just the working one
+
+- **It is a sanctioned, paid, documented API.** No ToS violation, no bot
+  detection, no IP bans, no account at risk. The request is a customer request
+  to a vendor that sells exactly this.
+- **One parser instead of five.** A single documented JSON contract replaces
+  five HTML parsers, a sitemap crawler, an RSS parser, a robots.txt engine and
+  a bot-challenge detector. That is roughly 1,100 lines of fragile code deleted
+  against ~300 lines of adapter added.
+- **It reaches the boards that were unreachable.** LinkedIn and Wellfound
+  postings arrive through Google's index. They were structurally impossible in
+  v1 — this is not an incremental yield improvement, it is the difference
+  between zero and non-zero for the board ranked first.
+- **Coverage beyond the five, free.** Google also surfaces Indeed, Glassdoor,
+  ZipRecruiter, Dice, Greenhouse and Lever boards, and employers' own careers
+  pages. **All of it is kept** (§5.1) — the five named boards are the priority
+  set, not a filter that throws the rest away.
+- **R-22 is satisfied more cleanly than before.** LinkedIn is never contacted.
+  We read Google's index of LinkedIn. There is no bot-check to trip and no
+  session to lose, which is a stronger form of "most conservative treatment"
+  than a slow crawler was.
+
+### The honest costs
+
+| Cost | Detail |
 |---|---|
-| 1 | One normalised posting shape: source, source URL, company, title, location, work type, pay if listed, full description, portal type, first-seen |
-| 2 | **Fingerprint de-duplication** on company + title + location (R-15) |
-| 3 | A repeat sighting updates `last_seen` and records the sighting — it never creates a second posting |
-| 4 | A **pluggable connector interface** — one contract, one connector per board |
-| 5 | Connectors for the **five named boards** (§4.1): LinkedIn, Wellfound, Built In, TheLadders, CrunchBoard |
-| 6 | **Raw payload retained** for every fetch, so a parser fix can be replayed against history |
-| 7 | **Parse-failure quarantine** — a posting that will not parse is held for inspection, never silently dropped |
-| 8 | Manual entry and CSV import as always-available fallbacks |
-| 9 | Seeded posting set so matching is demonstrable on day one |
+| **It is metered** | Every search page is one API credit. A run of 6 search terms × 2 pages = 12 credits. Four runs a day ≈ 1,440 credits/month. Plans start around 100/month free and 5,000 paid — **the cycle interval and page depth are now budget decisions**, which is why both are configurable (§6). |
+| **Coverage is Google's, not ours** | If Google has not indexed a posting, we do not see it. Fresh postings typically appear within hours, not minutes. |
+| **The five boards are not equally represented** | LinkedIn and Built In are dense in Google Jobs. Wellfound is moderate. **TheLadders and CrunchBoard are thin** — expect little from them regardless of provider. That is a property of Google's index and no acquisition method fixes it. |
+| **Description quality varies** | Most results carry the full description; some carry a truncated one. Keyword matching degrades gracefully rather than failing. |
+| **A vendor dependency** | If SerpApi has an outage, discovery finds nothing that cycle. Mitigated by the provider being one swappable module (§4) and by manual entry and CSV import staying first-class. |
 
-## 4.1 The five job boards
+### Provider choice
 
-**Target boards, in the priority you gave:**
+**Default: SerpApi (`serpapi.com`), `engine=google_jobs`.** It is the
+best-documented Google Jobs endpoint, and the response shape below is its
+documented contract.
 
-1. **LinkedIn Jobs** — top priority
-2. `wellfound.com`
-3. `builtin.com/jobs`
-4. `theladders.com/jobs`
-5. `crunchboard.com/jobs`
+You said you would supply the API details afterwards. Nothing here is blocked
+on that: the key is read from `.env` at run time, and a run with no key
+configured **completes cleanly with a note** rather than erroring. If the
+details you supply turn out to be a different vendor (SearchApi, Bright Data,
+Serper, or Google's own Cloud Talent Solution), the swap is confined to
+`connectors/serpapi.js` — the adapter, orchestrator, schema and UI do not
+change. §4 exists to make that true.
 
-### The problem with the obvious approach
+---
 
-The instinctive design is a scraper per board: fetch the search URL, parse the HTML,
-extract postings. I am not proposing that as the primary path, for three reasons that
-are engineering reasons before they are legal ones:
+## 3. The provider contract
 
-- **All five prohibit automated scraping in their terms.** LinkedIn's User Agreement
-  §8.2 is explicit, and it is the board you have ranked first. Wellfound, Built In and
-  TheLadders carry equivalent clauses.
-- **LinkedIn in particular fights back.** Aggressive bot detection, IP and account
-  bans, and challenge pages. A scraper against LinkedIn Jobs is an arms race you have
-  to keep winning forever, and losing it costs the account.
-- **Your own rulebook already anticipates this.** **R-22** demands LinkedIn get "the
-  most conservative treatment: lowest volume, human submit always, and a full stop for
-  the remainder of the day on any bot-check challenge." A high-volume harvester
-  contradicts the posture the spec sets for that one source.
+### Request
 
-None of that makes the goal illegitimate — aggregating job postings for consultants you
-represent is ordinary staffing work. It means the *acquisition method* has to be chosen
-per board rather than assumed.
+```
+GET https://serpapi.com/search.json
+      ?engine=google_jobs
+      &q={search terms}
+      &location={city or region}
+      &gl=us&hl=en
+      &api_key={SERPAPI_KEY}
+      [&next_page_token={token}]
+```
 
-### What each board actually offers
+`start` (offset pagination) **has been discontinued by Google** and is not
+used. Pages are walked with `next_page_token`, taken from
+`serpapi_pagination.next_page_token`, ten results per page.
 
-| Board | Machine-readable access | Recommended acquisition | Risk |
+### Response, and what we take from it
+
+```jsonc
+{
+  "jobs_results": [{
+    "title":        "Senior React Developer",
+    "company_name": "Globex",
+    "location":     "  Dallas, TX   ",     // padded; trimmed on read
+    "via":          "via LinkedIn",        // → PORTAL
+    "description":  "…full text…",         // → keyword matching
+    "job_id":       "eyJqb2JfdGl0bGUi…",   // → provider_job_id
+    "share_link":   "https://www.google.com/search?…",
+    "extensions":   ["3 days ago", "Full-time", "$60–$75 an hour"],
+    "detected_extensions": {
+      "posted_at":      "3 days ago",      // → posted_at (resolved to a date)
+      "schedule_type":  "Full-time",       // → work_type
+      "work_from_home": true,              // → is_remote
+      "salary":         "$60–$75 an hour"  // → pay_min / pay_max / pay_unit
+    },
+    "apply_options": [                     // → source_url, portal confirmation
+      { "title": "LinkedIn", "link": "https://www.linkedin.com/jobs/view/…" },
+      { "title": "Indeed",   "link": "…" }
+    ],
+    "job_highlights": [{ "title": "Qualifications", "items": ["…"] }]
+  }],
+  "serpapi_pagination": { "next_page_token": "…" }
+}
+```
+
+### Field mapping to the existing posting shape
+
+The common shape is **unchanged from v1**, which is why nothing downstream
+moves:
+
+| Posting field | Source | Notes |
+|---|---|---|
+| `company` | `company_name` | Half the R-15 fingerprint — missing ⇒ quarantine |
+| `title` | `title` | The other half — missing ⇒ quarantine |
+| `locationText` | `location`, trimmed | `"Anywhere"` when `work_from_home` and no location |
+| `isRemote` | `detected_extensions.work_from_home`, else a text test | |
+| `description` | `description` + `job_highlights` flattened | Highlights appended so qualifications are keyword-matchable |
+| `sourceUrl` | best `apply_options[].link`, else `share_link` | **Prefers the link matching the detected portal** |
+| `workType` | `detected_extensions.schedule_type` | Full-time → `FULL_TIME`, Contractor → `CONTRACT`, … |
+| `payMin/Max/Unit` | `detected_extensions.salary`, else scanned from `extensions` | **Both an amount and a unit, or nothing** — see §5.2 |
+| `postedAt` | `detected_extensions.posted_at` | `"3 days ago"` resolved against run time |
+| `providerJobId` | `job_id` | Stable handle for re-fetching detail later |
+| *source* | `via`, corroborated by `apply_options` | Which board listed it — §5.1 |
+| *portal type* | host of the chosen apply link | Which system you apply **through** — §5.1 |
+
+---
+
+## 4. What is deleted, what is added, what is untouched
+
+### Deleted
+
+| File | Lines | Why it goes |
+|---|---|---|
+| `connectors/http.js` | ~275 | robots.txt engine, per-host throttling, backoff, bot User-Agent. All of it existed to crawl politely. Nothing crawls. |
+| `connectors/boards.js` | ~560 | Five board definitions, two-pass crawler, sitemap resolver, block-page detection. |
+| `connectors/jsonld.js` | ~245 | `schema.org/JobPosting` extraction from HTML. No HTML is fetched. |
+| `connectors/feed.js` | ~135 | RSS/Atom parsing for CrunchBoard's feed. |
+
+Roughly **1,200 lines removed.** Also gone: `SCRAPER_CONTACT` and
+`SCRAPER_USER_AGENT` from `.env`, and the `respect_robots` / `search_template`
+columns.
+
+> `plain()` — the HTML-to-text helper in `jsonld.js` — is the one thing worth
+> keeping; SerpApi descriptions occasionally contain markup. It moves to
+> `connectors/text.js`.
+
+### Added
+
+| File | Purpose |
+|---|---|
+| `connectors/serpapi.js` | **The only file that talks to the network.** Builds the request, paginates, retries 429/5xx with backoff, enforces a per-run call ceiling, redacts the API key from anything stored. Never throws. |
+| `connectors/googleJobs.js` | Pure adapter: one `jobs_results` entry → the common posting shape + portal. No I/O, fully unit-testable. |
+| `connectors/text.js` | `plain()`, rescued from `jsonld.js`. |
+
+The split is the point. `serpapi.js` is the vendor-shaped half and the only
+thing a provider swap touches; `googleJobs.js` is the Google-Jobs-shaped half
+and would survive a change of vendor selling the same index.
+
+### Untouched
+
+`config/fingerprint.js`, `config/jobMatcher.js`, `config/discoverySchedule.js`,
+every queue table, the state machine, the cap logic, `postingController.js`'s
+read side, `ConsultantQueue.jsx`. **The half of Phase 5 that worked is not
+being re-litigated.**
+
+---
+
+## 5. Design decisions
+
+### 5.1 Everything is kept. The five boards are the priority set, not a filter.
+
+**This is the decision that shapes the whole phase.** A job is a job. If Google
+surfaces a strong role from Indeed, a Greenhouse board or an employer's own
+careers page, that is a real lead for a real consultant, and discarding it to
+honour a list of five would be the tail wagging the dog.
+
+So the five named boards are the **priority set** — the coverage we make sure
+we have — and everything else Google returns flows through the same pipeline
+and lands in the same queue.
+
+`lkp_job_sources` keeps one row per board, with new meanings the migration
+states explicitly rather than letting old values carry silently:
+
+| `fetch_mode` | Meaning | Rows | Ships |
 |---|---|---|---|
-| **LinkedIn Jobs** | No open jobs API. Talent Solutions is partner-gated and is for *posting* jobs, not harvesting. | **Job-alert emails** to an intake mailbox, from saved searches | Low — sanctioned |
-| **Wellfound** | No public jobs API | **Job-alert emails** | Low |
-| **Built In** | Per-city / per-category feeds have existed historically; must be verified live | **Feed if present, else alert emails** | Low |
-| **TheLadders** | Subscription product, no public API | **Job-alert emails** | Low |
-| **CrunchBoard** | Historically offered RSS on search results; the URL you gave is a search page whose params map cleanly to a feed query | **Feed if present, else alert emails** | Low |
+| `PROVIDER` | The thing actually fetched. Carries provider health and the credit budget. | `GOOGLE_JOBS` | **disabled** |
+| `PORTAL` | Attribution + an accept/reject switch. Never fetched. | the five (flagged `is_priority`), plus Indeed, Glassdoor, ZipRecruiter, Dice, Monster, SimplyHired, Talent.com, Jooble, CareerBuilder, Snagajob, Greenhouse, Lever, and `OTHER` | **enabled** |
+| `MANUAL` / `CSV` | Unchanged. Never fetched. | as before | n/a |
 
-### The recommended design: alert-email intake as the primary connector
+`is_priority` drives ordering and a star on the discovery screen — nothing else.
+It is presentation, not policy, so the five stay visibly first without the
+engine treating them specially.
 
-Every one of the five offers **email job alerts**. The design is:
+#### Two different questions, two different fields
 
-```
-per consultant, per board
-        │  a saved search built from their Phase 3 criteria
-        ▼
-board emails an alert  ──►  dedicated intake mailbox (IMAP)
-        │
-        ▼
-EmailAlertConnector
-        │  identify the board from sender + subject
-        ▼
-per-board parser  ──►  common posting shape  ──►  fingerprint dedupe  ──►  matching
-        │
-        └─ unparseable? RAW PAYLOAD STORED + QUARANTINED, run continues
-```
+Conflating these was the mistake worth avoiding:
 
-This is not the safe-but-worse option. It is better engineering on four counts:
+| Field | Question | Read from | Example |
+|---|---|---|---|
+| **source** | Which board *listed* this job? | Google's `via` line | `LINKEDIN` |
+| **portal type** | Which system do you *apply through*? | the apply link's host | `GREENHOUSE` |
 
-- **Sanctioned.** Boards *want* you to receive alerts. No ToS problem, no bans, no
-  arms race, and it satisfies R-22 without special-casing LinkedIn.
-- **More stable.** Alert email templates change far less often than search-result
-  markup, and when one does change it breaks one parser, not the pipeline.
-- **Already in the plan.** Spec module M5.2 and feature 4 name "job-alert emails
-  parsed by the system from a dedicated intake mailbox." This is the path the
-  specification already chose.
-- **Pre-filtered at source.** A saved search per consultant means the board applies the
-  first filter, so the volume reaching the pipeline is already relevant.
+They are frequently different, and both are already columns on `job_postings`
+(`first_source_id`, `portal_type_id`). The first answers "where did this come
+from" and makes per-board yield measurable (spec item 16). The second is what
+the form-filling phase will need — a Workday form and a Greenhouse form share
+nothing — and it is recorded now because recovering it later would mean
+re-fetching every posting.
 
-The cost is honest: alerts are **periodic, not real-time**, and coverage is only as
-good as the saved searches. Whoever sets those up has to keep them aligned with the
-consultant's criteria — which is a real operational task, not a free lunch.
+Source detection reads `via` first, then falls back to the apply link's host.
+`via` is a display string and Google renders it inconsistently (`"via
+LinkedIn"`, `"via Linkedin Jobs"`, `"via Built In"`, `"via BuiltIn Chicago"`),
+so the host is the steadier corroborating signal. Portal type reads the host
+only, and falls back to `COMPANY_SITE` rather than `OTHER` — an apply link on a
+host that is neither a known board nor a known ATS is, overwhelmingly, the
+employer's own careers page.
 
-### The connector contract
+Unrecognised attribution never causes a drop on either axis.
 
-One interface, so a board is added without touching the engine:
+#### The switches still exist
 
-```
-fetch()      → raw items (email bodies, feed entries, or rows)
-parse(raw)   → the common posting shape, or a ParseError
-health()     → last success, consecutive failures, quarantine depth
-```
+A disabled portal filters at ingest, before the posting is written, and the run
+counts what it rejected (`filtered_by_portal`) so that "we found nothing" and
+"you filtered everything out" are never the same number. That is there for the
+operator who wants it — **it is not the default.**
 
-Each connector is **independently disableable** and records its own success or failure.
-A board that breaks does not fail the run — spec feature 14.
+> **Migration note.** The migration sets `is_enabled = TRUE` on every portal
+> row. Under v1 the flag meant "crawl this site", and shipping it off was right
+> — the first outbound request should be somebody's decision. Under v2 it means
+> "keep postings attributed to this board", which contacts nobody, and carrying
+> the old value forward would leave every board silently discarding its own
+> postings. The switch that still gates **all** outbound traffic and all
+> spending is the `GOOGLE_JOBS` row, and that one is seeded disabled.
 
-### Three things the fetch layer must do
+### 5.2 Pay is parsed strictly, or not at all
 
-1. **Store the raw payload before parsing.** When a board changes its template, a fixed
-   parser can be replayed over retained history instead of losing the postings that
-   arrived while it was broken. Cheap to store, impossible to reconstruct later.
-2. **Quarantine, never drop.** A posting that will not parse goes to a quarantine table
-   with its raw payload and the error. Silent drops are how a source degrades for weeks
-   without anyone noticing.
-3. **Be polite where it fetches at all.** For any feed connector: honour `robots.txt`,
-   send a real User-Agent identifying SmartApply with a contact address, one request at
-   a time per host with a conservative delay, exponential backoff on 429 or 5xx, and a
-   per-source rate limit stored in config rather than hardcoded.
+Google states salary as prose: `"$120K–$150K a year"`, `"$60–$75 an hour"`,
+`"$95,000 a year"`, `"Up to $180K a year"`.
 
-### If you want direct fetching anyway
+The parser returns a value **only when it recovers both an amount and a unit.**
+This is the same rule v1 applied to JSON-LD, and it exists because the
+minimum-pay filter compares numbers: an hourly rate silently compared against
+an annual floor drops every good contract role on the board. A `null` costs one
+scoring signal; a wrong unit costs the consultant real jobs, invisibly.
 
-That is your call to make, and I will build it — but as a **per-board opt-in flag,
-default off**, with the politeness controls above, so it is a deliberate decision
-recorded in configuration rather than the default behaviour of the system. My
-recommendation is to leave LinkedIn on email intake regardless of what the other four
-do, because R-22 already commits you to that posture and it is the board with real
-consequences attached.
+`K` suffixes expand. A single figure becomes both min and max. `"Up to"` sets
+max only.
 
-There is also a middle path worth pricing: **licensed aggregator feeds** (the spec's
-"paid search feed for coverage"). One paid source can cover several boards legitimately
-and removes the parser-maintenance burden entirely. It is procurement rather than code,
-but it may be cheaper than maintaining five parsers.
+### 5.3 Search terms still come from the consultants
 
----
+Unchanged from v1, and now load-bearing in a way it was not: **every search
+term costs a credit.** Terms are the consultants' own job titles, ranked by how
+many consultants want each, de-duplicated, and capped (default 6). A term
+nobody's criteria contain is never bought.
 
-### Matching
-| # | Item |
-|---|---|
-| 10 | Excluded companies applied as a **hard filter**, before anything else |
-| 11 | Paused or unconfigured criteria → consultant skipped entirely |
-| 12 | Cheap title + location pre-filter, with its drop rate reported per run (R-16) |
-| 13 | Scored match across titles, include/exclude keywords, work types, minimum pay |
-| 14 | The **matched criteria version** stored on the queue item — "why did this match?" answerable forever |
-| 15 | A short human-readable match reason stored alongside |
-| 16 | **Source board recorded** on every posting, so per-board yield and quality are measurable |
+Location is derived the same way, with `Remote` when the bench wants remote.
 
-### The queue
-| # | Item |
-|---|---|
-| 17 | Per-consultant queue with an explicit state machine, transitions enforced server-side |
-| 18 | **Daily cap stops assignment**; surplus matches are **held, not discarded** (R-17) |
-| 19 | **Overlap flag** when one posting enters several queues — allowed, visible, never blocked (R-01, R-03) |
-| 20 | **Nothing can move a queue item to a different consultant** — no endpoint, by design (R-03) |
-| 21 | Full transition history per item: who, when, from what to what |
-| 22 | Actions: re-queue a skipped item, cancel with a reason, view a parking reason |
-| 23 | **Parked-unknown releases automatically** when Phase 4 approves the missing answer |
+### 5.4 Raw payloads are still retained — with the key stripped
 
-### Application records
-| # | Item |
-|---|---|
-| 24 | A **permanent, append-only** record per submitted application |
-| 25 | The exact question text as the form asked it, and the exact answer as filled, in order |
-| 26 | Final status: submitted / waiting-on-consultant / stalled-on-login / skipped-with-reason |
-| 27 | Link to the exact resume file used |
-| 28 | **No bulk resume export anywhere** (R-10) |
+`job_source_payloads` keeps every API response, exactly as v1 kept every HTML
+page, and for the same reason: an adapter bug found next month can be replayed
+over retained history instead of losing the postings that arrived while it was
+wrong.
 
-### Runs
-| # | Item |
-|---|---|
-| 29 | A run record per discovery cycle: start, end, per-stage in/out counts, per-source errors |
-| 30 | A failing source or posting **never aborts the run** |
-| 31 | **Two runs cannot overlap** — the second is refused |
-| 32 | Manual trigger; scheduled runs deferred (see §9) |
+One addition. The request URL contains `api_key`, and that URL is written to
+the database. **The key is redacted to `api_key=***` before storage.** A
+credential in a table that operators can read through the UI is a credential
+that has leaked.
 
-### Screens
-| # | Screen | Who |
-|---|---|---|
-| 33 | Consultant Detail → **Queue** tab, with a detail drawer per item | ORG_ADMIN, RECRUITER |
-| 34 | Consultant Detail → **Applications** tab | ORG_ADMIN, RECRUITER |
-| 35 | `/management/postings` — the posting pool, with a manual "Add a job" | ORG_ADMIN, RECRUITER |
-| 36 | `/management/runs` — run history and per-stage counts | ORG_ADMIN |
-| 37 | `/portal/queue` — the consultant's own queue, **read-only** | CONSULTANT |
-| 38 | `/portal/applications` — their own history | CONSULTANT |
+### 5.5 A missing key is a note, not a crash
+
+If `SERPAPI_KEY` is absent, the run starts, records
+`"Search provider is not configured — set SERPAPI_KEY"`, finishes cleanly, and
+still runs the **matching half** over postings already in the pool. Matching
+existing postings against changed criteria is useful work that does not need
+the network, and a run that half-works and says so beats a stack trace.
+
+### 5.6 The cost ceiling is enforced in code, not just configured
+
+`max_pages` on the provider row bounds pages per query, and a hard per-run call
+ceiling bounds the run overall. A misconfiguration — fifty search terms, ten
+pages each — cannot quietly spend a month's credits in one cycle. The run
+records `provider_calls` so spend is visible per run rather than discovered on
+an invoice.
 
 ---
 
-## 5. Permission matrix
+## 6. Configuration
 
-| Action | SUPER_ADMIN | ORG_ADMIN | RECRUITER | CONSULTANT |
-|---|:---:|:---:|:---:|:---:|
-| View postings | ✗ | ✓ all | ✓ all in org | ✗ |
-| Add a posting manually | ✗ | ✓ | ✓ | ✗ |
-| Trigger a discovery run | ✗ | **✓ only** | ✗ | ✗ |
-| View a queue | ✗ | ✓ all | ✓ assigned | **✓ own, read-only** |
-| Skip / re-queue / cancel an item | ✗ | ✓ | ✓ assigned | ✗ |
-| Move an item to another consultant | ✗ | **✗** | **✗** | ✗ |
-| View application records | ✗ | ✓ all | ✓ assigned | ✓ own |
-| Delete an application record | ✗ | **✗ nobody** | ✗ | ✗ |
-| View run history | ✗ | ✓ | ✗ | ✗ |
+```dotenv
+# ── Job discovery (Phase 5) ───────────────────────────────
+DISCOVERY_ENABLED=false          # the 4-hour cycle; off unless exactly "true"
 
-Consultants are read-only across this entire phase — consistent with R-23. Reassignment
-being absent from every role is the point of item 16.
+# ── Search provider — SerpApi Google Jobs ─────────────────
+SERPAPI_KEY=                     # empty ⇒ discovery runs, finds nothing, says so
+SERPAPI_BASE_URL=https://serpapi.com/search.json
+SERPAPI_TIMEOUT_MS=20000
 
----
+DISCOVERY_GL=us                  # country
+DISCOVERY_HL=en                  # language
+DISCOVERY_MAX_QUERIES=6          # search terms per run   ─┐ credits per run =
+DISCOVERY_MAX_PAGES=2            # pages per term (10/pg) ─┘ queries × pages
+DISCOVERY_MAX_CALLS_PER_RUN=20   # hard ceiling, whatever the above say
+```
 
-## 6. Design decisions — the ones that matter
-
-### 6.1 Deterministic matching now; the AI stage is a separate decision
-
-The plan specifies an AI match/no-match stage. **I propose Phase 5 ships without it**,
-and here is why that is not a shortcut:
-
-- R-16 already mandates a **cheap deterministic pre-filter before any AI call**. That
-  filter has to be built regardless, and it is the majority of the matching work.
-- Phase 3 criteria are unusually structured — ordered titles, include/exclude keywords,
-  locations with work modes, work types, a minimum pay floor, excluded companies. That
-  is enough signal for real matching. It is not a bag of words needing interpretation.
-- No LLM provider is wired into this project today. Choosing one means choosing a cost
-  model and a prompt contract, and **there is currently no real posting data to
-  evaluate either against**. Picking now would be guessing, then defending the guess.
-
-So: build the deterministic engine, store a match score and reason, and measure what it
-gets wrong against real postings. The AI stage then becomes a well-specified second pass
-over a small pre-filtered set — which is exactly the shape R-16 asks for anyway. If you
-want it inside Phase 5, say so and I will scope the provider decision separately rather
-than smuggle it in.
-
-### 6.2 The fingerprint follows the spec exactly, and normalisation is conservative
-
-R-15 fixes the fingerprint as **company + title + location**. Each part is normalised
-the same way Phase 4 normalises questions — lowercase, strip punctuation, collapse
-whitespace, no stemming or fuzzy distance.
-
-The two failure modes are not symmetrical, and both are bad:
-
-- **too loose** → two genuinely different jobs merge, and one is never surfaced
-- **too tight** → the same job is queued twice and a consultant applies to it twice
-
-The second is worse: a duplicate application is visible to the employer and wastes a
-slot against the daily cap. But merging away a real job is invisible, which makes it
-harder to notice. Since the spec fixes the fields, the remaining lever is
-normalisation, and it stays conservative — with the **sightings table** as the safety
-net, because it makes every merge decision inspectable after the fact rather than
-silently final.
-
-### 6.3 The queue is a state machine, enforced server-side
-
-`QUEUED → FILLED → AWAITING_SUBMIT → SUBMITTED`, plus `PARKED_UNKNOWN` and `SKIPPED`.
-
-Allowed transitions are declared in one place and checked on every write. A status
-column with no transition rules is how "submitted" ends up preceding "filled" in a
-history nobody can explain — and this history is the evidence trail behind a real
-application to a real employer.
-
-Every transition writes a row: who, when, from, to, why. That is the answer to "what
-happened to this application?".
-
-### 6.4 Caps hold surplus; they never discard it
-
-R-17 says a cap stops assignment. It does not say the extra matches evaporate. A match
-found today that exceeds the cap is **held** and reconsidered on the next run, so a
-good job found on a busy day is not lost because of the hour it arrived.
-
-This also means the queue is not the same thing as the match set, and the schema keeps
-them separate.
-
-### 6.5 Application records are append-only, like the audit log
-
-Permanent, per the data model. Same enforcement as `audit_logs`: a trigger plus a
-privilege revoke, so `app_role` cannot update or delete them even through SQL
-injection. An application record is a statement about what was sent to an employer in
-someone's name — it is not editable history.
-
-### 6.6 Overlap is a flag, never a block
-
-One posting matching several consultants is expected and permitted. Each applies under
-their own name (R-01). The flag exists so a recruiter can *see* it on the dashboard,
-not so the system can prevent it. And there is **no endpoint anywhere** that moves a
-queue item between consultants — R-03 is enforced by absence, the same way R-23 is.
-
-### 6.7 Phase 3's versioning finally pays off
-
-Each queue item stores the `search_criteria_version_id` that matched it. Phase 3 made
-versions immutable specifically for this: six months from now, "why was this job sent
-to this person?" resolves to a version that still exists verbatim, not to whatever the
-criteria happen to say today.
-
-### 6.8 Parked-unknown closes the Phase 4 loop
-
-When a form asks something with no approved answer, the item parks. When Phase 4
-approves that answer, every item parked on that question for that consultant returns to
-fillable — proposal item 49 from Phase 4, deferred because there was no queue to
-release. It is a hook in the existing review handler, not new machinery.
+Per-portal and per-provider settings that an operator should be able to change
+at 2am stay in `lkp_job_sources` — a row update, never a redeploy.
 
 ---
 
-## 7. Data model
+## 7. Schema changes
 
-**Thirteen tables.** This is by far the largest phase, which is itself an argument for
-the split in §9.
-
-| Table | Purpose | Mutability |
-|---|---|---|
-| `lkp_job_sources` | the five boards + manual + CSV, each with `enabled`, `fetch_mode` (EMAIL / FEED / MANUAL), rate limit and contact address | seeded lookup |
-| `job_source_payloads` | the raw email or feed entry, kept before parsing so a parser fix can be replayed | **append-only** |
-| `job_parse_quarantine` | anything that would not parse, with its error — inspected, never dropped | mutable (resolved flag) |
-| `lkp_portal_types` | LinkedIn, Workday, Greenhouse, Lever, direct — LinkedIn matters for R-22 | seeded lookup |
-| `lkp_queue_statuses` | the six states, with UI labels | seeded lookup |
-| `lkp_application_statuses` | the four final states | seeded lookup |
-| `job_postings` | the normalised posting + fingerprint | mutable (`last_seen`) |
-| `job_posting_sightings` | every time a source saw it — makes dedupe inspectable | append-only |
-| `queue_items` | consultant × posting, status, criteria version, overlap flag | mutable pointer |
-| `queue_item_transitions` | who moved it, when, from, to, why | **append-only** |
-| `job_matches` | matches found but **held** by the cap, plus score and reason | mutable |
-| `application_records` | permanent record of what was sent | **append-only, privilege-revoked** |
-| `application_qa` | exact question, exact answer, field type, order | **append-only** |
-| `discovery_runs` | per-run stage counts, errors, timings | append-only |
-
-House conventions throughout. Two invariants worth calling out now:
+One migration, `026_serpapi_provider.sql`. Small, because the data model was
+never the problem.
 
 ```sql
--- R-15. One posting per fingerprint per organisation.
-CREATE UNIQUE INDEX uq_posting_fingerprint_per_org
-    ON job_postings (organization_id, fingerprint);
+-- lkp_job_sources: crawl config out, provider semantics in
+ALTER TABLE lkp_job_sources DROP COLUMN IF EXISTS respect_robots;
+ALTER TABLE lkp_job_sources DROP COLUMN IF EXISTS search_template;
+ALTER TABLE lkp_job_sources ADD COLUMN is_priority BOOLEAN NOT NULL DEFAULT FALSE;
+-- fetch_mode gains PROVIDER and PORTAL, loses HTTP
+-- rate_limit_ms  → pacing between API calls   (still meaningful)
+-- max_pages      → result pages per query     (still meaningful)
+UPDATE lkp_job_sources SET is_enabled = TRUE WHERE fetch_mode = 'PORTAL';
 
--- A consultant is never queued the same job twice.
-CREATE UNIQUE INDEX uq_one_open_queue_item
-    ON queue_items (consultant_id, posting_id)
-    WHERE status_id <> (SELECT id FROM lkp_queue_statuses WHERE name = 'SKIPPED');
+-- job_postings: the provider's stable handle for a posting
+ALTER TABLE job_postings ADD COLUMN provider_job_id VARCHAR(512);
 
--- Two discovery runs cannot overlap (R-16 discipline, feature 27).
-CREATE UNIQUE INDEX uq_one_running_discovery
-    ON discovery_runs (organization_id) WHERE finished_at IS NULL;
+-- discovery_runs: counters that match what a run now does
+ALTER TABLE discovery_runs RENAME COLUMN sources_attempted TO queries_sent;
+ALTER TABLE discovery_runs RENAME COLUMN sources_failed    TO queries_failed;
+ALTER TABLE discovery_runs ADD COLUMN provider_calls     INT NOT NULL DEFAULT 0;
+ALTER TABLE discovery_runs ADD COLUMN filtered_by_portal INT NOT NULL DEFAULT 0;
 ```
+
+`sources_attempted` counted boards crawled, which is now always one. The rename
+is not cosmetic: leaving a column named "sources" holding a query count is how
+a dashboard ends up lying eighteen months from now.
 
 ---
 
 ## 8. Endpoints
 
+No route is added or removed. Two change shape:
+
 ```
-GET    /api/management/postings                      the pool, filterable
-POST   /api/management/postings                      add one manually
-POST   /api/management/postings/import               CSV / file connector
-GET    /api/management/postings/:id                  detail + sightings
-
-POST   /api/management/discovery/run                 ORG_ADMIN — trigger a cycle
-GET    /api/management/discovery/runs                run history
-GET    /api/management/discovery/runs/:id            per-stage counts and errors
-
-GET    /api/management/consultants/:id/queue         one consultant's queue
-GET    /api/management/queue/:itemId                 item detail + full transition history
-POST   /api/management/queue/:itemId/skip            reason required
-POST   /api/management/queue/:itemId/requeue
-POST   /api/management/queue/:itemId/transition      guarded by the state machine
-
-GET    /api/management/consultants/:id/applications  application history
-GET    /api/management/applications/:id              record + the exact Q&A list
-POST   /api/management/applications                  record one manually (see §9)
-
-GET    /api/portal/queue                             CONSULTANT — own, read-only
-GET    /api/portal/applications                      CONSULTANT — own, read-only
-GET    /api/lookups                                  + the four new lookups
+GET   /api/management/discovery/sources     + a `provider` block:
+                                              { configured, label, lastSuccessAt,
+                                                lastError, consecutiveFailures }
+PATCH /api/management/discovery/sources/:id   accepts maxPages for the provider
+                                              row; isEnabled for portal rows.
+                                              Rejects enabling MANUAL / CSV as before.
+POST  /api/management/discovery/run           unchanged contract, new engine
 ```
-
-No route moves an item between consultants. No route deletes an application record.
 
 ---
 
-## 9. The two problems with building this now
+## 9. Screens
 
-### Problem 1 — the five boards need accounts and a mailbox before any code runs
+`/management/discovery` is reworked; nothing else moves.
 
-The boards are now named (§4.1), which settles *what* to connect to. It does not
-settle the prerequisites, and none of them are code:
-
-- **An intake mailbox** — a dedicated address with IMAP access and credentials in
-  `.env`. SMTP settings are currently blank in `.env.example`, so nothing mail-related
-  is configured yet.
-- **An account per board**, with saved searches configured and alerts pointed at that
-  mailbox. LinkedIn, Wellfound, Built In and TheLadders all require a login;
-  TheLadders is a paid subscription.
-- **Saved searches that reflect each consultant's criteria.** This is an ongoing
-  operational task, not a one-off. The system cannot create them.
-
-Until a mailbox exists with real alerts arriving, the connectors can only be built
-against **captured sample emails** — which is a legitimate way to develop and test
-parsers, but it is not proof the pipeline works end to end.
-
-**The unblocking step is yours:** create the mailbox, set up one saved search on one
-board, and forward me a few real alert emails. Two or three samples per board is
-enough to write a parser that will hold.
-
-### Problem 2 — nothing fills or submits a form
-
-The desktop app is a separate, later phase. Without it no queue item can genuinely
-reach `SUBMITTED`, and no application record can be created by the system. Left
-literal, Phase 5 ships a queue that never advances past `QUEUED`.
-
-Phase 3 had a mild version of this. Phase 4's was worse. **Phase 5's is the worst
-yet**, because two independent halves of the pipeline are missing at once.
-
-### Recommended: split the phase
-
-| | Scope | Deliverable |
-|---|---|---|
-| **5A** *(recommended now)* | Postings, fingerprint dedupe, sightings, the five board connectors, raw-payload retention, quarantine, matching engine, cap logic, the queue and its state machine, run records, queue screens | Demonstrable end to end. Parsers built against captured sample emails until the mailbox exists; manual entry, CSV import and seeded postings cover the gap. First real exercise of Phase 3 criteria. |
-| **5B** *(after, or alongside the desktop app)* | Application records, Q&A entries, applications screens | Schema plus a **manual "record an application"** path, which real staffing firms do anyway when someone applies by hand. Becomes automatic when a submitter exists. |
-
-5A is a coherent, testable feature on its own. 5B without a submitter is mostly a table
-and a form — worth building, but not worth pretending it is the same deliverable.
-
-**If you want it in one phase, that is fine** — say so and I will build 5A then 5B in
-sequence under one banner. What I want to avoid is starting an eleven-table phase with
-the two halves undifferentiated.
-
-### Also explicitly out of scope
-
-| Not building | Why |
+| Was | Becomes |
 |---|---|
-| **The AI matching stage** | §6.1 — no provider wired, and no real posting data to evaluate a prompt or a cost model against. |
-| **The 4-hour schedule** | Manual trigger only until real alerts are flowing. A cron over an empty mailbox is theatre; the scheduler ships with the first live connector. |
-| **Direct scraping of the five boards** | §4.1. Available as a per-board opt-in flag, default off, if you decide you want it. |
-| Licensed aggregator feeds | Procurement. Worth pricing against the cost of maintaining five parsers — see the end of §4.1. |
-| Resume tailoring per item | Phase 6. Queue items carry the field, unpopulated. |
-| Contact attachment | Phase 7. Same. |
+| "Job boards" table with a **Pace** column (`5s gap · 2 pages`) | A **Search provider** card — key present or not, on/off, last success, last error, search terms, pages, and the credit cost of a run — sitting above the boards table |
+| One flat board list | **Job boards**, priority five starred and listed first, each showing *Accepting yes/no* and the number of postings actually attributed to it |
+| Stage counters `Fetched → Parsed → Quarantined → …` | `API calls → Results → Board-filtered → Quarantined → New → Repeat → …` |
+| "Run discovery now?" — *"makes real requests to those boards, deliberately slow"* | *"sends up to N searches to Google Jobs"*, with the credit cost called out |
+| Empty state — *"nothing reaches out to the internet until you turn a board on"* | *"no API key — add `SERPAPI_KEY`"*, and separately a warning only if **every** board has been switched off |
+
+The **Run discovery now** button is disabled unless the provider is both
+configured and switched on, so the run that cannot possibly work is not offered.
+
+The `SchedulePanel`, the queue tab and the audit panel are unchanged.
 
 ---
 
 ## 10. Manual test gate
 
-Every restriction gets a negative test proving the server refuses.
+Replaces v1's §10 board-connector table. Everything below the provider section
+is carried over verbatim, because those behaviours are unchanged and their
+tests still apply.
 
-### Board connectors (§4.1)
+### The provider
 | # | Do | Expect |
 |---|---|---|
-| A | Feed a captured LinkedIn alert email through the parser | Postings extracted with company, title, location, source URL |
-| B | Same for Wellfound, Built In, TheLadders, CrunchBoard | Each parser produces the common shape |
-| C | Feed an email whose template has changed | **Quarantined** with its error and raw payload — not dropped, run continues |
-| D | Fix the parser, replay the retained payload | The quarantined posting is recovered |
-| E | Disable one board in config | It is skipped; the others still deliver |
-| F | Break one board's parser deliberately | Run completes, that board's failure recorded, others unaffected |
-| G | Check per-board health | Last success, consecutive failures, quarantine depth all reported |
-| H | Confirm no board is fetched directly unless its opt-in flag is set | Default configuration performs no scraping |
-| I | Feed the same posting from two different boards | **One** posting, two sightings, both sources visible |
+| A | Run with `SERPAPI_KEY` unset | Run **completes**, note says the provider is unconfigured, matching still runs over existing postings, no crash |
+| B | Run with a valid key | Postings arrive with company, title, location, apply URL |
+| C | Inspect `job_source_payloads.request_url` | `api_key=***` — **the real key appears nowhere** |
+| D | Set an invalid key | Run completes, provider marked failing, error recorded, other stages unaffected |
+| E | Set `DISCOVERY_MAX_CALLS_PER_RUN=1` | Exactly one API call, run notes that the ceiling stopped it |
+| F | Check `provider_calls` on the run | Matches the number of pages actually fetched |
+| G | Force a 429 | Backed off and retried, then recorded as a failure rather than hammered |
+| H | Provider times out | Run completes; failure recorded against the provider row |
 
-### De-duplication (R-15)
+### Attribution — and that nothing is thrown away
 | # | Do | Expect |
 |---|---|---|
-| 1 | Import the same posting twice from two sources | **One** posting row; two sightings; `last_seen` updated |
-| 2 | Change only the location, re-import | Treated as a **distinct** posting |
-| 3 | Same job with different punctuation and casing | Matched as the same posting |
-| 4 | Inspect a merged posting | Both sightings visible with their sources |
+| I | A result with `via: "via LinkedIn"` | Source `LINKEDIN`, and the stored URL is the **LinkedIn** apply link, not the first one listed |
+| J | A result with `via: "via BuiltIn Chicago"` | Source `BUILTIN` — the per-city variant is recognised |
+| K | A result from a board on no list at all | Source `OTHER`, **kept and queued** like any other |
+| L | A result from Indeed / Dice / a Greenhouse board | Kept, attributed to its own row, counted against it |
+| M | `via: LinkedIn` but the apply link is Greenhouse | Source `LINKEDIN` **and** portal type `GREENHOUSE` — the two fields do not collapse |
+| N | An apply link on `careers.acme.com` | Portal type `COMPANY_SITE`, not `OTHER` |
+| O | A result missing `company_name` | **Quarantined** with its raw fragment — never stored, never silently dropped |
+| P | A result with no `apply_options` | Falls back to `share_link`; posting still usable |
+| Q | Open the discovery screen | The five named boards are starred and listed first; the rest follow |
+| R | Switch the Built In board off, re-run | Its postings are **rejected at ingest**; `filtered_by_portal` counts them |
+| S | Switch every board off | Run completes, queues nothing, and the screen says every board is off |
 
-### Matching
+### Pay parsing
 | # | Do | Expect |
 |---|---|---|
-| 5 | Narrow a consultant's criteria; run | Only matching postings queue; check 5 matches and 5 non-matches by hand |
-| 6 | Add a company to their excluded list | Its postings never appear, however well they match |
-| 7 | **Pause** their criteria; run | Consultant skipped entirely |
-| 8 | Consultant with criteria **not set up** | Skipped — never "matches everything" |
-| 9 | Check the pre-filter drop rate in the run record | Reported, and non-trivial |
-| 10 | Open a queue item | Shows the **criteria version** that matched and a readable reason |
+| T | `"$120K–$150K a year"` | 120000 / 150000 / `ANNUAL` |
+| U | `"$60–$75 an hour"` | 60 / 75 / `HOURLY` |
+| V | `"$95,000 a year"` | 95000 / 95000 / `ANNUAL` |
+| W | `"Up to $180K a year"` | null / 180000 / `ANNUAL` — a ceiling, not a range |
+| X | `"Competitive salary"` | **null** — not guessed |
+| Y | `"$150,000"` with no period | **null** — an amount without a unit is discarded |
+| Z | `"$120,000 - $150,000 a year plus 401k matching"` | 120000 / 150000 — the `401k` cannot inflate the maximum |
 
-### Caps (R-17)
+### De-duplication (R-15) — unchanged from v1
 | # | Do | Expect |
 |---|---|---|
-| 11 | Cap 3, force 10 matches | Exactly **3** queue items |
-| 12 | Check the other 7 | **Held**, not discarded — visible as pending matches |
-| 13 | Run again the next day | Held matches are reconsidered |
+| 1 | The same posting returned by two search terms | **One** posting row, two sightings, `last_seen` updated |
+| 2 | Change only the location | Treated as a **distinct** posting |
+| 3 | Same job, different punctuation and casing | Matched as the same posting |
+| 4 | The same job surfaced via LinkedIn and via Built In | **One** posting, two sightings, both portals visible |
 
-### Overlap and reassignment (R-01, R-03)
-| # | Do | Expect |
-|---|---|---|
-| 14 | One posting matches two consultants | In **both** queues, overlap flag set on each |
-| 15 | Look for any way to move an item to another consultant | None in the UI **and** none in the API |
-| 16 | Craft the request by hand | **404/405** — the route does not exist |
+### Matching, caps, overlap, state machine, permissions, lifecycle
 
-### Queue state machine
-| # | Do | Expect |
-|---|---|---|
-| 17 | Skip an item with no reason | **422** — a reason is mandatory |
-| 18 | Re-queue a skipped item | Returns to QUEUED; both transitions in the history |
-| 19 | Force an illegal transition by hand (`QUEUED → SUBMITTED`) | **409** — refused |
-| 20 | Read an item's history | Every transition: who, when, from, to, why |
-
-### Parked-unknown ↔ Phase 4
-| # | Do | Expect |
-|---|---|---|
-| 21 | Park an item on a question with no approved answer | `PARKED_UNKNOWN`, reason names the question |
-| 22 | Approve that answer in the Phase 4 inbox | Item returns to fillable **automatically** |
-| 23 | Reject the answer instead | Item stays parked |
-
-### Application records
-| # | Do | Expect |
-|---|---|---|
-| 24 | Create one, then try to edit it | Refused — append-only |
-| 25 | `UPDATE application_records` as `app_role` in psql | **permission denied** |
-| 26 | Open a record | Exact questions and exact answers, in order |
-| 27 | Look for a bulk resume export | None anywhere (R-10) |
-
-### Permissions — negatives
-| # | As | Do | Expect |
-|---|---|---|---|
-| 28 | recruiter | Queue of an unassigned consultant | **404** |
-| 29 | recruiter | Trigger a discovery run | **403** — ORG_ADMIN only |
-| 30 | consultant | Own queue | Read-only; no actions |
-| 31 | consultant | Any management queue route | **403** |
-| 32 | admin@apex | Any Molina posting, queue item or record | **404** |
-| 33 | superadmin | Any Phase 5 endpoint | **403** |
-
-### Runs
-| # | Do | Expect |
-|---|---|---|
-| 34 | Trigger a run | Run record with per-stage counts |
-| 35 | Break one connector deliberately | Run **completes**; failure recorded; other sources deliver |
-| 36 | Trigger a second run while one is going | **Refused** |
-| 37 | Compare engine-created and manually-added items in the audit log | Distinguishable |
-
-### Lifecycle
-| # | Do | Expect |
-|---|---|---|
-| 38 | Terminate a consultant with an open queue | Queue items cancelled; **application records kept** |
-| 39 | Suspend a consultant | Queue held, not cancelled — reversible |
-
-> Tests 38–39 exist because this went wrong in Phase 3: terminating a consultant left
-> their criteria active (`ISSUES.md` **H-1**). Any new per-consultant state gets
-> checked against the lifecycle from the start now.
+Carried over unchanged from the v1 proposal — tests 5–13 (matching and caps),
+14–16 (overlap and R-03 reassignment), 17–20 (state machine), 28–33
+(permissions), 38–39 (lifecycle). None of that code is being modified, and the
+tests remain the gate on it.
 
 ---
 
@@ -615,50 +509,32 @@ Every restriction gets a negative test proving the server refuses.
 
 | Area | Estimate |
 |---|---|
-| Migrations | 5–6 (`022`–`027`) |
-| New backend config | `fingerprint.js`, `matcher.js`, `queueStateMachine.js` — all pure and unit-testable |
-| New controllers | `postingController`, `discoveryController`, `queueController`, `applicationController` |
-| Endpoints | ~18 |
-| New screens | 6 (2 tabs, 4 pages) |
-| Tests | ~90 assertions, in `backend/tests/` from the start |
+| Migrations | 1 (`026`) |
+| Deleted | 4 connector files, ~1,200 lines |
+| Added | 3 connector files, ~400 lines |
+| Modified | `discoveryController.js` (acquisition half), `postingController.js` (source patch), `005_job_sources_seed.js`, `JobDiscovery.jsx`, `.env.example` |
+| Endpoints | 0 new, 2 reshaped |
+| Tests | `discovery.test.mjs` — JSON-LD and board-definition sections replaced by adapter and pay-parser coverage; fingerprint and matching sections kept as-is |
 
-Largest phase to date, roughly the size of Phases 3 and 4 combined — the second reason
-for the §9 split.
+Net **smaller** than what it replaces, which is the strongest evidence that the
+v1 design was fighting the problem rather than solving it.
 
 ---
 
-## 12. What I need from you
+## 12. Open questions for you
 
-1. **§9 — split into 5A and 5B, or one phase?** This is the real decision.
-2. **§6.1 — deterministic matching now, AI stage as a separate decision?** Or do you
-   want the AI stage inside Phase 5, in which case the provider and cost model need
-   their own conversation first.
-3. **§4.1 — alert-email intake as the primary acquisition method**, with direct
-   fetching as a per-board opt-in that is off by default. Confirm, or tell me you want
-   direct fetching on for specific boards and I will build it with the politeness
-   controls described.
-4. **The intake mailbox.** Which address, and can you set up one saved search on one
-   board and send me two or three real alert emails? That is the single thing that
-   unblocks parser work.
-5. **Anything in §4 to cut.** The run-history screen (item 36) is the most droppable —
-   the data is recorded either way, and Phase 8 surfaces it properly.
-
-## 13. Before Phase 5 starts
-
-Three items from `ISSUES.md` are worth clearing first — not because they block it, but
-because Phase 5 makes each more expensive:
-
-- **L-6 — the demo database has degraded.** Matching needs a believable bench to test
-  against, and right now Molina holds 27 terminated users against 8 active, with the
-  primary demo recruiter permanently terminated. Testing cap logic and overlap on that
-  is unreliable. This is the one I would fix first.
-- **M-5 — five screens and four dialogs have never been rendered.** Phase 5 adds six
-  more. The unverified surface is compounding.
-- **M-4 — three test suites still live in a scratchpad**, one of them unrunnable.
-  Phase 5 is the biggest surface yet and needs regression cover that survives a
-  session.
-
-Also worth knowing: `IMPLEMENTATION_PLAN.md` and `implementation.md` were deleted in
-commit `765ec0f`. They are recoverable with `git show 765ec0f^:IMPLEMENTATION_PLAN.md`,
-and this proposal was written from that recovered copy. If the deletion was deliberate,
-fine — but the Phase 5 spec lives there and nowhere else.
+1. **The API details you mentioned.** Vendor, key, and plan tier. The tier sets
+   the credit budget, which sets `DISCOVERY_MAX_PAGES` and the cycle interval.
+   Nothing is blocked until you have it — the code ships working and idle.
+2. **Everything is kept by default**, per your instruction — the five named
+   boards are starred as the priority set, and Indeed, Glassdoor, Dice,
+   Greenhouse boards and employers' own careers pages all flow into the same
+   queue. The per-board switches exist if you ever want to narrow it; none of
+   them start off.
+3. **TheLadders and CrunchBoard are thin in Google's index.** Keeping them
+   costs nothing. Worth knowing they will stay quiet, so their silence is not
+   read later as a bug — the volume will come from LinkedIn, Built In, Indeed
+   and Dice.
+4. **Cycle interval.** `discoverySchedule.js` is set to 4 hours (6 runs/day). At
+   6 terms × 2 pages that is ~72 credits/day, ~2,200/month. If the plan is
+   smaller, the interval is the first dial to turn.
