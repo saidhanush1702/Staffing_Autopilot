@@ -219,10 +219,38 @@ JWT_SECRET=<from step 3>
 PASSWORD_ENC_KEY=<from step 3 — MUST match what you used in step 4>
 APP_TIMEZONE=Asia/Kolkata
 DISCOVERY_ENABLED=false
+CLIENT_ORIGIN=https://YOUR-APP.vercel.app
 ```
 
 No `SEED_SUPER_ADMIN_*` here. Those belong to the migration command in step 4;
 the server never runs seeds, so setting them on Render has no effect.
+
+### `CLIENT_ORIGIN` is required even behind the proxy
+
+It is tempting to think the proxy removes the need for it — the request is
+server-to-server, so surely there is no `Origin` header. That is only half
+true, and the half that is wrong fails in a way that looks like a login bug
+rather than a CORS one.
+
+Per the Fetch spec, a browser attaches `Origin` to **every request whose method
+is not GET or HEAD** — including a *same-origin* POST. Vercel's rewrite
+forwards that header to Render untouched. So:
+
+| Request | `Origin` sent? | Result with empty allowlist |
+|---|---|---|
+| `GET /api/health` | No | Passes — `if (!origin)` allows it |
+| `POST /api/auth/login` | **Yes** | **Rejected**, surfacing as a 500 |
+
+The health check therefore passes while every login fails, which is a
+misleading pair of symptoms. Set `CLIENT_ORIGIN` to your Vercel URL, no
+trailing slash.
+
+You still do **not** want `CROSS_SITE_COOKIE=true` here. The browser regards
+the whole exchange as same-origin, so the cookie stays first-party on
+`SameSite=Lax` — which is what keeps the PDF preview working.
+
+You have to circle back to this after step 6, because the Vercel URL does not
+exist yet at this point.
 
 Do **not** set `PORT` — Render injects it, and `server.js` already reads it.
 
@@ -358,6 +386,7 @@ Nothing here is a rewrite. In order of value:
 
 | Symptom | Cause |
 |---|---|
+| `/api/health` fine but login returns **500** | `CLIENT_ORIGIN` missing or misspelled on Render. Same-origin POSTs still carry `Origin` and the proxy forwards it — see section 5. Render's log shows `Origin ... not allowed by CORS` |
 | Login succeeds, every later call 401s | Split domains without `CROSS_SITE_COOKIE=true`. Use the proxy instead |
 | `/api/health` returns `degraded` | Wrong `DATABASE_URL`, or `DB_SSL` not `true` |
 | Server exits at boot | `JWT_SECRET` or `PASSWORD_ENC_KEY` missing. Render logs name the one that is missing |
