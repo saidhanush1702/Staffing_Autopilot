@@ -10,17 +10,7 @@ import Joi from 'joi';
 import { query } from '../db.js';
 import { verifyPassword, encryptPassword } from '../utils/crypto.js';
 import { logAction } from './auditLogController.js';
-
-const COOKIE_NAME = 'token';
-const ONE_DAY_MS = 86_400_000;
-
-const cookieOptions = () => ({
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'Lax',
-    maxAge: ONE_DAY_MS,
-    path: '/',
-});
+import { COOKIE_NAME, cookieOptions, clearCookieOptions } from '../config/cookie.js';
 
 // tlds:{allow:false} because Joi otherwise validates against a fixed TLD list,
 // which rejects internal domains such as .local, .internal and .test.
@@ -174,11 +164,7 @@ export const login = async (req, res, next) => {
 
 /** POST /api/auth/logout */
 export const logout = (req, res) => {
-    res.cookie(COOKIE_NAME, '', {
-        ...cookieOptions(),
-        expires: new Date(0),
-        maxAge: undefined,
-    });
+    res.cookie(COOKIE_NAME, '', clearCookieOptions());
     return res.json({ message: 'Signed out.' });
 };
 
@@ -200,7 +186,7 @@ export const me = async (req, res, next) => {
 
         const user = rows[0];
         if (!user || !user.is_active) {
-            res.cookie(COOKIE_NAME, '', { ...cookieOptions(), expires: new Date(0), maxAge: undefined });
+            res.cookie(COOKIE_NAME, '', clearCookieOptions());
             return res.status(401).json({ error: 'Account is no longer active.' });
         }
 

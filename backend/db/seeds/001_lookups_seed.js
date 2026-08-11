@@ -60,6 +60,53 @@ export const runSeed001 = async (connection) => {
         );
     }
 
+    // ── Phase 4 — answer bank ────────────────────────────────────────
+    const answerStatuses = [
+        { name: 'PENDING', label: 'Awaiting approval' },
+        { name: 'APPROVED', label: 'Approved' },
+        { name: 'REJECTED', label: 'Rejected' },
+        { name: 'SUPERSEDED', label: 'Superseded' },
+    ];
+    for (const s of answerStatuses) {
+        await connection.query(
+            `INSERT INTO lkp_answer_statuses (name, label) VALUES ($1, $2)
+             ON CONFLICT (name) DO UPDATE SET label = EXCLUDED.label`,
+            [s.name, s.label],
+        );
+    }
+
+    // `requires_owner_approval` IS the R-07 routing rule. Adding another
+    // owner-only category later is a row here, not a code change.
+    const questionCategories = [
+        {
+            name: 'GENERAL', label: 'General', owner: false,
+            description: 'Skills, experience, availability — the assigned recruiter approves.',
+        },
+        {
+            name: 'SALARY', label: 'Salary & rate', owner: true,
+            description: 'Pay expectations. Commercially binding, so the organization admin decides.',
+        },
+        {
+            name: 'WORK_AUTH', label: 'Work authorization', owner: true,
+            description: 'Visa, sponsorship and right to work. Legally consequential.',
+        },
+        {
+            name: 'UNCATEGORISED', label: 'Needs review', owner: true,
+            description: 'The classifier could not place this question, so it defaults to the admin.',
+        },
+    ];
+    for (const c of questionCategories) {
+        await connection.query(
+            `INSERT INTO lkp_question_categories (name, label, requires_owner_approval, description)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (name) DO UPDATE
+                SET label = EXCLUDED.label,
+                    requires_owner_approval = EXCLUDED.requires_owner_approval,
+                    description = EXCLUDED.description`,
+            [c.name, c.label, c.owner, c.description],
+        );
+    }
+
     const roles = [
         { name: 'SUPER_ADMIN', label: 'Super Admin' },
         { name: 'ORG_ADMIN', label: 'Organization Admin' },

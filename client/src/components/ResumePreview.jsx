@@ -1,17 +1,21 @@
 import { useState } from 'react';
 import { FileText, Download, Maximize2, AlertCircle } from 'lucide-react';
 import Modal from './ui/Modal.jsx';
+import { API_ROOT } from '../api/axios.js';
 import { card, btnSm, TONE_TEXT } from '../design/tokens.js';
-
-const API = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:5001';
 
 /**
  * Inline resume preview.
  *
  * PDFs render in an <iframe> straight from the audited download endpoint with
- * ?disposition=inline. The session cookie rides along because the API and the
- * client are the same site (different ports do not make a different site), so
- * no token has to be put in the URL.
+ * ?disposition=inline, so no token has to be put in the URL — the session
+ * cookie rides along instead.
+ *
+ * That depends on the cookie being first-party, which is why API_ROOT is empty
+ * in a production build and the API is reached through a same-origin /api path.
+ * Serve the backend from a different domain and this iframe is a third-party
+ * context: Safari drops the cookie and the preview 401s even though the rest of
+ * the app still works.
  *
  * Word files have no browser renderer — those fall back to a download prompt.
  */
@@ -27,8 +31,8 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
         );
     }
 
-    const src = `${API}/api/resumes/${artifactId}/download?disposition=inline`;
-    const dl = `${API}/api/resumes/${artifactId}/download`;
+    const src = `${API_ROOT}/api/resumes/${artifactId}/download?disposition=inline`;
+    const dl = `${API_ROOT}/api/resumes/${artifactId}/download`;
     const isPdf = (fileName ?? '').toLowerCase().endsWith('.pdf');
 
     return (

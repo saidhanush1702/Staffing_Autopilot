@@ -1,0 +1,1226 @@
+<title>SmartApply — System Workflow</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Tokens. Every colour and size below is referenced through a
+     custom property so the two themes are one substitution, never
+     a second set of component rules.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    --paper:      #fcfcfd;
+    --paper-2:    #f4f6fa;
+    --ink:        #151923;
+    --ink-2:      #3d4557;
+    --muted:      #5b6478;
+    --line:       #e0e5ee;
+    --line-2:     #c9d1e0;
+
+    --accent:     #37418c;
+    --accent-sub: #eceef8;
+
+    --ok:         #17754a;
+    --ok-sub:     #e6f4ec;
+    --warn:       #96620a;
+    --warn-sub:   #fbf1de;
+    --stop:       #a02a32;
+    --stop-sub:   #fbeaea;
+
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", Times, serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono:  ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+    --measure: 72ch;
+    --rail: 250px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #0e1116;
+      --paper-2:    #161b23;
+      --ink:        #e8eaf0;
+      --ink-2:      #c2c8d6;
+      --muted:      #949db1;
+      --line:       #242a36;
+      --line-2:     #333b4b;
+
+      --accent:     #97a0ee;
+      --accent-sub: #1b2036;
+
+      --ok:         #55c98d;
+      --ok-sub:     #12251c;
+      --warn:       #e2ab45;
+      --warn-sub:   #2a2113;
+      --stop:       #f0908f;
+      --stop-sub:   #2c1618;
+    }
+  }
+
+  /* The viewer's own toggle must win over the OS preference, in both
+     directions — hence both blocks, not just the dark one. */
+  :root[data-theme="dark"] {
+    --paper:#0e1116; --paper-2:#161b23; --ink:#e8eaf0; --ink-2:#c2c8d6;
+    --muted:#949db1; --line:#242a36; --line-2:#333b4b;
+    --accent:#97a0ee; --accent-sub:#1b2036;
+    --ok:#55c98d; --ok-sub:#12251c; --warn:#e2ab45; --warn-sub:#2a2113;
+    --stop:#f0908f; --stop-sub:#2c1618;
+  }
+  :root[data-theme="light"] {
+    --paper:#fcfcfd; --paper-2:#f4f6fa; --ink:#151923; --ink-2:#3d4557;
+    --muted:#5b6478; --line:#e0e5ee; --line-2:#c9d1e0;
+    --accent:#37418c; --accent-sub:#eceef8;
+    --ok:#17754a; --ok-sub:#e6f4ec; --warn:#96620a; --warn-sub:#fbf1de;
+    --stop:#a02a32; --stop-sub:#fbeaea;
+  }
+
+  /* ── base ─────────────────────────────────────────────────── */
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: var(--rail) minmax(0, 1fr);
+    gap: 56px;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 32px 120px;
+  }
+
+  main { min-width: 0; }
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  .masthead {
+    grid-column: 1 / -1;
+    border-bottom: 2px solid var(--ink);
+    padding: 56px 0 26px;
+    margin-bottom: 44px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .masthead h1 {
+    font-family: var(--serif);
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    font-weight: 400;
+    text-wrap: balance;
+    margin-bottom: 14px;
+  }
+  .standfirst {
+    font-family: var(--serif);
+    font-size: 1.18rem;
+    line-height: 1.55;
+    color: var(--ink-2);
+    max-width: 58ch;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 26px;
+    margin-top: 24px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--muted);
+  }
+  .meta b { color: var(--ink-2); font-weight: 600; }
+
+  /* ── section rail ─────────────────────────────────────────── */
+  .rail {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding: 8px 0 40px;
+    font-size: 13.5px;
+  }
+  .rail-title {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .rail ol { list-style: none; display: flex; flex-direction: column; gap: 1px; }
+  .rail a {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 6px;
+    padding: 5px 8px 5px 4px;
+    border-radius: 4px;
+    color: var(--ink-2);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+  }
+  .rail a:hover { background: var(--paper-2); color: var(--accent); border-left-color: var(--accent); }
+  .rail a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .rail .n { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
+
+  /* ── typography ───────────────────────────────────────────── */
+  section { scroll-margin-top: 20px; margin-bottom: 60px; }
+
+  h2 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 1.85rem;
+    line-height: 1.2;
+    letter-spacing: -.01em;
+    text-wrap: balance;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    margin-bottom: 8px;
+  }
+  h2 .n {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  h3 {
+    font-family: var(--sans);
+    font-size: 1.02rem;
+    font-weight: 650;
+    letter-spacing: -.005em;
+    margin: 34px 0 8px;
+  }
+  p, ul, ol { max-width: var(--measure); }
+  p { margin-bottom: 14px; }
+  main ul, main ol { margin: 0 0 16px 0; padding-left: 20px; }
+  main li { margin-bottom: 6px; }
+  strong { font-weight: 650; color: var(--ink); }
+  em { font-style: italic; color: var(--ink-2); }
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: .08em .34em;
+  }
+  a { color: var(--accent); }
+
+  .lede {
+    font-family: var(--serif);
+    font-size: 1.09rem;
+    line-height: 1.6;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin-bottom: 22px;
+  }
+
+  /* ── callout ──────────────────────────────────────────────── */
+  .note {
+    max-width: var(--measure);
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 5px 5px 0;
+    padding: 14px 18px;
+    margin: 20px 0;
+    font-size: 15px;
+  }
+  .note p:last-child { margin-bottom: 0; }
+  .note.warn { border-left-color: var(--warn); }
+  .note.stop { border-left-color: var(--stop); }
+
+  .note-label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 5px;
+  }
+  .note.warn .note-label { color: var(--warn); }
+  .note.stop .note-label { color: var(--stop); }
+
+  /* ── tables ───────────────────────────────────────────────── */
+  .tw { overflow-x: auto; margin: 20px 0; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    background: var(--paper-2);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ── status chips ─────────────────────────────────────────── */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .chip.ok   { color: var(--ok);   background: var(--ok-sub); }
+  .chip.warn { color: var(--warn); background: var(--warn-sub); }
+  .chip.stop { color: var(--stop); background: var(--stop-sub); }
+  .chip.idle { color: var(--muted); background: var(--paper-2); }
+
+  /* ── legend ───────────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    padding: 13px 18px;
+    background: var(--paper-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    margin: 22px 0 30px;
+    font-size: 13.5px;
+    color: var(--ink-2);
+    max-width: var(--measure);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+
+  /* ── diagrams ─────────────────────────────────────────────── */
+  figure {
+    margin: 26px 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper-2);
+    overflow: hidden;
+  }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+  /* Diagrams render at their natural size and the container scrolls. Letting
+     Mermaid shrink-to-fit instead makes a wide diagram unreadably short — a
+     3,000px roadmap squeezed into an 840px column is 63px tall. */
+  .diagram { overflow-x: auto; padding: 22px 16px; }
+  .diagram pre.mermaid { background: none; border: 0; padding: 0; margin: 0; text-align: center; }
+  .diagram svg { max-width: none; height: auto; }
+
+  /* ── footer ───────────────────────────────────────────────── */
+  footer {
+    grid-column: 1 / -1;
+    border-top: 2px solid var(--ink);
+    padding-top: 18px;
+    margin-top: 20px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .04em;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    justify-content: space-between;
+  }
+
+  /* ── responsive ───────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; gap: 0; padding: 0 20px 80px; }
+    .rail { position: static; max-height: none; border-bottom: 1px solid var(--line); margin-bottom: 34px; }
+    .rail ol { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+
+  /* ── print / PDF ──────────────────────────────────────────── */
+  @media print {
+    :root {
+      --paper:#fff; --paper-2:#f7f8fa; --ink:#000; --ink-2:#222;
+      --muted:#555; --line:#ccc; --accent:#2b3475;
+    }
+    body { font-size: 10.5pt; line-height: 1.5; }
+    .shell { grid-template-columns: 1fr; max-width: none; padding: 0; gap: 0; }
+    .rail { display: none; }
+    .masthead { padding-top: 0; }
+    section { margin-bottom: 26pt; break-inside: auto; }
+    h2 { break-after: avoid; font-size: 16pt; padding-top: 12pt; }
+    h3 { break-after: avoid; }
+    figure, .tw, .note, .legend { break-inside: avoid; }
+    figure { background: #fff; }
+    /* On paper there is nothing to scroll, so wide diagrams scale to the page
+       instead of being clipped at the margin. */
+    .diagram { overflow: visible; }
+    .diagram svg { max-width: 100% !important; height: auto !important; }
+    a { color: #000; text-decoration: none; }
+    footer { break-inside: avoid; }
+  }
+</style>
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">Staffing Automation Platform &middot; System Overview</p>
+    <h1>SmartApply: how the whole system fits together</h1>
+    <p class="standfirst">
+      A staffing firm represents consultants. Each one wants a particular kind of job.
+      This system finds those jobs, works out who each suits, and queues them for
+      application under that consultant&rsquo;s own name &mdash; keeping a permanent record
+      of exactly what was sent, to whom, and why.
+    </p>
+    <div class="meta">
+      <span><b>Audience</b> &nbsp;Client &amp; delivery team</span>
+      <span><b>Covers</b> &nbsp;Phases 1&ndash;5 built, 6 onward planned</span>
+      <span><b>Stack</b> &nbsp;Node &middot; Express &middot; PostgreSQL &middot; React</span>
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="Sections">
+    <p class="rail-title">Contents</p>
+    <ol>
+      <li><a href="#s1"><span class="n">01</span><span>The system in one picture</span></a></li>
+      <li><a href="#s2"><span class="n">02</span><span>The end-to-end journey</span></a></li>
+      <li><a href="#s3"><span class="n">03</span><span>Who uses it</span></a></li>
+      <li><a href="#s4"><span class="n">04</span><span>Accounts &amp; tenant isolation</span></a></li>
+      <li><a href="#s5"><span class="n">05</span><span>Profiles &amp; approvals</span></a></li>
+      <li><a href="#s6"><span class="n">06</span><span>Search criteria</span></a></li>
+      <li><a href="#s7"><span class="n">07</span><span>The answer bank</span></a></li>
+      <li><a href="#s8"><span class="n">08</span><span>Discovery &amp; matching</span></a></li>
+      <li><a href="#s9"><span class="n">09</span><span>The queue lifecycle</span></a></li>
+      <li><a href="#s10"><span class="n">10</span><span>What comes next</span></a></li>
+      <li><a href="#s11"><span class="n">11</span><span>The security model</span></a></li>
+      <li><a href="#s12"><span class="n">12</span><span>The data model</span></a></li>
+      <li><a href="#s13"><span class="n">13</span><span>Build status</span></a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ── 1 ────────────────────────────────────────────────── -->
+    <section id="s1">
+      <h2><span class="n">Section 01</span>The system in one picture</h2>
+      <p class="lede">
+        Four things are set up per consultant. An engine runs on a schedule. The output
+        is a queue of relevant jobs and a permanent record of every application made.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 1 &mdash; System overview</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph SETUP["SET UP ONCE PER CONSULTANT"]
+        direction LR
+        P1["<b>Accounts &amp; roles</b><br/>who may see what"]
+        P2["<b>Profile</b><br/>who they are"]
+        P3["<b>Search criteria</b><br/>what they want"]
+        P4["<b>Answer bank</b><br/>how they answer forms"]
+    end
+
+    subgraph ENGINE["RUNS EVERY 4 HOURS, OR ON DEMAND"]
+        direction TB
+        D1["<b>Find jobs</b><br/>Google Jobs via search API"]
+        D2["<b>De-duplicate</b><br/>one row per real job"]
+        D3["<b>Match</b><br/>score against each consultant"]
+        D4["<b>Queue</b><br/>respecting the daily cap"]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph OUTPUT["THE RESULT"]
+        direction LR
+        Q["<b>Per-consultant queue</b><br/>jobs worth applying to"]
+        R["<b>Application record</b><br/>permanent evidence trail"]
+    end
+
+    P2 --> D3
+    P3 --> D3
+    P3 --> D1
+    P4 --> D4
+    SETUP --> ENGINE
+    D4 --> Q
+    Q --> R
+
+    style SETUP fill:#eceef8,stroke:#37418c,color:#151923
+    style ENGINE fill:#e6f4ec,stroke:#17754a,color:#151923
+    style OUTPUT fill:#fbf1de,stroke:#96620a,color:#151923
+</pre>
+        </div>
+      </figure>
+    </section>
+
+    <!-- ── 2 ────────────────────────────────────────────────── -->
+    <section id="s2">
+      <h2><span class="n">Section 02</span>The end-to-end journey</h2>
+      <p class="lede">
+        One consultant, from the day they are added to the day an application is
+        recorded. Colour tells you what exists today.
+      </p>
+
+      <div class="legend">
+        <span><span class="chip ok">Built</span> working in the product today</span>
+        <span><span class="chip idle">Planned</span> designed, not yet built</span>
+      </div>
+
+      <figure>
+        <figcaption>Fig. 2 &mdash; Consultant journey, end to end</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["Admin creates the consultant<br/><i>account + empty profile</i>"] --> B["Consultant fills in their profile"]
+    B --> C{"Reviewer checks<br/>each field"}
+    C -->|"Rejected with a note"| B
+    C -->|"Approved"| D["Profile values go <b>live</b><br/><i>only now usable for matching</i>"]
+
+    D --> E["Recruiter sets the search criteria<br/><i>titles, keywords, locations, pay floor</i>"]
+    E --> F["Recruiter activates discovery"]
+
+    D --> G["Consultant answers standard questions"]
+    G --> H{"Reviewer checks<br/><i>salary and work-auth go to admin only</i>"}
+    H -->|"Rejected"| G
+    H -->|"Approved"| I["Answer enters the bank<br/><i>only now usable to fill a form</i>"]
+
+    F --> J["<b>Discovery run</b><br/>searches Google Jobs"]
+    J --> K["Jobs de-duplicated<br/>and scored per consultant"]
+    K --> L{"Under the<br/>daily cap?"}
+    L -->|"No"| M["<b>Held</b> for the next run<br/><i>never discarded</i>"]
+    M --> L
+    L -->|"Yes"| N["Job enters the consultant's <b>queue</b>"]
+
+    N --> O["Resume tailored to the job"]
+    I --> P
+    O --> P["Application form filled"]
+    P --> Q{"A question with<br/>no approved answer?"}
+    Q -->|"Yes"| R["<b>Parked</b> until it is answered"]
+    R --> G
+    Q -->|"No"| S["Consultant reviews and submits"]
+    S --> T["<b>Application record</b> written<br/><i>permanent, never editable</i>"]
+
+    classDef built fill:#e6f4ec,stroke:#17754a,color:#0f3d27
+    classDef planned fill:#eef1f6,stroke:#8d97ab,color:#3d4557,stroke-dasharray: 5 3
+    class A,B,C,D,E,F,G,H,I,J,K,L,M,N built
+    class O,P,Q,R,S,T planned
+</pre>
+        </div>
+      </figure>
+
+      <h3>The three approval gates</h3>
+      <p>
+        These are the spine of the product. Nothing about a consultant is used to
+        represent them until a human has approved it.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Gate</th><th>What it protects</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Profile approval</strong></td><td>No unverified personal detail reaches an employer</td></tr>
+            <tr><td><strong>Criteria activation</strong></td><td>No job search runs until a recruiter says the criteria are right</td></tr>
+            <tr><td><strong>Answer approval</strong></td><td>No form is filled with an unapproved answer. Salary and work authorisation go to an admin, never a recruiter</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── 3 ────────────────────────────────────────────────── -->
+    <section id="s3">
+      <h2><span class="n">Section 03</span>Who uses it</h2>
+      <p class="lede">Four roles, three separate portals.</p>
+
+      <figure>
+        <figcaption>Fig. 3 &mdash; Roles and portals</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph SA["SUPER ADMIN"]
+        direction TB
+        SA1["Creates organisations<br/>Creates their first admin"] ~~~ SA2["<b>Cannot see any</b><br/><b>tenant data at all</b>"]
+    end
+
+    subgraph MG["MANAGEMENT PORTAL"]
+        direction TB
+        OA["<b>Org Admin</b><br/>Everything in their firm<br/>Triggers discovery runs<br/>Approves salary and work-auth answers<br/>Hires, suspends, terminates"]
+        RC["<b>Recruiter</b><br/><b>Only their assigned consultants</b><br/>Sets search criteria<br/>Approves general answers<br/>Manages queues"]
+    end
+
+    subgraph CP["CONSULTANT PORTAL"]
+        CN["<b>Consultant</b><br/>Own profile, edit and submit<br/>Own criteria, <b>read-only</b><br/>Own answers, write then wait<br/>Own queue, <b>read-only</b>"]
+    end
+
+    SA -.->|"creates"| MG
+    OA -->|"assigns consultants to"| RC
+    RC -->|"represents"| CN
+
+    style SA fill:#fbeaea,stroke:#a02a32,color:#151923
+    style MG fill:#eceef8,stroke:#37418c,color:#151923
+    style CP fill:#e6f4ec,stroke:#17754a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="note stop">
+        <span class="note-label">Enforced by absence</span>
+        <p>
+          Two rules are enforced by there being no way to do the thing at all, rather
+          than by a permission check that could be misconfigured:
+        </p>
+        <ul>
+          <li><strong>A consultant can never edit their own search criteria.</strong> There is no such screen and no such API route.</li>
+          <li><strong>A queued job can never be moved to another consultant.</strong> No endpoint exists. Each person applies under their own name.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ── 4 ────────────────────────────────────────────────── -->
+    <section id="s4">
+      <h2><span class="n">Section 04</span>Accounts, roles and tenant isolation</h2>
+      <p class="lede">
+        Two staffing firms use the same installation and must never see each other&rsquo;s
+        data. This is the foundation everything else sits on.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 4 &mdash; Login and every request thereafter</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant F as Browser
+    participant G as Route guard
+    participant Q as Database query
+    participant DB as PostgreSQL
+
+    U->>F: Log in
+    F->>G: Email + password
+    G->>DB: Verify, check account is active
+    DB-->>G: User + role + organisation
+    G-->>F: Signed token in an httpOnly cookie
+
+    Note over F,G: The organisation is inside the signed token.<br/>It is never read from the URL or the request body.
+
+    U->>F: Open a page
+    F->>G: Request with the cookie
+    G->>G: Layer 1 — is this role allowed here?
+    G->>Q: Layer 2 — scope every query to the organisation in the token
+    Q->>DB: Scoped query
+    DB-->>U: Only this firm's data
+</pre>
+        </div>
+      </figure>
+
+      <p>
+        Every account action is written to an append-only audit log: who did it, when,
+        from what address, and what changed. The application&rsquo;s own database user has
+        no permission to modify or delete those rows.
+      </p>
+    </section>
+
+    <!-- ── 5 ────────────────────────────────────────────────── -->
+    <section id="s5">
+      <h2><span class="n">Section 05</span>Consultant profiles and approvals</h2>
+      <p class="lede">
+        The consultant maintains their own details, but nothing they type goes live
+        until a reviewer approves it &mdash; field by field.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 5 &mdash; Profile change and approval</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A["Consultant edits<br/>their profile"] --> B["Submits for approval"]
+    B --> C["<b>Only the changed fields</b><br/>become a request"]
+
+    C --> D["Live values stay<br/><b>completely untouched</b>"]
+
+    C --> E{"Reviewer opens<br/>the Approvals tab"}
+    E -->|"Approve this field"| F["That field goes live"]
+    E -->|"Reject this field"| G["Note is <b>mandatory</b>"]
+    G --> H["Consultant sees the note"]
+    H --> A
+    F --> I["Live profile<br/><i>used for matching</i>"]
+
+    style D fill:#fbf1de,stroke:#96620a,color:#151923
+    style I fill:#e6f4ec,stroke:#17754a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="note">
+        <span class="note-label">Why field by field</span>
+        <p>
+          A consultant who updates five things and gets one wrong should not have the
+          other four blocked. Each field is judged on its own.
+        </p>
+      </div>
+
+      <h3>The employment lifecycle</h3>
+      <p>Deliberately asymmetric: suspending is reversible, terminating is not.</p>
+
+      <figure>
+        <figcaption>Fig. 6 &mdash; Employment states</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> ACTIVE: Account created
+    ACTIVE --> SUSPENDED: Suspend
+    SUSPENDED --> ACTIVE: Reinstate
+    ACTIVE --> TERMINATED: Terminate
+    SUSPENDED --> TERMINATED: Terminate
+    TERMINATED --> [*]
+
+    note right of SUSPENDED
+        Reversible.
+        Session revoked immediately.
+        Queue is held, not cancelled.
+    end note
+
+    note right of TERMINATED
+        Permanent, no way back.
+        Criteria deactivated.
+        Queue cancelled.
+        Application records KEPT.
+    end note
+</pre>
+        </div>
+      </figure>
+
+      <p>
+        In both cases the person&rsquo;s live session is killed on their next request. A
+        disabled account cannot keep working simply because it already held a valid token.
+      </p>
+    </section>
+
+    <!-- ── 6 ────────────────────────────────────────────────── -->
+    <section id="s6">
+      <h2><span class="n">Section 06</span>Search criteria</h2>
+      <p class="lede">
+        What kind of job this consultant wants. Owned by the recruiter, visible to the
+        consultant, changeable by neither without a trace.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 7 &mdash; Criteria, versioning and activation</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["Recruiter opens the<br/>Search Criteria tab"] --> B["Fills in:<br/>job titles in priority order<br/>keywords to include or exclude<br/>locations, remote or on-site<br/>work types<br/>minimum pay<br/>companies to never apply to"]
+    B --> C["Save"]
+    C --> D["<b>Version 1</b>, a frozen snapshot"]
+    D --> E{"Activate<br/>discovery?"}
+    E -->|"No"| F["Paused. This consultant is<br/>skipped entirely by every run"]
+    E -->|"Yes"| G["Live. The engine now<br/>searches on their behalf"]
+
+    G --> H["Later edit"]
+    H --> I["<b>Version 2</b><br/>v1 still readable, diffable, restorable"]
+
+    G -.->|"read-only"| J["Consultant can see it<br/>but never change it"]
+
+    style D fill:#eceef8,stroke:#37418c,color:#151923
+    style I fill:#eceef8,stroke:#37418c,color:#151923
+    style J fill:#e6f4ec,stroke:#17754a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="note">
+        <span class="note-label">Why freeze every version</span>
+        <p>
+          Six months from now, someone will ask &ldquo;why was this job sent to this
+          person?&rdquo; Each queued job stores the exact criteria version that matched
+          it &mdash; a snapshot that still exists word for word, not whatever the criteria
+          happen to say today.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── 7 ────────────────────────────────────────────────── -->
+    <section id="s7">
+      <h2><span class="n">Section 07</span>The answer bank</h2>
+      <p class="lede">
+        Application forms ask the same questions over and over. The consultant answers
+        once, a reviewer approves, and the approved answer is then available to fill
+        any form.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 8 &mdash; Answer routing and approval</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["A question exists<br/><i>standard set, raised by a recruiter,<br/>or asked by a real form</i>"] --> B["Consultant answers it"]
+    B --> C["<b>PENDING</b><br/>never used to fill anything"]
+
+    C --> D{"Routed by<br/><b>category</b>"}
+    D -->|"General"| E["The assigned recruiter"]
+    D -->|"<b>Salary</b>"| F["<b>Org Admin only</b>"]
+    D -->|"<b>Work authorisation</b>"| F
+    D -->|"Uncategorised"| F
+
+    E --> G{"Reviewer decides"}
+    F --> G
+    G -->|"Approve as-is"| H["<b>APPROVED</b><br/>enters the bank"]
+    G -->|"Correct, then approve"| I["Edit recorded as the reviewer's<br/><b>original text kept</b>"]
+    I --> H
+    G -->|"Reject"| J["Note is <b>mandatory</b>"]
+    J --> B
+
+    H --> K["Available to fill forms"]
+
+    style F fill:#fbeaea,stroke:#a02a32,color:#151923
+    style H fill:#e6f4ec,stroke:#17754a,color:#151923
+    style C fill:#fbf1de,stroke:#96620a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="note stop">
+        <span class="note-label">Why salary and work authorisation skip the recruiter</span>
+        <p>
+          They are the two answers with legal and commercial consequences. A recruiter
+          who could quietly adjust a stated salary expectation or a visa status is a
+          risk the design removes rather than monitors. Anything uncategorised also
+          goes to the admin &mdash; the safe default.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── 8 ────────────────────────────────────────────────── -->
+    <section id="s8">
+      <h2><span class="n">Section 08</span>Job discovery, matching and the queue</h2>
+      <p class="lede">
+        This is the engine. It was rebuilt: the original design crawled five job boards
+        directly, and four of them block automated access outright. It now reads
+        Google&rsquo;s index of those same boards through a paid search API.
+      </p>
+
+      <h3>Why the approach changed</h3>
+
+      <figure>
+        <figcaption>Fig. 9 &mdash; Original design against current design</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph OLD["ORIGINAL DESIGN — five crawlers"]
+        direction LR
+        O1["LinkedIn<br/><b>blocked</b><br/>site-wide robots.txt"]
+        O2["Wellfound<br/><b>blocked</b><br/>Cloudflare 403"]
+        O3["Built In<br/>partial"]
+        O4["TheLadders<br/><b>blocked</b><br/>Cloudflare 403"]
+        O5["CrunchBoard<br/>RSS trickle"]
+    end
+
+    subgraph NEW["CURRENT DESIGN — one provider"]
+        direction TB
+        N1["<b>Google Jobs</b><br/>via search API"]
+        N2["Google already indexes<br/><b>all five boards</b><br/>plus Indeed, Glassdoor, Dice,<br/>Greenhouse, company sites"]
+        N1 --- N2
+    end
+
+    OLD -->|"replaced by"| NEW
+
+    style OLD fill:#fbeaea,stroke:#a02a32,color:#151923
+    style NEW fill:#e6f4ec,stroke:#17754a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th>&nbsp;</th><th>Original</th><th>Current</th></tr></thead>
+          <tbody>
+            <tr><td>Boards actually reachable</td><td>2 of 5, partially</td><td><strong>All 5</strong>, plus many more</td></tr>
+            <tr><td>Legal position</td><td>Against every board&rsquo;s terms</td><td>A paying customer of a documented API</td></tr>
+            <tr><td>Parsers to maintain</td><td>5 HTML parsers, sitemap, RSS, robots engine</td><td><strong>1</strong> JSON contract</td></tr>
+            <tr><td>Risk</td><td>Account bans, arms race with bot detection</td><td>A metered bill</td></tr>
+            <tr><td class="num">Code</td><td class="num">~1,200 lines</td><td class="num">~400 lines</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <span class="note-label">Everything found is kept</span>
+        <p>
+          The five named boards are the <strong>priority set</strong> &mdash; the coverage
+          we guarantee &mdash; not a filter. A strong role from Indeed or an employer&rsquo;s
+          own careers page is a real lead and goes into the same queue.
+        </p>
+      </div>
+
+      <h3>The discovery pipeline</h3>
+
+      <figure>
+        <figcaption>Fig. 10 &mdash; One discovery run, start to finish</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["<b>Run starts</b><br/>every 4 hours, or on demand"] --> B{"Another run<br/>in progress?"}
+    B -->|"Yes"| B1["<b>Refused</b>. Two runs never overlap"]
+    B -->|"No"| C["Collect job titles from every<br/>active consultant's criteria"]
+
+    C --> D["Rank by how many consultants<br/>want each title, then cap the list<br/><i>every search term costs money</i>"]
+    D --> E["<b>Search Google Jobs</b><br/>page by page, within a hard call ceiling"]
+
+    E --> F["<b>Store the raw response</b><br/><i>API key stripped out first</i>"]
+    F --> G{"Can each result<br/>be read?"}
+    G -->|"No"| G1["<b>Quarantined</b> with the raw data<br/><i>never silently dropped</i>"]
+    G -->|"Yes"| H["Work out two things:<br/><b>which board listed it</b><br/><b>which system you apply through</b>"]
+
+    H --> I{"Is that board<br/>switched on?"}
+    I -->|"No"| I1["Rejected, and <b>counted</b><br/><i>so low volume is explainable</i>"]
+    I -->|"Yes"| J["<b>Fingerprint</b><br/>company + title + location"]
+
+    J --> K{"Seen this<br/>job before?"}
+    K -->|"Yes"| K1["Record another sighting,<br/>update 'last seen'<br/><b>no second row</b>"]
+    K -->|"No"| K2["New posting stored"]
+
+    K1 --> L["<b>MATCHING</b>"]
+    K2 --> L
+
+    L --> M{"Company on their<br/>excluded list?"}
+    M -->|"Yes"| M1["<b>Hard no</b>, however well it scores"]
+    M -->|"No"| N{"Rough title and<br/>location fit?"}
+    N -->|"No"| N1["Dropped cheaply<br/><i>the cheap filter runs first, by design</i>"]
+    N -->|"Yes"| O["<b>Score it</b><br/>titles, keywords, work type, pay"]
+
+    O --> P["Match stored with its score,<br/>a readable reason, and the exact<br/>criteria version that matched"]
+    P --> Q{"Consultant under<br/>their daily cap?"}
+    Q -->|"No"| Q1["<b>HELD</b>, reconsidered next run<br/><i>never thrown away</i>"]
+    Q -->|"Yes"| R["<b>Queued</b>"]
+    R --> S{"Already in another<br/>consultant's queue?"}
+    S -->|"Yes"| S1["Flagged as an overlap.<br/><b>Allowed, never blocked</b>"]
+    S -->|"No"| T["Done"]
+
+    style B1 fill:#fbeaea,stroke:#a02a32,color:#151923
+    style G1 fill:#fbf1de,stroke:#96620a,color:#151923
+    style Q1 fill:#fbf1de,stroke:#96620a,color:#151923
+    style M1 fill:#fbeaea,stroke:#a02a32,color:#151923
+    style R fill:#e6f4ec,stroke:#17754a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <h3>The five rules the pipeline enforces</h3>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Rule</th><th>What it means in practice</th></tr></thead>
+          <tbody>
+            <tr><td><strong>One row per real job</strong></td><td>The same job found twice becomes one posting with two sightings. Never two queue items, never a duplicate application</td></tr>
+            <tr><td><strong>Cheap filter before expensive work</strong></td><td>An obvious non-match is dropped on a title comparison, not after a full scoring pass</td></tr>
+            <tr><td><strong>Caps hold, they do not discard</strong></td><td>A great job found on a busy day waits for tomorrow instead of being lost to the hour it arrived</td></tr>
+            <tr><td><strong>Overlap is visible, not prevented</strong></td><td>One job can legitimately suit three consultants. Each applies under their own name, and a recruiter can see the overlap</td></tr>
+            <tr><td><strong>Nothing fails the whole run</strong></td><td>A broken search, an unreadable result, a board switched off &mdash; each is recorded and the cycle carries on</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Cost control</h3>
+      <p>The search API is metered: <strong>every page of results is one credit.</strong></p>
+
+      <figure>
+        <figcaption>Fig. 11 &mdash; What a run costs</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A["Search terms<br/><i>default 6</i>"] --> C["<b>Credits per run</b>"]
+    B["Pages per term<br/><i>default 2</i>"] --> C
+    C --> D["12 per run"]
+    D --> E["~72 per day<br/><i>on the 4-hour cycle</i>"]
+    E --> F["~2,200 per month"]
+
+    G["<b>Hard ceiling per run</b><br/><i>default 20 calls</i>"] -.->|"caps it regardless"| C
+
+    style G fill:#fbeaea,stroke:#a02a32,color:#151923
+    style F fill:#fbf1de,stroke:#96620a,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <p>
+        Three protections: a cap on search terms, a cap on pages per term, and a hard
+        per-run call ceiling that applies no matter what the first two are set to. Each
+        run records what it spent, so cost is visible on screen rather than discovered
+        on an invoice.
+      </p>
+    </section>
+
+    <!-- ── 9 ────────────────────────────────────────────────── -->
+    <section id="s9">
+      <h2><span class="n">Section 09</span>The queue lifecycle</h2>
+      <p class="lede">
+        Once a job is queued it moves through a fixed set of states. Illegal jumps are
+        refused by the server, not merely hidden in the interface.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 12 &mdash; Queue item states</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> QUEUED: Matched by a discovery run
+    QUEUED --> FILLED: Form filled from the answer bank
+    QUEUED --> SKIPPED: Skipped, reason mandatory
+    FILLED --> PARKED_UNKNOWN: Form asked something with no approved answer
+    PARKED_UNKNOWN --> FILLED: That answer gets approved
+    FILLED --> AWAITING_SUBMIT: Ready for the consultant
+    AWAITING_SUBMIT --> SUBMITTED: Consultant submits
+    AWAITING_SUBMIT --> SKIPPED: Changed their mind, reason mandatory
+    SKIPPED --> QUEUED: Re-queued
+    SUBMITTED --> [*]: Application record written
+
+    note right of PARKED_UNKNOWN
+        This is the loop back to the answer bank.
+        Approving the missing answer automatically
+        releases every item waiting on it.
+    end note
+
+    note right of SUBMITTED
+        The application record is permanent.
+        Nobody can edit or delete it,
+        not an admin, not through the database.
+    end note
+</pre>
+        </div>
+      </figure>
+
+      <p>
+        Every single move writes a row: who moved it, when, from what state to what
+        state, and why. That history is the answer to &ldquo;what happened to this
+        application?&rdquo;
+      </p>
+    </section>
+
+    <!-- ── 10 ───────────────────────────────────────────────── -->
+    <section id="s10">
+      <h2><span class="n">Section 10</span>What comes next</h2>
+
+      <figure>
+        <figcaption>Fig. 13 &mdash; Roadmap</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph DONE["BUILT"]
+        direction TB
+        A["Accounts and roles"] ~~~ B["Profiles and approvals"] ~~~ C["Search criteria"] ~~~ D["Answer bank"] ~~~ E["Discovery, matching and queue"]
+    end
+
+    subgraph NEXT["NEXT"]
+        direction TB
+        F["<b>Resume tailoring</b><br/>a version of the CV per job"] ~~~ G["<b>Contacts</b><br/>recruiter contacts per posting<br/>plus a do-not-contact list"]
+    end
+
+    subgraph LATER["LATER"]
+        direction TB
+        H["<b>Consultant desktop app</b><br/>fills and submits the actual forms"] ~~~ I["<b>Application records</b><br/>every question and answer, as sent"] ~~~ J["Two-step verification<br/>Forgot-password email"]
+    end
+
+    DONE --> NEXT --> LATER
+
+    style DONE fill:#e6f4ec,stroke:#17754a,color:#151923
+    style NEXT fill:#fbf1de,stroke:#96620a,color:#151923
+    style LATER fill:#eef1f6,stroke:#8d97ab,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <h3>The one honest gap</h3>
+      <p>
+        Nothing yet fills or submits a form. That is the desktop application, and it is
+        a separate piece of work. Until it exists:
+      </p>
+      <ul>
+        <li>Queue items reach <strong>QUEUED</strong> and stop there.</li>
+        <li>The states beyond it are defined and enforced, but nothing drives an item through them.</li>
+        <li>Application records can be entered by hand &mdash; which is what staffing firms do anyway when someone applies manually &mdash; and become automatic once a submitter exists.</li>
+      </ul>
+      <p>
+        This is deliberate and was flagged from the start. The queue is genuinely useful
+        on its own: it tells a recruiter exactly which jobs are worth this person&rsquo;s
+        time today, and why.
+      </p>
+    </section>
+
+    <!-- ── 11 ───────────────────────────────────────────────── -->
+    <section id="s11">
+      <h2><span class="n">Section 11</span>The security model</h2>
+      <p class="lede">
+        Three independent layers. The third is convenience; the first two are the real
+        protection.
+      </p>
+
+      <figure>
+        <figcaption>Fig. 14 &mdash; How a request is checked</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    A["Request arrives"] --> B["<b>Layer 1 — Route guard</b><br/>Is this role allowed on this route at all?"]
+    B -->|"No"| B1["403 Forbidden"]
+    B -->|"Yes"| C["<b>Layer 2 — Tenant scoping</b><br/>Every query is filtered by the organisation<br/><b>taken from the signed token</b>"]
+    C --> D{"Recruiter?"}
+    D -->|"Yes"| E["Narrowed again to<br/><b>only their assigned consultants</b>"]
+    D -->|"No"| F["Whole organisation"]
+    E --> G["Query runs"]
+    F --> G
+    G --> H["<b>Layer 3 — Interface</b><br/>Menus and buttons hidden<br/><i>convenience only, never trusted</i>"]
+
+    style B fill:#eceef8,stroke:#37418c,color:#151923
+    style C fill:#eceef8,stroke:#37418c,color:#151923
+    style H fill:#eef1f6,stroke:#8d97ab,color:#151923
+</pre>
+        </div>
+      </figure>
+
+      <div class="note">
+        <span class="note-label">The detail that matters</span>
+        <p>
+          The organisation is read from the signed login token &mdash; never from the URL,
+          the request body, or a query parameter. A user cannot ask for another firm&rsquo;s
+          data by editing a request, because the part of the request that decides which
+          firm they belong to is not theirs to edit.
+        </p>
+      </div>
+
+      <div class="note">
+        <span class="note-label">Append-only records</span>
+        <p>
+          Audit logs and application records are protected at the database level, not
+          just in code: the account the application connects as has had its permission
+          to update or delete those rows revoked. Even a successful injection attack
+          could not rewrite that history.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── 12 ───────────────────────────────────────────────── -->
+    <section id="s12">
+      <h2><span class="n">Section 12</span>The data model</h2>
+      <p class="lede">The main tables and how they relate.</p>
+
+      <figure>
+        <figcaption>Fig. 15 &mdash; Entity relationships</figcaption>
+        <div class="diagram">
+<pre class="mermaid">
+erDiagram
+    ORGANIZATION ||--o{ USER : "employs"
+    USER ||--o| CONSULTANT_PROFILE : "has"
+    USER ||--o{ PROFILE_CHANGE_REQUEST : "submits"
+    USER ||--o| SEARCH_CRITERIA : "has"
+    SEARCH_CRITERIA ||--o{ CRITERIA_VERSION : "frozen snapshots"
+    USER ||--o{ ANSWER : "gives"
+    QUESTION ||--o{ ANSWER : "is answered by"
+
+    JOB_SOURCE ||--o{ JOB_POSTING : "surfaced"
+    JOB_POSTING ||--o{ POSTING_SIGHTING : "seen again"
+    JOB_POSTING ||--o{ JOB_MATCH : "suits"
+    USER ||--o{ JOB_MATCH : "matched to"
+    CRITERIA_VERSION ||--o{ JOB_MATCH : "matched by"
+
+    JOB_MATCH ||--o| QUEUE_ITEM : "promoted to"
+    QUEUE_ITEM ||--o{ QUEUE_TRANSITION : "every move"
+    QUEUE_ITEM ||--o| APPLICATION_RECORD : "results in"
+    APPLICATION_RECORD ||--o{ APPLICATION_QA : "exact Q and A"
+
+    DISCOVERY_RUN ||--o{ JOB_POSTING : "found"
+    DISCOVERY_RUN ||--o{ SOURCE_PAYLOAD : "raw responses kept"
+</pre>
+        </div>
+      </figure>
+
+      <h3>Three deliberate choices</h3>
+      <ol>
+        <li><strong>A match and a queue slot are different things.</strong> A job can suit a consultant without there being room for it today. Keeping them separate is what makes &ldquo;held, not discarded&rdquo; possible.</li>
+        <li><strong>Criteria versions are frozen, and each match points at one.</strong> That is how &ldquo;why did this person get this job?&rdquo; stays answerable years later.</li>
+        <li><strong>Raw API responses are retained.</strong> If the way we read results turns out to be wrong next month, the fix can be replayed over the stored history instead of losing everything that arrived while it was broken.</li>
+      </ol>
+    </section>
+
+    <!-- ── 13 ───────────────────────────────────────────────── -->
+    <section id="s13">
+      <h2><span class="n">Section 13</span>Build status</h2>
+
+      <div class="tw">
+        <table>
+          <thead>
+            <tr><th class="num">Phase</th><th>Scope</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="num"><strong>1</strong></td><td>Multi-tenant accounts, 4 roles, 3 portals, audit log</td><td><span class="chip ok">Complete</span></td></tr>
+            <tr><td class="num"><strong>2</strong></td><td>Consultant profiles, field-by-field approval, resume upload</td><td><span class="chip ok">Complete</span></td></tr>
+            <tr><td class="num"><strong>2.1</strong></td><td>Employment lifecycle, session revocation, lockout</td><td><span class="chip ok">Complete</span></td></tr>
+            <tr><td class="num"><strong>3</strong></td><td>Search criteria, immutable versioning, pause and activate</td><td><span class="chip ok">Complete</span></td></tr>
+            <tr><td class="num"><strong>4</strong></td><td>Answer bank, category routing, approvals</td><td><span class="chip ok">Complete</span><br><small>one admin screen deferred</small></td></tr>
+            <tr><td class="num"><strong>5</strong></td><td>Job discovery via search API, de-duplication, matching, daily caps, queue</td><td><span class="chip warn">Built &mdash; needs API key</span></td></tr>
+            <tr><td class="num"><strong>6</strong></td><td>Resume tailoring per job</td><td><span class="chip idle">Planned</span></td></tr>
+            <tr><td class="num"><strong>7</strong></td><td>Contacts and do-not-contact list</td><td><span class="chip idle">Planned</span></td></tr>
+            <tr><td class="num">later</td><td>Consultant desktop app, automatic application records, two-step verification, password reset by email</td><td><span class="chip idle">Planned</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>What is needed to switch discovery on</h3>
+      <ol>
+        <li>A <strong>search API account</strong> and its key, added to the server configuration.</li>
+        <li>A decision on the <strong>plan tier</strong>, which sets the credit budget. That in turn sets how often the cycle runs and how deep each search goes.</li>
+        <li>Turning the provider <strong>on</strong> from the discovery screen. It ships switched off deliberately, so the first request and the first credit spent are somebody&rsquo;s decision rather than a side effect of installing the software.</li>
+      </ol>
+
+      <div class="note warn">
+        <span class="note-label">Until then</span>
+        <p>
+          Discovery runs still complete: they fetch nothing, say so plainly in the run
+          notes, and match against whatever is already in the posting pool.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <span>SmartApply &mdash; System Workflow</span>
+    <span>Phases 1&ndash;5 built &middot; 6 onward planned</span>
+  </footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  /* Runs only when this file is opened directly in a browser. On the hosted
+     page the diagrams are rendered by the platform and this script is blocked,
+     so the two paths never both run. */
+  if (window.mermaid) {
+    const dark = matchMedia("(prefers-color-scheme: dark)").matches
+      || document.documentElement.dataset.theme === "dark";
+    window.mermaid.initialize({
+      startOnLoad: true,
+      theme: dark ? "dark" : "neutral",
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+      // useMaxWidth:false everywhere — see the .diagram note in the stylesheet.
+      flowchart: { curve: "basis", useMaxWidth: false },
+      sequence:  { useMaxWidth: false },
+      state:     { useMaxWidth: false },
+      er:        { useMaxWidth: false },
+      securityLevel: "loose"
+    });
+  }
+</script>

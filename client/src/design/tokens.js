@@ -106,6 +106,40 @@ export const btnSm = {
 export const iconBtn = 'rounded p-1 text-slate-400 transition-colors '
     + 'hover:bg-slate-100 hover:text-brand-600';
 
+/* ── switches ─────────────────────────────────────────────────────── */
+
+/**
+ * On/off switch, for a setting that commits immediately rather than on save.
+ * Use it where the state itself is the point and a button label would have to
+ * be read twice ("Turn off" — so is it currently on?).
+ *
+ *   <button role="switch" aria-checked={on}
+ *           className={`${toggleTrack} ${on ? toggleTrackOn : toggleTrackOff}`}>
+ *     <span className={`${toggleKnob} ${on ? toggleKnobOn : toggleKnobOff}`} />
+ *   </button>
+ */
+export const toggleTrack = 'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center '
+    + 'rounded-full border-2 border-transparent transition-colors outline-none '
+    + 'focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 '
+    + 'disabled:cursor-not-allowed disabled:opacity-60';
+export const toggleTrackOn = 'bg-brand-600';
+export const toggleTrackOff = 'bg-slate-300';
+export const toggleKnob = 'pointer-events-none inline-block h-5 w-5 transform rounded-full '
+    + 'bg-white shadow transition-transform';
+export const toggleKnobOn = 'translate-x-5';
+export const toggleKnobOff = 'translate-x-0';
+
+/* ── readouts ─────────────────────────────────────────────────────── */
+
+/**
+ * Live numbers that change in place — clocks, countdowns, timers. Tabular
+ * figures keep every digit the same width, so a ticking value does not make
+ * the text beside it jitter left and right once a second.
+ */
+export const readout = 'font-mono tabular-nums text-slate-900';
+export const readoutLarge = 'font-mono tabular-nums text-2xl font-semibold text-slate-900';
+export const readoutLabel = 'text-xs uppercase tracking-wide text-slate-400';
+
 /* ── tones ────────────────────────────────────────────────────────── */
 
 /**

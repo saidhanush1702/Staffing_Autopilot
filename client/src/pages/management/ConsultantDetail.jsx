@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
     ArrowLeft, CheckCircle2, AlertCircle, Clock, Mail, Phone,
-    MapPin, ShieldCheck, Linkedin, Gauge, Pause, UserCircle, Search,
+    MapPin, ShieldCheck, Linkedin, Gauge, Pause, UserCircle, Search, MessageSquare, ListChecks,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
 import CriteriaEditor from '../../components/criteria/CriteriaEditor.jsx';
+import ConsultantAnswers from '../../components/answers/ConsultantAnswers.jsx';
+import ConsultantQueue from '../../components/queue/ConsultantQueue.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
     card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle,
@@ -19,6 +21,8 @@ import {
 const TABS = [
     { key: 'PROFILE', label: 'Profile', icon: UserCircle },
     { key: 'CRITERIA', label: 'Search Criteria', icon: Search },
+    { key: 'ANSWERS', label: 'Answers', icon: MessageSquare },
+    { key: 'QUEUE', label: 'Job Queue', icon: ListChecks },
 ];
 
 const Row = ({ icon: Icon, label, value, muted }) => (
@@ -134,6 +138,14 @@ const ConsultantDetail = () => {
             {tab === 'CRITERIA' ? (
                 <div className="mt-6">
                     <CriteriaEditor consultantId={id} />
+                </div>
+            ) : tab === 'ANSWERS' ? (
+                <div className="mt-6">
+                    <ConsultantAnswers consultantId={id} />
+                </div>
+            ) : tab === 'QUEUE' ? (
+                <div className="mt-6">
+                    <ConsultantQueue consultantId={id} />
                 </div>
             ) : (
             <>

@@ -10,15 +10,40 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
+/**
+ * Managed Postgres (Neon, Supabase, Render) hands out one connection string and
+ * requires TLS. A local install has neither. Both are supported here so the
+ * same code path serves development and deployment: set DATABASE_URL and the
+ * discrete DB_* vars are ignored.
+ *
+ * rejectUnauthorized:false encrypts the traffic without shipping the provider's
+ * CA bundle. It does not prove which server answered, which is why DB_SSL is
+ * opt-in rather than always on — a self-hosted database on a private network
+ * should not silently get the weaker check.
+ */
+export const dbConnection = () => {
+    const base = process.env.DATABASE_URL
+        ? { connectionString: process.env.DATABASE_URL }
+        : {
+            host: process.env.DB_HOST,
+            port: Number(process.env.DB_PORT ?? 5432),
+            database: process.env.DB_NAME,
+            user: process.env.DB_USER,
+            password: process.env.DB_PASS,
+        };
+
+    return process.env.DB_SSL === 'true'
+        ? { ...base, ssl: { rejectUnauthorized: false } }
+        : base;
+};
+
 export const pool = new Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT ?? 5432),
-    database: process.env.DB_NAME,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
+    ...dbConnection(),
     max: 10,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    // 10s, not 5s: a free-tier database that scales to zero between bursts can
+    // take several seconds to wake, and that wake happens on a real request.
+    connectionTimeoutMillis: 10_000,
 });
 
 pool.on('error', (err) => {
