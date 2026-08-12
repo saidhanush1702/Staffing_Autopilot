@@ -265,6 +265,27 @@ check('page 2 carries the token',
     new URL(serpTest.buildUrl({ q: 'x', nextPageToken: 'TOK' }, cfg)).searchParams.get('next_page_token'),
     'TOK');
 
+section('provider — recency filter');
+
+// Google's finest granularity is a DAY. There is no four-hour window at any
+// price, so "only jobs from the last cycle" is not expressible in the request
+// and has to be handled by de-duplication instead.
+check('default asks for the last 3 days', cfg.datePosted, '3days');
+check('  and is sent as a date_posted chip',
+    url.searchParams.get('chips'), 'date_posted:3days');
+
+process.env.DISCOVERY_DATE_POSTED = 'today';
+check('"today" is accepted', providerConfig().datePosted, 'today');
+
+// A malformed chip is ignored by Google in silence, which would look like a
+// working filter quietly returning month-old jobs. Better to send none.
+process.env.DISCOVERY_DATE_POSTED = '4hours';
+check('an unsupported window is dropped, not sent', providerConfig().datePosted, null);
+check('  and no chip is attached',
+    new URL(serpTest.buildUrl({ q: 'x' }, providerConfig())).searchParams.has('chips'), false);
+
+process.env.DISCOVERY_DATE_POSTED = '3days';
+
 /* ── matching ─────────────────────────────────────────────────────────── */
 
 section('matching — which consultant is this job useful for');

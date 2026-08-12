@@ -518,17 +518,18 @@ flowchart LR
         E["Discovery, matching &amp; queue"]
     end
 
-    subgraph NEXT["NEXT"]
+    subgraph NEXT["PHASE 6 — NEXT"]
         direction TB
-        F["<b>Resume tailoring</b><br/>a version of the CV per job"]
-        G["<b>Contacts</b><br/>recruiter contacts per posting<br/>plus a do-not-contact list"]
+        F["<b>Application records</b><br/>permanent, every question and answer"]
+        G["<b>Queue actions</b><br/>skip, re-queue, state machine enforced"]
+        K["<b>Manual entry and CSV import</b><br/>plus a seeded demo posting set"]
     end
 
     subgraph LATER["LATER"]
         direction TB
-        H["<b>Consultant desktop app</b><br/>fills and submits the actual forms"]
-        I["<b>Application records</b><br/>every question and answer, as sent"]
-        J["Two-step verification<br/>Forgot-password email"]
+        H["<b>Resume tailoring</b><br/>a version of the CV per job"]
+        I["<b>Contacts</b><br/>plus a do-not-contact list"]
+        J["<b>Consultant desktop app</b><br/>fills and submits the actual forms"]
     end
 
     DONE --> NEXT --> LATER
@@ -544,19 +545,15 @@ Nothing yet fills or submits a form. That is the desktop app, and it is a
 separate piece of work. Until it exists:
 
 - Queue items reach **QUEUED** and stop there.
-- The states beyond it are defined and enforced, but nothing drives an item
-  through them.
-- Application records can be entered by hand — which is what staffing firms do
-  anyway when someone applies manually — and become automatic once a submitter
-  exists.
+- The states beyond it are defined in the database but nothing drives an item
+  through them, because the actions that would do so are Phase 6.
 
-This is deliberate and was flagged from the start. The queue is genuinely
-useful on its own: it tells a recruiter exactly which jobs are worth this
-person's time today, and why.
-
-> **A note on numbering.** The two planning documents number the remaining
-> phases differently — one has Contacts as Phase 6, the other has Resume
-> Tailoring there. The scope is the same either way; only the labels differ.
+**Phase 6 closes most of that** without waiting for the desktop app. It makes
+the queue operable by hand — skip, re-queue, park, record an application — which
+is what staffing firms do anyway when someone applies manually. The schema, the
+state machine, the permissions and the evidence trail are identical whether a
+person or a program drives the transition, so when the submitter arrives it
+calls the same endpoints and every screen already works.
 
 ---
 
@@ -645,10 +642,27 @@ Three deliberate choices worth calling out to anyone reviewing this:
 | **2.1** | Employment lifecycle, session revocation, lockout | ✅ Complete |
 | **3** | Search criteria, immutable versioning, pause/activate | ✅ Complete |
 | **4** | Answer bank, category routing, approvals | ✅ Complete *(one admin screen deferred)* |
-| **5** | Job discovery via search API, de-duplication, matching, daily caps, queue | ✅ Built — **needs an API key to go live** |
-| **6** | Resume tailoring per job | ⬜ Planned |
-| **7** | Contacts and do-not-contact list | ⬜ Planned |
-| **later** | Consultant desktop app, automatic application records, two-step verification, password reset by email | ⬜ Planned |
+| **5** | Job discovery via search API, de-duplication, matching, daily caps, queue | ◐ **Core built** — needs an API key to go live; the queue has no actions yet |
+| **6** | Application records, queue actions and state machine, manual + CSV entry, portal queue screens | ⬜ Planned — [proposal written](PHASE_6_PROPOSAL.md) |
+| **7** | Resume tailoring per job | ⬜ Planned |
+| **8** | Contacts and do-not-contact list | ⬜ Planned |
+| **later** | Consultant desktop app, two-step verification, password reset by email | ⬜ Planned |
+
+### What Phase 5 left for Phase 6
+
+Phase 5 was deliberately split. The half that **finds and matches jobs** is
+built and working. The half that **records what happened next** is not:
+
+| Built | Not yet |
+|---|---|
+| Finding, de-duplicating, scoring, capping, queueing | Skip / re-queue / cancel actions |
+| Discovery runs with full per-stage counts | The state machine enforced on writes |
+| Posting pool and consultant queue screens | Application records and their Q&A |
+| Overlap flagging, criteria-version tracking | Consultant's own queue and history screens |
+| | Manual entry, CSV import, seeded demo postings |
+
+A queue item today has one state and no verbs: discovery puts jobs in, and
+nothing takes them out or records that anyone applied.
 
 ### What is needed to switch Phase 5 on
 

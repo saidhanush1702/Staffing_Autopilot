@@ -14,10 +14,40 @@
  * scheduler, so neither creates a cycle by depending on it.
  */
 
-export const CYCLE_HOURS = 4;
+/**
+ * ── WHY THIS IS NO LONGER HARD-CODED TO 4 ─────────────────────────────
+ *
+ * Every run costs real money: one API credit per page of results. The cycle
+ * interval is therefore the single biggest lever on the monthly bill —
+ * 6 runs/day against 4 is ~2,190 credits/month; 2 runs/day is ~730.
+ *
+ * It also has to be read against what the provider can actually filter on.
+ * Google Jobs' finest date filter is "posted today" — there is no four-hour
+ * window. So a four-hour cycle asks for the same 24-hour set six times a day
+ * and de-duplicates five of those answers away. The credits are spent either
+ * way; only the first run of the day learns much.
+ *
+ * A cron step only spaces runs evenly when N divides 24, so anything else is
+ * refused rather than silently producing a lopsided schedule: a step of 5 fires
+ * at 00, 05, 10, 15, 20 and then again at 00 — a 4-hour gap nobody asked for.
+ */
+const ALLOWED_CYCLE_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
+const DEFAULT_CYCLE_HOURS = 12;
 
-/** Minute 0, every 4th hour: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00. */
-export const CRON_EXPRESSION = `0 */${CYCLE_HOURS} * * *`;
+const readCycleHours = () => {
+    const raw = Number(process.env.DISCOVERY_CYCLE_HOURS);
+    return ALLOWED_CYCLE_HOURS.includes(raw) ? raw : DEFAULT_CYCLE_HOURS;
+};
+
+export const CYCLE_HOURS = readCycleHours();
+
+/** Minute 0, every Nth hour. At the default of 12: 00:00 and 12:00. */
+export const CRON_EXPRESSION = CYCLE_HOURS === 24
+    ? '0 0 * * *'
+    : `0 */${CYCLE_HOURS} * * *`;
+
+/** Runs per day, for the cost estimate the discovery screen shows. */
+export const RUNS_PER_DAY = 24 / CYCLE_HOURS;
 
 export const schedulerTimezone = () => process.env.APP_TIMEZONE ?? 'UTC';
 

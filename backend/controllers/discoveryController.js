@@ -49,7 +49,7 @@ import { evaluate } from '../config/jobMatcher.js';
 import { createSession, isConfigured, providerConfig } from '../connectors/serpapi.js';
 import { jobResultToPosting } from '../connectors/googleJobs.js';
 import {
-    CYCLE_HOURS, schedulerTimezone, isSchedulerAvailable, nextRunAfter,
+    CYCLE_HOURS, RUNS_PER_DAY, schedulerTimezone, isSchedulerAvailable, nextRunAfter,
 } from '../config/discoverySchedule.js';
 import { logAction } from './auditLogController.js';
 
@@ -267,6 +267,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         queries_sent: 0,
         queries_failed: 0,
         provider_calls: 0,
+        credits_saved: 0,
         raw_items: 0,
         parsed_ok: 0,
         filtered_by_portal: 0,
@@ -336,80 +337,124 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
             });
 
             let providerFailed = false;
+            const yieldPerQuery = [];
 
             for (const q of queries) {
                 stats.queries_sent += 1;
+                let newFromQuery = 0;
+                let pagesBought = 0;
+                let stoppedEarly = false;
 
-                const result = await session.search({ q: q.q, location: q.l });
-                stats.raw_items += result.results.length;
+                // ── page by page, stopping as soon as a page stops earning ──
+                //
+                // Each page is a paid credit and pages are ordered by Google's
+                // ranking, so a page that produced nothing new is a strong
+                // signal that the next one will not either. Buying it anyway is
+                // the single largest avoidable cost in a mature pool, where
+                // most of what a search returns is already held.
+                for await (const page of session.pages({ q: q.q, location: q.l })) {
+                    pagesBought += 1;
+                    stats.raw_items += page.results.length;
 
-                // Stored before anything is parsed. When the adapter turns out
-                // to be wrong next month, a fix can be replayed over retained
-                // history instead of losing every posting that arrived while it
-                // was wrong. The URL is already redacted — see serpapi.js.
-                for (const payload of result.payloads) {
+                    // Stored before anything is parsed. When the adapter turns
+                    // out to be wrong next month, a fix can be replayed over
+                    // retained history instead of losing every posting that
+                    // arrived while it was wrong. The URL is already redacted.
                     await query(
                         `INSERT INTO job_source_payloads
                             (id, organization_id, source_id, run_id, request_url,
                              http_status, content_type, body, body_bytes, postings_found)
                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-                        [uuidv4(), orgId, provider.id, runId, payload.url.slice(0, 1000),
-                            payload.status, payload.contentType,
-                            payload.body ? payload.body.slice(0, PAYLOAD_KEEP_BYTES) : null,
-                            payload.bytes, payload.found],
+                        [uuidv4(), orgId, provider.id, runId, page.payload.url.slice(0, 1000),
+                            page.payload.status, page.payload.contentType,
+                            page.payload.body ? page.payload.body.slice(0, PAYLOAD_KEEP_BYTES) : null,
+                            page.payload.bytes, page.payload.found],
                     );
-                }
 
-                if (result.errors.length > 0) {
-                    providerFailed = true;
-                    stats.queries_failed += 1;
-                    notes.push(`${provider.label}: ${result.errors.slice(0, 3).join(' | ')}`);
-                }
-
-                for (const raw of result.results) {
-                    const adapted = jobResultToPosting(raw);
-
-                    // Quarantined, never dropped. A result the adapter cannot
-                    // read is the first sign of a changed contract, and it is
-                    // only visible if somebody kept it.
-                    if (!adapted) {
-                        stats.quarantined += 1;
-                        await query(
-                            `INSERT INTO job_parse_quarantine
-                                (id, organization_id, source_id, run_id, reason, raw_fragment)
-                             VALUES ($1,$2,$3,$4,$5,$6)`,
-                            [uuidv4(), orgId, provider.id, runId,
-                                'Missing company, title or apply link',
-                                JSON.stringify(raw).slice(0, 4000)],
-                        );
-                        continue;
+                    if (page.error) {
+                        providerFailed = true;
+                        stats.queries_failed += 1;
+                        notes.push(`${provider.label}: ${page.error}`);
+                        break;
                     }
 
-                    // Attribution resolves to a row so per-board yield stays
-                    // measurable (spec item 16). An unrecognised board lands on
-                    // OTHER rather than being lost.
-                    const sourceRow = sources.byName.get(adapted.source)
-                        ?? sources.byName.get('OTHER')
-                        ?? provider;
+                    let newInPage = 0;
 
-                    if (!sourceRow.is_enabled) {
-                        stats.filtered_by_portal += 1;
-                        continue;
+                    for (const raw of page.results) {
+                        const adapted = jobResultToPosting(raw);
+
+                        // Quarantined, never dropped. A result the adapter
+                        // cannot read is the first sign of a changed contract,
+                        // and it is only visible if somebody kept it.
+                        if (!adapted) {
+                            stats.quarantined += 1;
+                            await query(
+                                `INSERT INTO job_parse_quarantine
+                                    (id, organization_id, source_id, run_id, reason, raw_fragment)
+                                 VALUES ($1,$2,$3,$4,$5,$6)`,
+                                [uuidv4(), orgId, provider.id, runId,
+                                    'Missing company, title or apply link',
+                                    JSON.stringify(raw).slice(0, 4000)],
+                            );
+                            continue;
+                        }
+
+                        // Attribution resolves to a row so per-board yield stays
+                        // measurable (spec item 16). An unrecognised board lands
+                        // on OTHER rather than being lost.
+                        const sourceRow = sources.byName.get(adapted.source)
+                            ?? sources.byName.get('OTHER')
+                            ?? provider;
+
+                        if (!sourceRow.is_enabled) {
+                            stats.filtered_by_portal += 1;
+                            continue;
+                        }
+
+                        stats.parsed_ok += 1;
+                        const { isNew } = await withTransaction((client) => upsertPosting(client, {
+                            orgId,
+                            sourceId: sourceRow.id,
+                            runId,
+                            posting: adapted.posting,
+                            workTypeId: lookups.workType[adapted.posting.workType] ?? null,
+                            portalTypeId: lookups.portalType[adapted.portalType] ?? null,
+                        }));
+
+                        if (isNew) {
+                            stats.postings_new += 1;
+                            newInPage += 1;
+                        } else {
+                            stats.postings_duplicate += 1;
+                        }
                     }
 
-                    stats.parsed_ok += 1;
-                    const { isNew } = await withTransaction((client) => upsertPosting(client, {
-                        orgId,
-                        sourceId: sourceRow.id,
-                        runId,
-                        posting: adapted.posting,
-                        workTypeId: lookups.workType[adapted.posting.workType] ?? null,
-                        portalTypeId: lookups.portalType[adapted.portalType] ?? null,
-                    }));
+                    newFromQuery += newInPage;
 
-                    if (isNew) stats.postings_new += 1; else stats.postings_duplicate += 1;
+                    if (newInPage === 0) {
+                        // Nothing new on a page we already paid for. Do not buy
+                        // the next one.
+                        stoppedEarly = true;
+                        break;
+                    }
                 }
+
+                // Credits this query chose not to spend. Counted rather than
+                // estimated, so the saving is auditable next to the spend.
+                if (stoppedEarly) {
+                    stats.credits_saved += Math.max(0, provider.max_pages - pagesBought);
+                }
+
+                yieldPerQuery.push(
+                    `"${q.q}": ${newFromQuery} new from ${pagesBought} page(s)`
+                    + (stoppedEarly ? ' — stopped early, last page was all repeats' : ''),
+                );
             }
+
+            // Per-term yield, so the terms that never earn their credits are
+            // visible rather than inferred. This is what an operator reads
+            // before cutting DISCOVERY_MAX_QUERIES.
+            if (yieldPerQuery.length > 0) notes.push(yieldPerQuery.join('\n'));
 
             stats.provider_calls = session.calls;
             if (session.budgetExhausted) {
@@ -666,6 +711,12 @@ export const listSources = async (req, res, next) => {
                 maxQueries: cfg.maxQueries,
                 maxPages: provider?.max_pages ?? cfg.maxPages,
                 maxCallsPerRun: cfg.maxCallsPerRun,
+                // What "recent" means to this deployment, and how often that
+                // question gets asked. Both drive the monthly bill, so both
+                // belong on the screen next to the estimate.
+                datePosted: cfg.datePosted,
+                cycleHours: CYCLE_HOURS,
+                runsPerDay: RUNS_PER_DAY,
                 lastSuccessAt: provider?.last_success_at ?? null,
                 lastError: provider?.last_error ?? null,
                 consecutiveFailures: provider?.consecutive_failures ?? 0,

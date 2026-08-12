@@ -35,18 +35,44 @@ const num = (value, fallback) => {
  * scheduler outlives any single configuration. A module-level constant would
  * freeze whatever was in .env the moment the process booted.
  */
-export const providerConfig = () => ({
-    name: 'SERPAPI',
-    label: 'Google Jobs (SerpApi)',
-    baseUrl: process.env.SERPAPI_BASE_URL ?? 'https://serpapi.com/search.json',
-    apiKey: process.env.SERPAPI_KEY ?? '',
-    timeoutMs: num(process.env.SERPAPI_TIMEOUT_MS, 20_000),
-    gl: process.env.DISCOVERY_GL ?? 'us',
-    hl: process.env.DISCOVERY_HL ?? 'en',
-    maxQueries: num(process.env.DISCOVERY_MAX_QUERIES, 6),
-    maxPages: num(process.env.DISCOVERY_MAX_PAGES, 2),
-    maxCallsPerRun: num(process.env.DISCOVERY_MAX_CALLS_PER_RUN, 20),
-});
+/**
+ * How recently a job must have been posted to be worth asking for.
+ *
+ * Google's own filter vocabulary, and the finest granularity it offers is a
+ * day — `today` is 24 hours, not "since the last run". There is no shorter
+ * window available at any price, from any reseller, because Google does not
+ * expose one.
+ *
+ * `3days` is the recommended default rather than `today`: Google's index lags
+ * the boards by hours, and a job posted at 23:50 that Google indexes at 00:30
+ * is invisible to a `today` filter run at 00:00 the next day. The margin costs
+ * nothing — de-duplication collapses the overlap — and it closes that hole.
+ *
+ * Empty disables the filter entirely, which is strictly worse: page one then
+ * fills with whatever ranks best, which is usually a month-old listing we
+ * already hold, and the credit buys nothing.
+ */
+const DATE_POSTED = new Set(['today', '3days', 'week', 'month']);
+
+export const providerConfig = () => {
+    const datePosted = (process.env.DISCOVERY_DATE_POSTED ?? '3days').trim().toLowerCase();
+    return {
+        name: 'SERPAPI',
+        label: 'Google Jobs (SerpApi)',
+        baseUrl: process.env.SERPAPI_BASE_URL ?? 'https://serpapi.com/search.json',
+        apiKey: process.env.SERPAPI_KEY ?? '',
+        timeoutMs: num(process.env.SERPAPI_TIMEOUT_MS, 20_000),
+        gl: process.env.DISCOVERY_GL ?? 'us',
+        hl: process.env.DISCOVERY_HL ?? 'en',
+        // An unrecognised value is dropped rather than sent: Google ignores a
+        // malformed chip silently, which would look like a working filter
+        // returning suspiciously old jobs.
+        datePosted: DATE_POSTED.has(datePosted) ? datePosted : null,
+        maxQueries: num(process.env.DISCOVERY_MAX_QUERIES, 6),
+        maxPages: num(process.env.DISCOVERY_MAX_PAGES, 2),
+        maxCallsPerRun: num(process.env.DISCOVERY_MAX_CALLS_PER_RUN, 20),
+    };
+};
 
 export const isConfigured = () => providerConfig().apiKey.trim().length > 0;
 
@@ -81,6 +107,11 @@ const buildUrl = ({ q, location, nextPageToken }, cfg) => {
     if (location) u.searchParams.set('location', location);
     u.searchParams.set('gl', cfg.gl);
     u.searchParams.set('hl', cfg.hl);
+    // Recency. This does NOT reduce the credit cost of a call — billing is per
+    // request, not per result — but it decides what those credits buy. Without
+    // it, page one is whatever Google ranks highest, which in a mature pool is
+    // mostly postings we already hold.
+    if (cfg.datePosted) u.searchParams.set('chips', `date_posted:${cfg.datePosted}`);
     // Offset pagination (`start`) was discontinued by Google. Pages are walked
     // with the token the previous response handed back.
     if (nextPageToken) u.searchParams.set('next_page_token', nextPageToken);
@@ -165,20 +196,30 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
         config: cfg,
 
         /**
-         * One search term, walked to `pages` deep or until the budget runs out.
+         * One search term, yielded a page at a time.
          *
-         * @returns {{ results, payloads, errors, pagesFetched }}
-         *   results  — raw jobs_results entries, in the order Google ranked them
-         *   payloads — one per call, URL already redacted, for retention
+         * ── WHY A GENERATOR AND NOT A RETURNED ARRAY ──────────────────
+         *
+         * The old version fetched every page up front and handed back the lot.
+         * That meant page two was always bought, even when page one had already
+         * shown that this search has nothing new — and page two is exactly as
+         * expensive as page one.
+         *
+         * Only the caller can tell whether a page was worth buying, because
+         * "new" means "not already in the database" and this module has no
+         * database. So it yields, the caller de-duplicates, and the caller
+         * decides whether to ask for more by continuing the loop or breaking
+         * out of it. Breaking out is what saves the credit.
+         *
+         * @yields {{ pageNo, results, payload, error }}
          */
-        async search({ q, location }) {
-            const out = { results: [], payloads: [], errors: [], pagesFetched: 0 };
+        async *pages({ q, location }) {
             let token = null;
 
             for (let page = 0; page < pages; page += 1) {
                 if (calls >= budget) {
                     exhausted = true;
-                    break;
+                    return;
                 }
                 if (page > 0 && pacingMs > 0) await sleep(pacingMs);
 
@@ -188,32 +229,32 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
                 calls += 1;
                 const res = await callOnce(url, cfg);
 
-                const found = res.ok ? (res.body.jobs_results ?? []).length : 0;
-                out.payloads.push({
+                const results = res.ok ? (res.body.jobs_results ?? []) : [];
+                const payload = {
                     url: safeUrl,
                     status: res.status,
                     contentType: 'application/json',
                     // A call that yielded nothing is the one worth keeping: it
                     // is how a drifted adapter or a changed contract is
                     // diagnosed later. A page that worked needs no forensics.
-                    body: found === 0 ? res.raw : null,
+                    body: results.length === 0 ? res.raw : null,
                     bytes: res.raw ? res.raw.length : 0,
-                    found,
-                });
+                    found: results.length,
+                };
 
                 if (!res.ok) {
-                    out.errors.push(`"${q}" page ${page + 1}: ${res.reason}`);
-                    break;      // the next page needs a token this call never returned
+                    // Yield the failure so the caller still retains the payload,
+                    // then stop: the next page needs a token this call never
+                    // returned.
+                    yield { pageNo: page + 1, results: [], payload, error: `"${q}" page ${page + 1}: ${res.reason}` };
+                    return;
                 }
 
-                out.pagesFetched += 1;
-                out.results.push(...(res.body.jobs_results ?? []));
+                yield { pageNo: page + 1, results, payload, error: null };
 
                 token = res.body.serpapi_pagination?.next_page_token ?? null;
-                if (!token) break;      // end of results — not an error
+                if (!token) return;      // end of results — not an error
             }
-
-            return out;
         },
     };
 };

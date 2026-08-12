@@ -18,7 +18,8 @@ import {
 
 /** The stage counters, in pipeline order, so a run reads left to right. */
 const STAGES = [
-    ['provider_calls', 'API calls'],
+    ['provider_calls', 'Credits spent'],
+    ['credits_saved', 'Credits saved'],
     ['raw_items', 'Results'],
     ['filtered_by_portal', 'Board-filtered'],
     ['quarantined', 'Quarantined'],
@@ -29,6 +30,14 @@ const STAGES = [
     ['queued', 'Queued'],
     ['held_by_cap', 'Held by cap'],
 ];
+
+/** Google's own recency vocabulary. Its finest grain is a day, not an hour. */
+const RECENCY = {
+    today: 'Posted today',
+    '3days': 'Posted in the last 3 days',
+    week: 'Posted in the last week',
+    month: 'Posted in the last month',
+};
 
 /**
  * Job discovery — the operator screen.
@@ -80,6 +89,9 @@ const JobDiscovery = () => {
         provider.maxQueries * provider.maxPages,
         provider.maxCallsPerRun,
     );
+    // The number that actually shows up on an invoice. A per-run figure reads
+    // as trivial; the same figure times the cycle is what needs a decision.
+    const monthlyCredits = estimatedCredits * provider.runsPerDay * 30;
 
     const toggle = async (source) => {
         setError('');
@@ -209,6 +221,10 @@ const JobDiscovery = () => {
                         </p>
                     </div>
                     <div>
+                        <p className="text-xs uppercase tracking-wide text-slate-400">Job age</p>
+                        <p className="text-sm text-slate-700">{RECENCY[provider.datePosted] ?? 'Any age'}</p>
+                    </div>
+                    <div>
                         <p className="text-xs uppercase tracking-wide text-slate-400">Search terms</p>
                         <p className="text-sm tabular-nums text-slate-700">{provider.maxQueries} per run</p>
                     </div>
@@ -223,7 +239,22 @@ const JobDiscovery = () => {
                             up to {estimatedCredits} credits
                         </p>
                     </div>
+                    <div>
+                        <p className="text-xs uppercase tracking-wide text-slate-400">If left running</p>
+                        <p className="text-sm tabular-nums text-slate-700">
+                            ≤{monthlyCredits.toLocaleString()}/month
+                            <span className="ml-1 text-xs text-slate-400">
+                                ({provider.runsPerDay}×/day)
+                            </span>
+                        </p>
+                    </div>
                 </div>
+
+                <p className="mt-3 text-xs text-slate-500">
+                    A credit buys one page of results, not one job — so the ceiling above is
+                    what a run costs if every search finds something new. Searches stop
+                    paging as soon as a page returns nothing we do not already have.
+                </p>
 
                 {provider.lastError && (
                     <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>

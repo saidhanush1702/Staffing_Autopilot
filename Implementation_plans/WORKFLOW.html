@@ -326,6 +326,21 @@
      Mermaid shrink-to-fit instead makes a wide diagram unreadably short — a
      3,000px roadmap squeezed into an 840px column is 63px tall. */
   .diagram { overflow-x: auto; padding: 22px 16px; }
+
+  /* ── why the diagram plate stays light in both themes ──────────
+     The diagrams carry semantic fills (green built, amber held, red
+     refused) declared as fixed hex inside each Mermaid block. Mermaid
+     cannot vary those per colour scheme, so under a dark theme the
+     containers stayed light while the nodes inside went dark — dark
+     boxes sitting on a pale panel. Treating every diagram as a printed
+     plate on off-white keeps the semantics readable in both themes and
+     matches how figures appear on paper. */
+  .diagram { background: #f7f8fb; }
+  :root[data-theme="dark"] .diagram { border-top: 1px solid #dfe3ec; }
+  @media (prefers-color-scheme: dark) {
+    .diagram { border-top: 1px solid #dfe3ec; }
+  }
+  :root[data-theme="light"] .diagram { border-top: 0; }
   .diagram pre.mermaid { background: none; border: 0; padding: 0; margin: 0; text-align: center; }
   .diagram svg { max-width: none; height: auto; }
 
@@ -393,7 +408,7 @@
     </p>
     <div class="meta">
       <span><b>Audience</b> &nbsp;Client &amp; delivery team</span>
-      <span><b>Covers</b> &nbsp;Phases 1&ndash;5 built, 6 onward planned</span>
+      <span><b>Covers</b> &nbsp;Phases 1&ndash;4 complete &middot; 5 core built &middot; 6 onward planned</span>
       <span><b>Stack</b> &nbsp;Node &middot; Express &middot; PostgreSQL &middot; React</span>
     </div>
   </header>
@@ -1025,14 +1040,14 @@ flowchart LR
         A["Accounts and roles"] ~~~ B["Profiles and approvals"] ~~~ C["Search criteria"] ~~~ D["Answer bank"] ~~~ E["Discovery, matching and queue"]
     end
 
-    subgraph NEXT["NEXT"]
+    subgraph NEXT["PHASE 6 — NEXT"]
         direction TB
-        F["<b>Resume tailoring</b><br/>a version of the CV per job"] ~~~ G["<b>Contacts</b><br/>recruiter contacts per posting<br/>plus a do-not-contact list"]
+        F["<b>Application records</b><br/>permanent, every question and answer"] ~~~ G["<b>Queue actions</b><br/>skip, re-queue, state machine enforced"] ~~~ K["<b>Manual entry and CSV import</b><br/>plus a seeded demo posting set"]
     end
 
     subgraph LATER["LATER"]
         direction TB
-        H["<b>Consultant desktop app</b><br/>fills and submits the actual forms"] ~~~ I["<b>Application records</b><br/>every question and answer, as sent"] ~~~ J["Two-step verification<br/>Forgot-password email"]
+        H["<b>Resume tailoring</b><br/>a version of the CV per job"] ~~~ I["<b>Contacts</b><br/>plus a do-not-contact list"] ~~~ J["<b>Consultant desktop app</b><br/>fills and submits the actual forms"]
     end
 
     DONE --> NEXT --> LATER
@@ -1047,18 +1062,21 @@ flowchart LR
       <h3>The one honest gap</h3>
       <p>
         Nothing yet fills or submits a form. That is the desktop application, and it is
-        a separate piece of work. Until it exists:
+        a separate piece of work. Until it exists, queue items reach
+        <strong>QUEUED</strong> and stop there: the states beyond it are defined in the
+        database, but nothing drives an item through them, because the actions that
+        would do so are Phase 6.
       </p>
-      <ul>
-        <li>Queue items reach <strong>QUEUED</strong> and stop there.</li>
-        <li>The states beyond it are defined and enforced, but nothing drives an item through them.</li>
-        <li>Application records can be entered by hand &mdash; which is what staffing firms do anyway when someone applies manually &mdash; and become automatic once a submitter exists.</li>
-      </ul>
-      <p>
-        This is deliberate and was flagged from the start. The queue is genuinely useful
-        on its own: it tells a recruiter exactly which jobs are worth this person&rsquo;s
-        time today, and why.
-      </p>
+      <div class="note">
+        <span class="note-label">Phase 6 closes most of this</span>
+        <p>
+          It makes the queue operable by hand &mdash; skip, re-queue, park, record an
+          application &mdash; which is what staffing firms do anyway when someone applies
+          manually. The schema, the state machine, the permissions and the evidence trail
+          are identical whether a person or a program drives the transition, so when the
+          submitter arrives it calls the same endpoints and every screen already works.
+        </p>
+      </div>
     </section>
 
     <!-- ── 11 ───────────────────────────────────────────────── -->
@@ -1170,13 +1188,36 @@ erDiagram
             <tr><td class="num"><strong>2.1</strong></td><td>Employment lifecycle, session revocation, lockout</td><td><span class="chip ok">Complete</span></td></tr>
             <tr><td class="num"><strong>3</strong></td><td>Search criteria, immutable versioning, pause and activate</td><td><span class="chip ok">Complete</span></td></tr>
             <tr><td class="num"><strong>4</strong></td><td>Answer bank, category routing, approvals</td><td><span class="chip ok">Complete</span><br><small>one admin screen deferred</small></td></tr>
-            <tr><td class="num"><strong>5</strong></td><td>Job discovery via search API, de-duplication, matching, daily caps, queue</td><td><span class="chip warn">Built &mdash; needs API key</span></td></tr>
-            <tr><td class="num"><strong>6</strong></td><td>Resume tailoring per job</td><td><span class="chip idle">Planned</span></td></tr>
-            <tr><td class="num"><strong>7</strong></td><td>Contacts and do-not-contact list</td><td><span class="chip idle">Planned</span></td></tr>
-            <tr><td class="num">later</td><td>Consultant desktop app, automatic application records, two-step verification, password reset by email</td><td><span class="chip idle">Planned</span></td></tr>
+            <tr><td class="num"><strong>5</strong></td><td>Job discovery via search API, de-duplication, matching, daily caps, queue</td><td><span class="chip warn">Core built</span><br><small>needs API key; queue has no actions yet</small></td></tr>
+            <tr><td class="num"><strong>6</strong></td><td>Application records, queue actions and state machine, manual and CSV entry, portal queue screens</td><td><span class="chip idle">Planned</span><br><small>proposal written</small></td></tr>
+            <tr><td class="num"><strong>7</strong></td><td>Resume tailoring per job</td><td><span class="chip idle">Planned</span></td></tr>
+            <tr><td class="num"><strong>8</strong></td><td>Contacts and do-not-contact list</td><td><span class="chip idle">Planned</span></td></tr>
+            <tr><td class="num">later</td><td>Consultant desktop app, two-step verification, password reset by email</td><td><span class="chip idle">Planned</span></td></tr>
           </tbody>
         </table>
       </div>
+
+      <h3>What Phase 5 left for Phase 6</h3>
+      <p>
+        Phase 5 was deliberately split. The half that <strong>finds and matches jobs</strong>
+        is built and working. The half that <strong>records what happened next</strong> is not.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Built</th><th>Not yet</th></tr></thead>
+          <tbody>
+            <tr><td>Finding, de-duplicating, scoring, capping, queueing</td><td>Skip, re-queue and cancel actions</td></tr>
+            <tr><td>Discovery runs with full per-stage counts</td><td>The state machine enforced on every write</td></tr>
+            <tr><td>Posting pool and consultant queue screens</td><td>Application records and their exact Q&amp;A</td></tr>
+            <tr><td>Overlap flagging, criteria-version tracking</td><td>Consultant&rsquo;s own queue and history screens</td></tr>
+            <tr><td>&nbsp;</td><td>Manual entry, CSV import, seeded demo postings</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        A queue item today has one state and no verbs: discovery puts jobs in, and
+        nothing takes them out or records that anyone applied.
+      </p>
 
       <h3>What is needed to switch discovery on</h3>
       <ol>
@@ -1198,7 +1239,7 @@ erDiagram
 
   <footer>
     <span>SmartApply &mdash; System Workflow</span>
-    <span>Phases 1&ndash;5 built &middot; 6 onward planned</span>
+    <span>Phases 1&ndash;4 complete &middot; 5 core built &middot; 6 onward planned</span>
   </footer>
 
 </div>
@@ -1209,11 +1250,12 @@ erDiagram
      page the diagrams are rendered by the platform and this script is blocked,
      so the two paths never both run. */
   if (window.mermaid) {
-    const dark = matchMedia("(prefers-color-scheme: dark)").matches
-      || document.documentElement.dataset.theme === "dark";
     window.mermaid.initialize({
       startOnLoad: true,
-      theme: dark ? "dark" : "neutral",
+      // Always the light theme: the diagram plate is light in both colour
+      // schemes, because the semantic fills inside are fixed hex. See the
+      // .diagram note in the stylesheet.
+      theme: "neutral",
       fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       // useMaxWidth:false everywhere — see the .diagram note in the stylesheet.
       flowchart: { curve: "basis", useMaxWidth: false },
