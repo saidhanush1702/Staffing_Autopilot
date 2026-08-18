@@ -1,103 +1,80 @@
 /**
  * ── THE CYCLE, IN ONE PLACE ───────────────────────────────────────────
  *
- * The cron expression and the "next run" arithmetic live together here, and
- * both the scheduler and the API import them from this file.
+ * The scheduler and the API both import from here, so a screen can never show
+ * a countdown to a time the server has no intention of running at.
  *
- * That matters more than it looks. If the UI computed its own countdown from a
- * hard-coded "every 4 hours", then changing the cron expression would leave a
- * screen confidently displaying a time the server has no intention of running
- * at — and nobody would notice until a run failed to appear. One definition,
- * two consumers.
+ * ── WHY THIS IS NO LONGER A CRON EXPRESSION ───────────────────────────
+ *
+ * The interval used to be one environment variable compiled into one cron
+ * expression for the whole deployment. It is now per organisation, owned by an
+ * ORG_ADMIN from the discovery screen, because two agencies on different
+ * provider plans cannot share one interval — and the interval is the single
+ * biggest lever on the bill.
+ *
+ * A fixed cron cannot express "every N hours, where N differs per tenant". So
+ * the scheduler ticks on a fast, fixed heartbeat and asks each organisation
+ * whether it is DUE. That also makes the schedule self-correcting: a tenant
+ * whose run was skipped because the process was down simply comes due on the
+ * next tick, instead of waiting for the next slot on a rigid clock.
  *
  * This module is deliberately free of imports from the controller or the
  * scheduler, so neither creates a cycle by depending on it.
  */
 
-/**
- * ── WHY THIS IS NO LONGER HARD-CODED TO 4 ─────────────────────────────
- *
- * Every run costs real money: one API credit per page of results. The cycle
- * interval is therefore the single biggest lever on the monthly bill —
- * 6 runs/day against 4 is ~2,190 credits/month; 2 runs/day is ~730.
- *
- * It also has to be read against what the provider can actually filter on.
- * Google Jobs' finest date filter is "posted today" — there is no four-hour
- * window. So a four-hour cycle asks for the same 24-hour set six times a day
- * and de-duplicates five of those answers away. The credits are spent either
- * way; only the first run of the day learns much.
- *
- * A cron step only spaces runs evenly when N divides 24, so anything else is
- * refused rather than silently producing a lopsided schedule: a step of 5 fires
- * at 00, 05, 10, 15, 20 and then again at 00 — a 4-hour gap nobody asked for.
- */
-const ALLOWED_CYCLE_HOURS = [1, 2, 3, 4, 6, 8, 12, 24];
-const DEFAULT_CYCLE_HOURS = 12;
+/** How often the scheduler wakes to look for due organisations. */
+export const TICK_CRON = '*/15 * * * *';
+const TICK_MINUTES = 15;
 
-const readCycleHours = () => {
-    const raw = Number(process.env.DISCOVERY_CYCLE_HOURS);
-    return ALLOWED_CYCLE_HOURS.includes(raw) ? raw : DEFAULT_CYCLE_HOURS;
+export const MIN_CYCLE_HOURS = 1;
+export const MAX_CYCLE_HOURS = 24;
+export const DEFAULT_CYCLE_HOURS = 6;
+
+export const clampCycleHours = (value) => {
+    const n = Math.round(Number(value));
+    if (!Number.isFinite(n)) return DEFAULT_CYCLE_HOURS;
+    return Math.min(MAX_CYCLE_HOURS, Math.max(MIN_CYCLE_HOURS, n));
 };
-
-export const CYCLE_HOURS = readCycleHours();
-
-/** Minute 0, every Nth hour. At the default of 12: 00:00 and 12:00. */
-export const CRON_EXPRESSION = CYCLE_HOURS === 24
-    ? '0 0 * * *'
-    : `0 */${CYCLE_HOURS} * * *`;
-
-/** Runs per day, for the cost estimate the discovery screen shows. */
-export const RUNS_PER_DAY = 24 / CYCLE_HOURS;
 
 export const schedulerTimezone = () => process.env.APP_TIMEZONE ?? 'UTC';
 
 /**
  * Whether the server process runs the cycle at all.
  *
- * Distinct from a tenant's own on/off switch: this is a deployment decision,
- * so a developer's laptop does not quietly start crawling job boards. Both
- * have to be true for anything to happen, which is why the API reports them
- * separately — an admin who flips their switch and sees nothing happen needs
- * to be told the process-level one is off.
+ * Distinct from a tenant's own on/off switch: this is a deployment decision, so
+ * a developer's laptop does not quietly start spending an agency's provider
+ * credits just because the database says the cycle is on. Both have to be true.
  */
 export const isSchedulerAvailable = () => process.env.DISCOVERY_ENABLED === 'true';
 
-/** Wall-clock time in an IANA zone, without pulling in a date library. */
-const zonedClock = (date, timeZone) => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone,
-        hour12: false,
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-    }).formatToParts(date);
+/**
+ * When the next automatic run is due.
+ *
+ * Measured from the last automatic run, not from a fixed wall-clock grid. An
+ * organisation that has never run automatically is due immediately — which is
+ * what an admin expects the moment they switch the cycle on.
+ */
+export const nextRunAfter = (lastRunAt, cycleHours, now = new Date()) => {
+    const hours = clampCycleHours(cycleHours);
+    if (!lastRunAt) return new Date(now);
 
-    const get = (type) => Number(parts.find((p) => p.type === type)?.value ?? 0);
-    // hour12:false renders midnight as 24 in some ICU versions.
-    return { hour: get('hour') % 24, minute: get('minute'), second: get('second') };
+    const next = new Date(new Date(lastRunAt).getTime() + hours * 3_600_000);
+    return next < now ? new Date(now) : next;
 };
 
 /**
- * The next moment the cron expression fires, as a real Date.
+ * Is this organisation due?
  *
- * Works from the wall clock in the scheduler's timezone rather than from UTC,
- * because that is what cron itself does. A DST shift inside the coming window
- * can move the true firing time by an hour; this is a countdown for a person
- * watching a screen, not a scheduling primitive, and it re-syncs from the
- * server on the next poll.
+ * The tick window is allowed as slack. Without it a cycle whose due moment
+ * falls between two ticks would wait a whole extra tick every time, and a
+ * 1-hour cycle would drift into a 1h15m one.
  */
-export const nextRunAfter = (from = new Date(), timeZone = schedulerTimezone()) => {
-    let clock;
-    try {
-        clock = zonedClock(from, timeZone);
-    } catch {
-        // A mistyped APP_TIMEZONE must not take the endpoint down.
-        clock = zonedClock(from, 'UTC');
-    }
-
-    const { hour, minute, second } = clock;
-    let seconds = (CYCLE_HOURS - (hour % CYCLE_HOURS)) * 3600 - (minute * 60) - second;
-    if (seconds <= 0) seconds += CYCLE_HOURS * 3600;
-
-    return new Date(from.getTime() + (seconds * 1000) - from.getMilliseconds());
+export const isDue = (lastRunAt, cycleHours, now = new Date()) => {
+    if (!lastRunAt) return true;
+    const hours = clampCycleHours(cycleHours);
+    const elapsedMs = now.getTime() - new Date(lastRunAt).getTime();
+    return elapsedMs >= (hours * 3_600_000) - (TICK_MINUTES * 60_000);
 };
+
+/** Runs per day at this interval — for the cost estimate on the screen. */
+export const runsPerDay = (cycleHours) => 24 / clampCycleHours(cycleHours);

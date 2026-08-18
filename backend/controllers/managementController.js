@@ -420,6 +420,49 @@ export const terminateUser = async (req, res, next) => {
                 [req.user.id, orgId, target.id],
             );
 
+            // A terminated person's queue is void. Left alone, the desktop app
+            // would keep applying to jobs in the name of somebody who no longer
+            // works here — and Phase 3 already shipped this exact bug once, with
+            // criteria staying active after termination (ISSUES.md H-1).
+            //
+            // CANCELLED, not SKIPPED: skipping is a person deciding against a
+            // job. Nobody decided anything here. Terminal states are left as
+            // they are — a submitted application already happened and cannot be
+            // un-sent.
+            const { rows: cancelledItems } = await client.query(
+                `UPDATE queue_items q
+                    SET status_id = (SELECT id FROM lkp_queue_statuses WHERE name = 'CANCELLED'),
+                        cancelled_at = now(), cancelled_by = $1,
+                        cancel_reason = 'Consultant terminated',
+                        leased_by = NULL, leased_until = NULL,
+                        became_ready_at = NULL, updated_by = $1
+                  WHERE q.consultant_id = $2 AND q.organization_id = $3
+                    AND q.status_id IN (
+                        SELECT id FROM lkp_queue_statuses WHERE NOT is_terminal)
+                  RETURNING q.id, q.status_id`,
+                [req.user.id, target.id, orgId],
+            );
+
+            for (const item of cancelledItems) {
+                await client.query(
+                    `INSERT INTO queue_item_transitions
+                        (id, organization_id, queue_item_id, from_status_id, to_status_id,
+                         reason, performed_by)
+                     VALUES ($1,$2,$3,NULL,
+                        (SELECT id FROM lkp_queue_statuses WHERE name = 'CANCELLED'),$4,$5)`,
+                    [uuidv4(), orgId, item.id, 'Consultant terminated', req.user.id],
+                );
+            }
+
+            // Matches that never reached a queue would otherwise be promoted on
+            // the next pass, recreating the queue we just cancelled.
+            await client.query(
+                `UPDATE job_matches SET status = 'DISCARDED'
+                  WHERE consultant_id = $1 AND organization_id = $2
+                    AND status IN ('PENDING','HELD')`,
+                [target.id, orgId],
+            );
+
             // C-2. A pending request from someone who no longer works here is
             // not decidable: approving pushes values live for a non-employee,
             // rejecting sends a note to an account that can never be read.

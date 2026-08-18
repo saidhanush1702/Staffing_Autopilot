@@ -28,12 +28,12 @@ const STAGES = [
     ['prefilter_out', 'Pre-filtered out'],
     ['matches_found', 'Matched'],
     ['queued', 'Queued'],
-    ['held_by_cap', 'Held by cap'],
+    ['awaiting_cap', 'Awaiting cap'],
 ];
 
 /** Google's own recency vocabulary. Its finest grain is a day, not an hour. */
 const RECENCY = {
-    today: 'Posted today',
+    day: 'Posted in the last 24 hours',
     '3days': 'Posted in the last 3 days',
     week: 'Posted in the last week',
     month: 'Posted in the last month',
@@ -115,7 +115,7 @@ const JobDiscovery = () => {
                 tone: r.queries_failed > 0 ? 'warning' : 'success',
                 text: `Run complete — ${r.provider_calls} API call(s), ${r.postings_new} new `
                     + `postings, ${r.matches_found} matches, ${r.queued} queued, `
-                    + `${r.held_by_cap} held by cap`
+                    + `${r.awaiting_cap} awaiting cap`
                     + (r.queries_failed ? `. ${r.queries_failed} search(es) failed.` : '.'),
             });
             setConfirmRun(false);

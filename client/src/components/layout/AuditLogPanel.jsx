@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Loader2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import { card } from '../../design/tokens.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 /**
  * Collapsible audit panel, dropped at the bottom of every module page:
@@ -35,7 +36,11 @@ const AuditLogPanel = ({ module }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    if (localStorage.getItem('userRole') !== 'ORG_ADMIN') return null;
+    // Identity comes from the auth context, not from localStorage. This was
+    // the only component reading a role out of storage, which meant it would
+    // keep rendering for a stale value after a role change or a sign-out that
+    // did not clear that particular key.
+    if (user?.role !== 'ORG_ADMIN') return null;
 
     const fetchLogs = async (nextOffset = 0) => {
         setLoading(true);

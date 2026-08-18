@@ -110,6 +110,22 @@ export const listConsultantQueue = async (req, res, next) => {
             return res.status(404).json({ error: 'Consultant not found in your organization.' });
         }
 
+        // ── why this is filtered by default ───────────────────────────
+        //
+        // The cap now gates promotion to READY rather than queue creation, so
+        // EVERY match becomes a queue item and the surplus waits at QUEUED. A
+        // busy consultant can therefore have hundreds of them, and an unfiltered
+        // list buries the handful that actually need a person in a wall of
+        // items nobody can act on yet.
+        //
+        // `?status=ALL` is still available for anyone who wants the whole thing.
+        const ACTIONABLE = ['READY', 'FILLING', 'PARKED_UNKNOWN', 'AWAITING_REVIEW'];
+        const statusFilter = (req.query.status ?? '').toUpperCase();
+        const wantAll = statusFilter === 'ALL';
+        const statuses = wantAll ? null
+            : (statusFilter ? [statusFilter] : ACTIONABLE);
+        const limit = Math.min(Number(req.query.limit ?? 100), 500);
+
         const [queue, held] = await Promise.all([
             query(
                 `SELECT q.id, q.is_overlap, q.queued_at, q.skip_reason, q.park_reason,
@@ -119,7 +135,9 @@ export const listConsultantQueue = async (req, res, next) => {
                         p.pay_min, p.pay_max, p.pay_unit,
                         m.score, m.reason,
                         v.version_no AS criteria_version_no,
-                        src.label AS source_label
+                        src.label AS source_label,
+                        q.channel,
+                        COUNT(*) OVER () AS total_count
                    FROM queue_items q
                    JOIN lkp_queue_statuses st ON st.id = q.status_id
                    JOIN job_postings p ON p.id = q.posting_id
@@ -127,35 +145,56 @@ export const listConsultantQueue = async (req, res, next) => {
               LEFT JOIN search_criteria_versions v ON v.id = m.criteria_version_id
               LEFT JOIN lkp_job_sources src ON src.id = p.first_source_id
                   WHERE q.consultant_id = $1 AND q.organization_id = $2
-                  ORDER BY q.queued_at DESC`,
-                [req.params.id, req.user.orgId],
+                    AND ($3::text[] IS NULL OR st.name = ANY($3::text[]))
+                  ORDER BY st.sort_order, q.queued_at DESC
+                  LIMIT $4`,
+                [req.params.id, req.user.orgId, statuses, limit],
             ),
-            // Matched but over the daily cap. Shown so a recruiter can see that
-            // work is waiting rather than assuming discovery found nothing.
+            // Waiting on a cap slot. These are QUEUED items now, not held
+            // matches — the cap moved to the readiness gate, so surplus work
+            // waits here as a real queue item rather than as a match nobody can
+            // see. Shown so a recruiter knows work is waiting rather than
+            // assuming discovery found nothing.
             query(
-                `SELECT m.id, m.score, m.reason, m.matched_at,
+                `SELECT q.id, q.queued_at AS matched_at, q.channel,
+                        m.score, m.reason,
                         p.company, p.title, p.location_text, p.source_url
-                   FROM job_matches m
-                   JOIN job_postings p ON p.id = m.posting_id
-                  WHERE m.consultant_id = $1 AND m.organization_id = $2
-                    AND m.status IN ('HELD', 'PENDING')
-                  ORDER BY m.score DESC
+                   FROM queue_items q
+                   JOIN lkp_queue_statuses st ON st.id = q.status_id
+                   JOIN job_postings p ON p.id = q.posting_id
+              LEFT JOIN job_matches m ON m.id = q.match_id
+                  WHERE q.consultant_id = $1 AND q.organization_id = $2
+                    AND st.name = 'QUEUED'
+                  ORDER BY COALESCE(m.score, 0) DESC, q.queued_at ASC
                   LIMIT 50`,
                 [req.params.id, req.user.orgId],
             ),
         ]);
 
+        // The cap counts items that reached READY today, in the AGENCY's
+        // timezone, and only states that actually hold a slot. Counting
+        // `queued_at` would count work that is not yet available to apply to,
+        // and the server's date is the wrong day boundary for an offshore bench.
         const { rows: capRows } = await query(
             `SELECT p.daily_cap,
-                    (SELECT COUNT(*)::int FROM queue_items q
-                      WHERE q.consultant_id = $1 AND q.queued_at::date = CURRENT_DATE) AS used_today
+                    (SELECT COUNT(*)::int
+                       FROM queue_items q
+                       JOIN lkp_queue_statuses st ON st.id = q.status_id
+                       JOIN organizations o ON o.id = q.organization_id
+                      WHERE q.consultant_id = $1
+                        AND q.became_ready_at IS NOT NULL
+                        AND (q.became_ready_at AT TIME ZONE COALESCE(o.timezone, $2))::date
+                          = (now() AT TIME ZONE COALESCE(o.timezone, $2))::date
+                        AND st.name IN ('READY','FILLING','PARKED_UNKNOWN',
+                                        'AWAITING_REVIEW','SUBMITTED')) AS used_today
                FROM consultant_profiles p WHERE p.user_id = $1`,
-            [req.params.id],
+            [req.params.id, process.env.APP_TIMEZONE ?? 'UTC'],
         );
 
         return res.json({
             queue: queue.rows,
-            held: held.rows,
+            awaitingCap: held.rows,
+            statusFilter: wantAll ? 'ALL' : (statuses ?? []).join(','),
             cap: capRows[0] ?? { daily_cap: 0, used_today: 0 },
         });
     } catch (err) {
@@ -189,30 +228,65 @@ export const updateSource = async (req, res, next) => {
             });
         }
 
+        const isProvider = source.fetch_mode === 'PROVIDER';
+
         // max_pages is the provider's page depth. On a portal row it would mean
         // nothing, and silently accepting it would suggest otherwise.
-        if (req.body.maxPages !== undefined && source.fetch_mode !== 'PROVIDER') {
+        if (req.body.maxPages !== undefined && !isProvider) {
             return res.status(409).json({
                 error: 'Page depth belongs to the search provider, not to an individual board.',
             });
         }
 
-        await query(
-            `UPDATE lkp_job_sources
-                SET is_enabled    = COALESCE($1, is_enabled),
-                    rate_limit_ms = COALESCE($2, rate_limit_ms),
-                    max_pages     = COALESCE($3, max_pages),
-                    -- turning a board back on clears the old failure streak so
-                    -- health reflects the new attempt, not the last outage
-                    consecutive_failures = CASE WHEN $1 IS TRUE THEN 0 ELSE consecutive_failures END,
-                    last_error = CASE WHEN $1 IS TRUE THEN NULL ELSE last_error END
-              WHERE id = $4`,
-            [req.body.isEnabled ?? null, req.body.rateLimitMs ?? null,
-                req.body.maxPages ?? null, source.id],
-        );
+        // ── the two switches write to two different places ────────────
+        //
+        // A PROVIDER is something this agency pays for, so enabling it — and
+        // its pacing, depth and health — belongs to THIS agency's row. Writing
+        // it to the shared lookup would switch the provider on for every tenant
+        // on the installation and bill them for it.
+        //
+        // A PORTAL is an attribution filter over results everyone receives, so
+        // it stays on the global row.
+        let previous = source.is_enabled;
 
-        if (req.body.isEnabled !== undefined && req.body.isEnabled !== source.is_enabled) {
-            const isProvider = source.fetch_mode === 'PROVIDER';
+        if (isProvider) {
+            const { rows: existing } = await query(
+                `SELECT id, is_enabled FROM organization_providers
+                  WHERE organization_id = $1 AND source_id = $2`,
+                [req.user.orgId, source.id],
+            );
+            if (existing.length === 0) {
+                return res.status(404).json({
+                    error: 'This provider is not set up for your organisation.',
+                });
+            }
+            previous = existing[0].is_enabled;
+
+            await query(
+                `UPDATE organization_providers
+                    SET is_enabled    = COALESCE($1, is_enabled),
+                        rate_limit_ms = COALESCE($2, rate_limit_ms),
+                        max_pages     = COALESCE($3, max_pages),
+                        -- switching a provider back on clears the old failure
+                        -- streak, so health reflects the new attempt rather
+                        -- than the outage that caused it to be turned off
+                        consecutive_failures = CASE WHEN $1 IS TRUE THEN 0 ELSE consecutive_failures END,
+                        last_error = CASE WHEN $1 IS TRUE THEN NULL ELSE last_error END
+                  WHERE id = $4`,
+                [req.body.isEnabled ?? null, req.body.rateLimitMs ?? null,
+                    req.body.maxPages ?? null, existing[0].id],
+            );
+        } else {
+            await query(
+                `UPDATE lkp_job_sources
+                    SET is_enabled    = COALESCE($1, is_enabled),
+                        rate_limit_ms = COALESCE($2, rate_limit_ms)
+                  WHERE id = $3`,
+                [req.body.isEnabled ?? null, req.body.rateLimitMs ?? null, source.id],
+            );
+        }
+
+        if (req.body.isEnabled !== undefined && req.body.isEnabled !== previous) {
             logAction({
                 orgId: req.user.orgId, module: 'discovery',
                 action: req.body.isEnabled ? 'Enabled Source' : 'Disabled Source',

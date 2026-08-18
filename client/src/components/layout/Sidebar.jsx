@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
-    ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase,
+    ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -39,6 +39,7 @@ const NAV_ITEMS = [
         roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'answers',
     },
     { to: '/management/postings', label: 'Job Postings', icon: Briefcase, roles: ['ORG_ADMIN', 'RECRUITER'] },
+    { to: '/management/devices', label: 'Desktop Access', icon: Laptop, roles: ['ORG_ADMIN', 'RECRUITER'] },
     { to: '/management/discovery', label: 'Job Discovery', icon: Radar, roles: ['ORG_ADMIN', 'RECRUITER'] },
     { to: '/management/assignments', label: 'Assignments', icon: Link2, roles: ['ORG_ADMIN'] },
 

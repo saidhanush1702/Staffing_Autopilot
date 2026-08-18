@@ -19,6 +19,10 @@ import {
     parsePay, parsePostedAt, PRIORITY_SOURCES,
 } from '../connectors/googleJobs.js';
 import { __test as serpTest, providerConfig } from '../connectors/serpapi.js';
+import {
+    clampCycleHours, isDue, nextRunAfter, runsPerDay,
+} from '../config/discoverySchedule.js';
+import { checkTransition, countsAgainstCap } from '../config/queueStates.js';
 
 let pass = 0; let fail = 0;
 const check = (label, actual, expected) => {
@@ -267,24 +271,136 @@ check('page 2 carries the token',
 
 section('provider — recency filter');
 
-// Google's finest granularity is a DAY. There is no four-hour window at any
-// price, so "only jobs from the last cycle" is not expressible in the request
-// and has to be handled by de-duplication instead.
-check('default asks for the last 3 days', cfg.datePosted, '3days');
-check('  and is sent as a date_posted chip',
-    url.searchParams.get('chips'), 'date_posted:3days');
+// `chips` is DEPRECATED by Google and now ignored in silence — a request that
+// sends it looks configured and returns unfiltered results. The live mechanism
+// is `uds`, so `chips` must never appear on a request again.
+check('chips is never sent', url.searchParams.has('chips'), false);
 
-process.env.DISCOVERY_DATE_POSTED = 'today';
-check('"today" is accepted', providerConfig().datePosted, 'today');
+const filtered = new URL(serpTest.buildUrl(
+    { q: 'react developer', uds: 'UDS_HANDLE', qOverride: 'react developer in the last 3 days' },
+    cfg,
+));
+check('uds is sent when we hold a handle', filtered.searchParams.get('uds'), 'UDS_HANDLE');
+// Google rewrites the query alongside the filter; the filter link sends both.
+check('  and the rewritten query goes with it',
+    filtered.searchParams.get('q'), 'react developer in the last 3 days');
+check('without a handle the plain query is sent',
+    url.searchParams.get('q'), 'react developer');
 
-// A malformed chip is ignored by Google in silence, which would look like a
-// working filter quietly returning month-old jobs. Better to send none.
-process.env.DISCOVERY_DATE_POSTED = '4hours';
-check('an unsupported window is dropped, not sent', providerConfig().datePosted, null);
-check('  and no chip is attached',
-    new URL(serpTest.buildUrl({ q: 'x' }, providerConfig())).searchParams.has('chips'), false);
+section('provider — harvesting the filter handle');
 
-process.env.DISCOVERY_DATE_POSTED = '3days';
+// The handle arrives free on any ordinary response, which is what makes
+// filtering cost nothing: the first call returns jobs AND the handle.
+const nested = {
+    filters: [{
+        name: 'Date posted',
+        options: [
+            { name: 'Yesterday', parameters: { uds: 'U_DAY', q: 'dev since yesterday' } },
+            { name: 'Last 3 days', parameters: { uds: 'U_3D', q: 'dev in the last 3 days' } },
+        ],
+    }],
+};
+check('handle read from the nested shape',
+    serpTest.extractDateFilter(nested, 'day'), { uds: 'U_DAY', q: 'dev since yesterday' });
+check('  and the right window is picked',
+    serpTest.extractDateFilter(nested, '3days').uds, 'U_3D');
+
+// SerpApi has emitted both shapes. Reading only one would look identical to
+// "this filter is unavailable" against the other.
+const flat = {
+    filters: [{ name: 'Date posted', options: [{ name: 'Yesterday', uds: 'F_DAY', q: 'x' }] }],
+};
+check('handle read from the flat shape', serpTest.extractDateFilter(flat, 'day').uds, 'F_DAY');
+
+check('no filters array is null, not a crash', serpTest.extractDateFilter({}, 'day'), null);
+check('a window Google does not offer is null',
+    serpTest.extractDateFilter(nested, 'week'), null);
+check('an unknown window name is null', serpTest.extractDateFilter(nested, '4hours'), null);
+
+section('schedule — per-organisation intervals');
+
+const CLOCK = new Date('2026-08-12T12:00:00Z');
+const hoursAgo = (h) => new Date(CLOCK.getTime() - h * 3_600_000);
+
+check('an interval below the minimum is clamped', clampCycleHours(0), 1);
+check('an interval above the maximum is clamped', clampCycleHours(99), 24);
+check('a valid interval is kept', clampCycleHours(4), 4);
+check('nonsense falls back to the default', clampCycleHours('abc'), 6);
+
+// An organisation that has never run automatically is due at once — which is
+// what an admin expects the moment they switch the cycle on.
+check('never run means due now', isDue(null, 4, CLOCK), true);
+check('an hour into a 4-hour cycle is not due', isDue(hoursAgo(1), 4, CLOCK), false);
+check('four hours into a 4-hour cycle is due', isDue(hoursAgo(4), 4, CLOCK), true);
+// The tick window counts as slack, otherwise a 1-hour cycle drifts to 1h15m.
+check('just inside the tick window still counts as due',
+    isDue(hoursAgo(3.9), 4, CLOCK), true);
+check('a 24-hour cycle is not due after 12 hours', isDue(hoursAgo(12), 24, CLOCK), false);
+
+check('next run is measured from the last run',
+    nextRunAfter(hoursAgo(1), 4, CLOCK).toISOString(),
+    new Date('2026-08-12T15:00:00Z').toISOString());
+check('an overdue cycle is due immediately, not in the past',
+    nextRunAfter(hoursAgo(9), 4, CLOCK).toISOString(), CLOCK.toISOString());
+
+check('runs per day at 6 hours', runsPerDay(6), 4);
+check('runs per day at 1 hour', runsPerDay(1), 24);
+
+/* ── the queue state machine ──────────────────────────────────────────── */
+
+section('queue states — the pipeline');
+
+const move = (from, to, opts) => {
+    const r = checkTransition(from, to, opts);
+    return r.ok ? 'ok' : r.status;
+};
+
+check('QUEUED → PREPARING', move('QUEUED', 'PREPARING'), 'ok');
+check('PREPARING → READY', move('PREPARING', 'READY'), 'ok');
+check('READY → FILLING', move('READY', 'FILLING'), 'ok');
+check('FILLING → AWAITING_REVIEW', move('FILLING', 'AWAITING_REVIEW'), 'ok');
+check('AWAITING_REVIEW → SUBMITTED', move('AWAITING_REVIEW', 'SUBMITTED'), 'ok');
+
+section('queue states — what is refused');
+
+// The whole reason the machine exists: a status column with no rules is how
+// SUBMITTED ends up preceding FILLING in a history nobody can explain.
+check('QUEUED → SUBMITTED is refused', move('QUEUED', 'SUBMITTED'), 409);
+check('READY → AWAITING_REVIEW skips filling', move('READY', 'AWAITING_REVIEW'), 409);
+check('nothing leaves SUBMITTED', move('SUBMITTED', 'SKIPPED', { reason: 'x' }), 409);
+// An application that reached an employer cannot be un-sent.
+check('  not even to CANCELLED', move('SUBMITTED', 'CANCELLED', { reason: 'x' }), 409);
+check('nothing leaves CANCELLED', move('CANCELLED', 'QUEUED'), 409);
+check('a state cannot move to itself', move('READY', 'READY'), 409);
+check('an unknown state is rejected', move('READY', 'NONSENSE'), 400);
+
+section('queue states — reasons and recovery');
+
+check('skipping without a reason is refused', move('READY', 'SKIPPED'), 422);
+check('  and accepted with one', move('READY', 'SKIPPED', { reason: 'not a fit' }), 'ok');
+check('cancelling needs a reason too', move('READY', 'CANCELLED'), 422);
+check('a skipped item can be re-queued', move('SKIPPED', 'QUEUED'), 'ok');
+
+// Every one of these is a real recovery path, not a theoretical edge.
+check('FILLING → READY (crashed app, lease expired)', move('FILLING', 'READY'), 'ok');
+check('AWAITING_REVIEW → READY (nobody reviewed it)', move('AWAITING_REVIEW', 'READY'), 'ok');
+check('PARKED_UNKNOWN → READY (the answer was approved)', move('PARKED_UNKNOWN', 'READY'), 'ok');
+check('PREPARING → QUEUED (preparation failed, retry)', move('PREPARING', 'QUEUED'), 'ok');
+// The HUMAN lane: nothing filled the form, the consultant applied themselves.
+check('READY → SUBMITTED (human lane)', move('READY', 'SUBMITTED'), 'ok');
+
+section('queue states — which states hold a daily cap slot');
+
+// A slot is spent on reaching READY, never at queue creation. Counting at
+// creation would let a failed preparation burn a consultant's whole day.
+check('QUEUED does not hold a slot', countsAgainstCap('QUEUED'), false);
+check('PREPARING does not hold a slot', countsAgainstCap('PREPARING'), false);
+check('READY holds a slot', countsAgainstCap('READY'), true);
+check('FILLING holds a slot', countsAgainstCap('FILLING'), true);
+check('AWAITING_REVIEW holds a slot', countsAgainstCap('AWAITING_REVIEW'), true);
+check('SUBMITTED holds a slot — it was genuinely spent', countsAgainstCap('SUBMITTED'), true);
+check('SKIPPED releases the slot', countsAgainstCap('SKIPPED'), false);
+check('CANCELLED releases the slot', countsAgainstCap('CANCELLED'), false);
 
 /* ── matching ─────────────────────────────────────────────────────────── */
 
@@ -358,7 +474,7 @@ const endToEnd = jobResultToPosting({
     description: 'Working in React and TypeScript on a modern stack.',
     detected_extensions: { schedule_type: 'Contractor', salary: '$65–$80 an hour' },
     apply_options: [{ title: 'Built In', link: 'https://builtin.com/job/react-developer/1' }],
-}, { now: NOW });
+}, { now: CLOCK });
 
 check('adapted', endToEnd !== null, true);
 check('  matches the same criteria a scraped posting did',

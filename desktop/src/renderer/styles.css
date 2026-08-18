@@ -1,0 +1,47 @@
+/* Kept deliberately small and local. The app has four screens and no design
+   system of its own — it borrows the portal's palette so the two read as one
+   product, without pulling a build dependency across for it. */
+:root {
+  --paper: #ffffff;
+  --ground: #f8fafc;
+  --ink: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --brand: #4f46e5;
+  --ok: #16a34a;
+  --warn: #ca8a04;
+  --stop: #dc2626;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ground); color: var(--ink); font-size: 14px; }
+.wrap { max-width: 840px; margin: 0 auto; padding: 28px 20px 60px; }
+h1 { font-size: 1.4rem; margin: 0 0 4px; }
+h2 { font-size: 1rem; margin: 24px 0 8px; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.card + .card { margin-top: 12px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+        border-radius: 999px; font-size: 12px; font-weight: 600; }
+.pill.ok { background: #dcfce7; color: #14532d; }
+.pill.warn { background: #fef9c3; color: #713f12; }
+.pill.stop { background: #fee2e2; color: #7f1d1d; }
+.pill.idle { background: #f1f5f9; color: #334155; }
+button { font: inherit; border-radius: 8px; padding: 9px 14px; cursor: pointer;
+         border: 1px solid transparent; }
+button.primary { background: var(--brand); color: #fff; }
+button.secondary { background: var(--paper); border-color: var(--line); color: var(--ink); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+input { font: inherit; width: 100%; padding: 11px 12px; border: 1px solid var(--line);
+        border-radius: 8px; letter-spacing: .12em; text-transform: uppercase; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.value { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.note { background: #eef2ff; border-left: 3px solid var(--brand); padding: 10px 12px;
+        border-radius: 0 8px 8px 0; color: #312e81; font-size: 13px; }
+.note.warn { background: #fefce8; border-color: var(--warn); color: #713f12; }
+.note.stop { background: #fef2f2; border-color: var(--stop); color: #7f1d1d; }
+.log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted);
+       max-height: 160px; overflow: auto; white-space: pre-wrap; }
+.muted { color: var(--muted); font-size: 12px; }

@@ -29,6 +29,7 @@ import { runSeed002 } from './db/seeds/002_super_admin_seed.js';
 import { runSeed003 } from './db/seeds/003_demo_org_seed.js';
 import { runSeed004 } from './db/seeds/004_common_questions_seed.js';
 import { runSeed005 } from './db/seeds/005_job_sources_seed.js';
+import { runSeed006 } from './db/seeds/006_demo_postings_seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'db', 'migrations');
@@ -131,6 +132,9 @@ const main = async () => {
         // so the organisations have to exist first.
         await runSeed004(client);   // standard application questions
         await runSeed005(client);   // job boards, portal types, queue states
+        // Last, because it needs the portal types and sources above, and the
+        // demo organisation from 003.
+        await runSeed006(client);   // engineered demo postings
         console.log('\n✅ All migrations and seeds completed.');
     } catch (err) {
         failed = true;

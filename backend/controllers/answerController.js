@@ -454,6 +454,49 @@ export const reviewAnswer = async (req, res, next) => {
             ],
         );
 
+        // ── release anything parked on this question ──────────────────
+        //
+        // Closes the loop the answer bank was built for: the desktop app hits a
+        // question it cannot answer, parks the application, and the consultant
+        // answers it. The moment a reviewer approves that answer, every item
+        // that consultant had parked on the same question becomes workable
+        // again — without anyone having to notice and re-queue it by hand.
+        //
+        // Matched on `parked_question_id`, a real foreign key. Matching on the
+        // reason text would strand items the day somebody reworded a question.
+        let released = 0;
+        if (approving) {
+            const { rows: unparked } = await query(
+                `UPDATE queue_items q
+                    SET status_id = (SELECT id FROM lkp_queue_statuses WHERE name = 'READY'),
+                        parked_question_id = NULL,
+                        park_reason = NULL,
+                        updated_at = now()
+                  WHERE q.consultant_id = $1
+                    AND q.organization_id = $2
+                    AND q.parked_question_id = $3
+                    AND q.status_id = (SELECT id FROM lkp_queue_statuses
+                                        WHERE name = 'PARKED_UNKNOWN')
+                  RETURNING q.id`,
+                [answer.consultant_id, orgId, answer.question_id],
+            );
+            released = unparked.length;
+
+            for (const item of unparked) {
+                await query(
+                    `INSERT INTO queue_item_transitions
+                        (id, organization_id, queue_item_id, from_status_id, to_status_id,
+                         reason, performed_by)
+                     VALUES ($1,$2,$3,
+                        (SELECT id FROM lkp_queue_statuses WHERE name = 'PARKED_UNKNOWN'),
+                        (SELECT id FROM lkp_queue_statuses WHERE name = 'READY'),
+                        $4,$5)`,
+                    [uuidv4(), orgId, item.id,
+                        'The missing answer was approved', req.user.id],
+                ).catch(() => {});
+            }
+        }
+
         logAction({
             orgId, module: 'answers',
             action: approving ? 'Approved Answer' : 'Rejected Answer',
@@ -475,8 +518,14 @@ export const reviewAnswer = async (req, res, next) => {
         return res.json({
             message: approving
                 ? (corrected ? 'Corrected and approved.' : 'Approved.')
+                    + (released > 0
+                        ? ` ${released} parked application${released === 1 ? '' : 's'} released.`
+                        : '')
                 : 'Rejected.',
             status: approving ? 'APPROVED' : 'REJECTED',
+            // So the reviewer sees that approving an answer did something
+            // beyond the answer itself.
+            releasedItems: released,
             wasCorrected: corrected,
         });
     } catch (err) {

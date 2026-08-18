@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
     ListChecks, ExternalLink, MapPin, Layers, Gauge, Clock, Inbox,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
+import QueueItemDrawer from './QueueItemDrawer.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 import {
     card, cardPad, badge, sectionTitle, TONE, TONE_ALERT,
 } from '../../design/tokens.js';
@@ -30,19 +32,28 @@ const payText = (p) => {
  * jobs, and a recruiter has no idea there is work waiting.
  */
 const ConsultantQueue = ({ consultantId }) => {
+    const { user } = useAuth();
+    const [openItem, setOpenItem] = useState(null);
     const [data, setData] = useState(null);
     const [error, setError] = useState('');
 
-    useEffect(() => {
-        api.get(`/management/consultants/${consultantId}/queue`)
-            .then(({ data: d }) => setData(d))
-            .catch((err) => setError(errorMessage(err)));
+    // Named rather than inline, so the drawer can refresh this list after a
+    // move without the two disagreeing about what the queue currently is.
+    const load = useCallback(async () => {
+        try {
+            const { data: d } = await api.get(`/management/consultants/${consultantId}/queue`);
+            setData(d);
+        } catch (err) {
+            setError(errorMessage(err));
+        }
     }, [consultantId]);
+
+    useEffect(() => { load(); }, [load]);
 
     if (error) return <p className="text-sm text-danger-700">{error}</p>;
     if (!data) return <PageLoader />;
 
-    const { queue, held, cap } = data;
+    const { queue, awaitingCap: held, cap } = data;
     const usedToday = cap.used_today ?? 0;
     const dailyCap = cap.daily_cap ?? 0;
     const atCap = dailyCap > 0 && usedToday >= dailyCap;
@@ -83,7 +94,14 @@ const ConsultantQueue = ({ consultantId }) => {
 
                 <div className="mt-2 space-y-3">
                     {queue.map((item) => (
-                        <div key={item.id} className={`${card} ${cardPad}`}>
+                        <div
+                            key={item.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setOpenItem(item.id)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') setOpenItem(item.id); }}
+                            className={`${card} ${cardPad} cursor-pointer transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-500`}
+                        >
                             <div className="flex flex-wrap items-start justify-between gap-2">
                                 <div className="min-w-0">
                                     <p className="text-sm font-medium text-slate-900">{item.title}</p>
@@ -178,6 +196,16 @@ const ConsultantQueue = ({ consultantId }) => {
                         ))}
                     </div>
                 </div>
+            )}
+
+            {openItem && (
+                <QueueItemDrawer
+                    itemId={openItem}
+                    canEdit={['ORG_ADMIN', 'RECRUITER'].includes(user?.role)}
+                    isAdmin={user?.role === 'ORG_ADMIN'}
+                    onClose={() => setOpenItem(null)}
+                    onChanged={load}
+                />
             )}
         </div>
     );

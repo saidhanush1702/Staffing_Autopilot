@@ -21,6 +21,7 @@ const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.
 const AnswerInbox = lazy(() => import('./pages/management/AnswerInbox.jsx'));
 const JobDiscovery = lazy(() => import('./pages/management/JobDiscovery.jsx'));
 const Postings = lazy(() => import('./pages/management/Postings.jsx'));
+const Devices = lazy(() => import('./pages/management/Devices.jsx'));
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
 const MyProfile = lazy(() => import('./pages/portal/MyProfile.jsx'));
@@ -71,6 +72,7 @@ const App = () => (
                 <Route path="/management/answers" element={route(AnswerInbox, MGMT)} />
                 <Route path="/management/discovery" element={route(JobDiscovery, MGMT)} />
                 <Route path="/management/postings" element={route(Postings, MGMT)} />
+                <Route path="/management/devices" element={route(Devices, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}
                 <Route path="/portal" element={route(ConsultantDashboard, CONSULTANT)} />

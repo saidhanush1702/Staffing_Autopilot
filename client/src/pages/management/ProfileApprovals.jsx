@@ -2,7 +2,7 @@ import { useEffect, useState, Fragment } from 'react';
 import {
     Check, X, Loader2, AlertCircle, Inbox, ArrowRight,
     ChevronRight, ChevronDown, Clock, CheckCircle2, XCircle, MinusCircle,
-    XOctagon, PauseCircle,
+    XOctagon, PauseCircle, UserX,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -10,6 +10,7 @@ import Pagination from '../../components/Pagination.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { badge, TONE } from '../../design/tokens.js';
 
 /**
  * Profile change approvals — ORG_ADMIN and RECRUITER.
@@ -226,7 +227,17 @@ const ProfileApprovals = () => {
                                                 )}
                                             </td>
                                             <td className="px-4 py-3 text-slate-600">
-                                                {req.recruiter_name ?? <span className="text-slate-400">Unassigned</span>}
+                                                {/* Not merely "no recruiter yet" — a recruiter only ever
+                                                    sees their own consultants, so nobody but an admin will
+                                                    ever pick this up. Flagged rather than left blank. */}
+                                                {req.is_unassigned ? (
+                                                    <span
+                                                        title="No recruiter is assigned, so this request will only ever appear to an organisation admin."
+                                                        className={`inline-flex items-center gap-1 ${badge} ${TONE.warning}`}
+                                                    >
+                                                        <UserX className="h-3 w-3" /> Unassigned
+                                                    </span>
+                                                ) : req.recruiter_name}
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">

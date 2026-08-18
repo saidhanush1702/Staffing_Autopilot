@@ -36,42 +36,75 @@ const num = (value, fallback) => {
  * freeze whatever was in .env the moment the process booted.
  */
 /**
- * How recently a job must have been posted to be worth asking for.
+ * ── HOW RECENCY IS ACTUALLY FILTERED ──────────────────────────────────
  *
- * Google's own filter vocabulary, and the finest granularity it offers is a
- * day — `today` is 24 hours, not "since the last run". There is no shorter
- * window available at any price, from any reseller, because Google does not
- * expose one.
+ * Not with `chips`. That parameter is DEPRECATED by Google and is now ignored
+ * in silence — which is the worst possible failure, because the request looks
+ * configured and the results are unfiltered. `ltype` (work-from-home) is
+ * deprecated the same way.
  *
- * `3days` is the recommended default rather than `today`: Google's index lags
- * the boards by hours, and a job posted at 23:50 that Google indexes at 00:30
- * is invisible to a `today` filter run at 00:00 the next day. The margin costs
- * nothing — de-duplication collapses the overlap — and it closes that hole.
+ * The live mechanism is `uds`: an opaque string Google generates. Two facts
+ * decide the whole design around it.
  *
- * Empty disables the filter entirely, which is strictly worse: page one then
- * fills with whatever ranks best, which is usually a month-old listing we
- * already hold, and the credit buys nothing.
+ *   1. IT ENCODES THE SEARCH TERM, not just the filter. The same "last 3 days"
+ *      filter yields a different string for "react developer" than for "java
+ *      developer", so it can never be hard-coded.
+ *
+ *   2. IT ARRIVES FREE. Every ordinary response carries a `filters` array
+ *      listing each available filter with its handle. The first call for a term
+ *      returns jobs AND the handle; later calls reuse the cached handle for the
+ *      same single credit. Filtering therefore costs nothing.
+ *
+ * Google's finest window is a DAY. There is no four-hour filter at any price
+ * from any reseller — "only jobs since the last cycle" is delivered by
+ * de-duplication downstream, not by the request.
  */
-const DATE_POSTED = new Set(['today', '3days', 'week', 'month']);
 
-export const providerConfig = () => {
-    const datePosted = (process.env.DISCOVERY_DATE_POSTED ?? '3days').trim().toLowerCase();
-    return {
-        name: 'SERPAPI',
-        label: 'Google Jobs (SerpApi)',
-        baseUrl: process.env.SERPAPI_BASE_URL ?? 'https://serpapi.com/search.json',
-        apiKey: process.env.SERPAPI_KEY ?? '',
-        timeoutMs: num(process.env.SERPAPI_TIMEOUT_MS, 20_000),
-        gl: process.env.DISCOVERY_GL ?? 'us',
-        hl: process.env.DISCOVERY_HL ?? 'en',
-        // An unrecognised value is dropped rather than sent: Google ignores a
-        // malformed chip silently, which would look like a working filter
-        // returning suspiciously old jobs.
-        datePosted: DATE_POSTED.has(datePosted) ? datePosted : null,
-        maxQueries: num(process.env.DISCOVERY_MAX_QUERIES, 6),
-        maxPages: num(process.env.DISCOVERY_MAX_PAGES, 2),
-        maxCallsPerRun: num(process.env.DISCOVERY_MAX_CALLS_PER_RUN, 20),
-    };
+/** Our stored window → the label Google uses in its `filters` array. */
+export const DATE_WINDOW_LABEL = {
+    day: 'Yesterday',
+    '3days': 'Last 3 days',
+    week: 'Last week',
+    month: 'Last month',
+};
+
+export const providerConfig = () => ({
+    name: 'SERPAPI',
+    label: 'Google Jobs (SerpApi)',
+    baseUrl: process.env.SERPAPI_BASE_URL ?? 'https://serpapi.com/search.json',
+    apiKey: process.env.SERPAPI_KEY ?? '',
+    timeoutMs: num(process.env.SERPAPI_TIMEOUT_MS, 20_000),
+    gl: process.env.DISCOVERY_GL ?? 'us',
+    hl: process.env.DISCOVERY_HL ?? 'en',
+    maxQueries: num(process.env.DISCOVERY_MAX_QUERIES, 6),
+    maxPages: num(process.env.DISCOVERY_MAX_PAGES, 2),
+    maxCallsPerRun: num(process.env.DISCOVERY_MAX_CALLS_PER_RUN, 20),
+});
+
+/**
+ * Pull the recency handle for `window` out of a response's `filters` array.
+ *
+ * Two response shapes are handled because SerpApi has emitted both: the handle
+ * sits either directly on the option or nested under `parameters`. Reading only
+ * the newer shape would silently return nothing against the older one, which
+ * looks identical to "this filter is unavailable".
+ *
+ * @returns {{ uds, q }|null}
+ */
+export const extractDateFilter = (body, window) => {
+    const label = DATE_WINDOW_LABEL[window];
+    if (!label || !Array.isArray(body?.filters)) return null;
+
+    for (const group of body.filters) {
+        if (!Array.isArray(group?.options)) continue;
+        for (const option of group.options) {
+            if (option?.name !== label) continue;
+            const uds = option.uds ?? option.parameters?.uds ?? null;
+            if (!uds) continue;
+            return { uds, q: option.q ?? option.parameters?.q ?? null };
+        }
+    }
+    return null;
 };
 
 export const isConfigured = () => providerConfig().apiKey.trim().length > 0;
@@ -100,10 +133,13 @@ export const redactUrl = (url) => {
     }
 };
 
-const buildUrl = ({ q, location, nextPageToken }, cfg) => {
+const buildUrl = ({ q, location, nextPageToken, uds, qOverride }, cfg) => {
     const u = new URL(cfg.baseUrl);
     u.searchParams.set('engine', 'google_jobs');
-    u.searchParams.set('q', q);
+    // With a filter applied, Google also rewrites the query itself
+    // ("react developer" -> "react developer in the last 3 days"). Sending the
+    // rewritten form alongside the handle is what the filter link does.
+    u.searchParams.set('q', (uds && qOverride) ? qOverride : q);
     if (location) u.searchParams.set('location', location);
     u.searchParams.set('gl', cfg.gl);
     u.searchParams.set('hl', cfg.hl);
@@ -111,7 +147,7 @@ const buildUrl = ({ q, location, nextPageToken }, cfg) => {
     // request, not per result — but it decides what those credits buy. Without
     // it, page one is whatever Google ranks highest, which in a mature pool is
     // mostly postings we already hold.
-    if (cfg.datePosted) u.searchParams.set('chips', `date_posted:${cfg.datePosted}`);
+    if (uds) u.searchParams.set('uds', uds);
     // Offset pagination (`start`) was discontinued by Google. Pages are walked
     // with the token the previous response handed back.
     if (nextPageToken) u.searchParams.set('next_page_token', nextPageToken);
@@ -213,7 +249,7 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
          *
          * @yields {{ pageNo, results, payload, error }}
          */
-        async *pages({ q, location }) {
+        async *pages({ q, location, uds = null, qOverride = null, dateWindow = null }) {
             let token = null;
 
             for (let page = 0; page < pages; page += 1) {
@@ -223,7 +259,9 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
                 }
                 if (page > 0 && pacingMs > 0) await sleep(pacingMs);
 
-                const url = buildUrl({ q, location, nextPageToken: token }, cfg);
+                const url = buildUrl({
+                    q, location, nextPageToken: token, uds, qOverride,
+                }, cfg);
                 const safeUrl = redactUrl(url);
 
                 calls += 1;
@@ -246,11 +284,28 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
                     // Yield the failure so the caller still retains the payload,
                     // then stop: the next page needs a token this call never
                     // returned.
-                    yield { pageNo: page + 1, results: [], payload, error: `"${q}" page ${page + 1}: ${res.reason}` };
+                    yield {
+                        pageNo: page + 1,
+                        results: [],
+                        payload,
+                        error: `"${q}" page ${page + 1}: ${res.reason}`,
+                        filter: null,
+                        usedFilter: Boolean(uds),
+                    };
                     return;
                 }
 
-                yield { pageNo: page + 1, results, payload, error: null };
+                yield {
+                    pageNo: page + 1,
+                    results,
+                    payload,
+                    error: null,
+                    // The recency handle for this term, harvested from the same
+                    // response that returned the jobs. The caller caches it so
+                    // the next run is filtered without an extra call.
+                    filter: dateWindow ? extractDateFilter(res.body, dateWindow) : null,
+                    usedFilter: Boolean(uds),
+                };
 
                 token = res.body.serpapi_pagination?.next_page_token ?? null;
                 if (!token) return;      // end of results — not an error
@@ -259,4 +314,4 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
     };
 };
 
-export const __test = { buildUrl, redactUrl };
+export const __test = { buildUrl, redactUrl, extractDateFilter };

@@ -210,6 +210,12 @@ export const listChangeRequests = async (req, res, next) => {
                     u.employment_status AS consultant_employment_status,
                     rev.name AS reviewed_by_name, rev.role AS reviewed_by_role,
                     rec.name AS recruiter_name,
+                    -- H-2. An unassigned consultant's request is technically
+                    -- visible to an ORG_ADMIN, but no recruiter will ever pick
+                    -- it up because recruiters only see their own. Without a
+                    -- flag it sits in the list looking like everyone else's and
+                    -- waits for a reviewer who is never coming.
+                    (a.recruiter_id IS NULL) AS is_unassigned,
                     COUNT(f.id) FILTER (WHERE f.status = 'APPROVED')::int AS approved_count,
                     COUNT(f.id) FILTER (WHERE f.status = 'REJECTED')::int AS rejected_count,
                     COUNT(f.id)::int AS field_count,
@@ -232,8 +238,10 @@ export const listChangeRequests = async (req, res, next) => {
                 AND ($2::text = 'ALL' OR c.status = $2)
                 AND ($3::text IS NULL OR a.recruiter_id = $3)
               GROUP BY c.id, u.name, u.email, u.employment_status,
-                       rev.name, rev.role, rec.name
-              ORDER BY c.submitted_at ASC
+                       rev.name, rev.role, rec.name, a.recruiter_id
+              -- Unassigned first: they are the ones that will otherwise sit
+              -- forever, so they are the ones an admin needs to see.
+              ORDER BY (a.recruiter_id IS NULL) DESC, c.submitted_at ASC
               LIMIT $4 OFFSET $5`,
             [orgId, status, role === 'RECRUITER' ? userId : null,
                 paging.limit, paging.offset],
@@ -317,6 +325,41 @@ export const reviewChangeRequest = async (req, res, next) => {
                 : 'PARTIALLY_APPROVED';
 
         await withTransaction(async (client) => {
+            // ── 0. Has the live value moved since this was submitted? ──
+            //
+            // The diff shown to the reviewer is honest: old_value is snapshotted
+            // when the consultant submits, so the screen always shows what they
+            // were changing FROM. What it cannot show is an admin editing the
+            // same field in the meantime.
+            //
+            // Approving blind would then silently discard that admin's edit —
+            // a lost update in the one workflow whose entire purpose is that a
+            // second person sees the change before it goes live. So the live row
+            // is re-read inside the transaction and compared against the
+            // snapshot; anything that moved is refused rather than overwritten.
+            if (approved.length) {
+                const { rows: liveRows } = await client.query(
+                    'SELECT * FROM consultant_profiles WHERE user_id = $1 AND organization_id = $2',
+                    [request.consultant_id, orgId],
+                );
+                const live = liveRows[0] ?? {};
+
+                const moved = approved.filter((d) => {
+                    const snapshot = byName.get(d.fieldName)?.old_value ?? null;
+                    const current = live[d.fieldName];
+                    const asText = current === null || current === undefined
+                        ? null
+                        : String(current);
+                    return asText !== snapshot;
+                });
+
+                if (moved.length) {
+                    const err = new Error('stale');
+                    err.stale = moved.map((d) => d.fieldName);
+                    throw err;
+                }
+            }
+
             // 1. Copy approved values into the live profile.
             if (approved.length) {
                 const sets = approved.map((d, i) => `${d.fieldName} = $${i + 1}`);
@@ -389,6 +432,16 @@ export const reviewChangeRequest = async (req, res, next) => {
             rejected: rejected.length,
         });
     } catch (err) {
+        // Somebody edited the live profile while this review was open. Naming
+        // the fields matters: the reviewer has to know WHAT moved to decide
+        // whether their approval still stands.
+        if (err.stale) {
+            return res.status(409).json({
+                error: 'The live profile changed while you were reviewing. '
+                    + `Reload to see the current values before approving: ${err.stale.join(', ')}.`,
+                staleFields: err.stale,
+            });
+        }
         return next(err);
     }
 };

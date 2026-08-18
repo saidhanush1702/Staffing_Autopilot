@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Clock, Timer, AlertCircle, CalendarClock } from 'lucide-react';
+import {
+    Clock, Timer, AlertCircle, CalendarClock, Coins, Save, TriangleAlert,
+} from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import {
-    card, cardPad, badge, sectionTitle, TONE, TONE_ALERT,
-    readout, readoutLarge, readoutLabel,
+    card, cardPad, badge, sectionTitle, TONE, TONE_ALERT, TONE_TEXT,
+    readout, readoutLarge, readoutLabel, btnSm, input, fieldLabel,
     toggleTrack, toggleTrackOn, toggleTrackOff, toggleKnob, toggleKnobOn, toggleKnobOff,
 } from '../../design/tokens.js';
 
 const two = (n) => String(n).padStart(2, '0');
+
+/** Google's own recency vocabulary. Nothing finer than a day exists. */
+const WINDOWS = [
+    ['day', 'Last 24 hours'],
+    ['3days', 'Last 3 days'],
+    ['week', 'Last week'],
+    ['month', 'Last month'],
+];
 
 /** Whole hours down to seconds — a countdown nobody has to interpret. */
 const formatCountdown = (ms) => {
@@ -36,6 +46,7 @@ const formatCountdown = (ms) => {
  */
 const SchedulePanel = ({ canEdit, onCycleFired }) => {
     const [data, setData] = useState(null);
+    const [draft, setDraft] = useState(null);
     const [error, setError] = useState('');
     const [saving, setSaving] = useState(false);
 
@@ -88,28 +99,58 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
         return () => clearTimeout(id);
     }, [remaining, nextRunMs, load, onCycleFired]);
 
-    const toggle = async () => {
-        if (!canEdit || !data) return;
+    const save = useCallback(async (patch) => {
+        if (!canEdit) return;
         setSaving(true);
         setError('');
         try {
-            const { data: payload } = await api.patch('/management/discovery/schedule', {
-                enabled: !data.enabled,
-            });
+            const { data: payload } = await api.patch('/management/discovery/schedule', patch);
             firedForRef.current = null;
             apply(payload);
+            setDraft(null);
         } catch (err) {
-            setError(errorMessage(err, 'Could not change the schedule.'));
+            setError(errorMessage(err, 'Could not save the discovery settings.'));
         } finally {
             setSaving(false);
         }
-    };
+    }, [canEdit, apply]);
 
     if (!data) return null;
 
     const on = data.enabled;
     const live = on && data.schedulerAvailable;
     const clock = new Date(now);
+
+    // Draft values while the admin is typing, falling back to what is saved.
+    const d = draft ?? {};
+    const cycleHours = d.cycleHours ?? data.cycleHours;
+    const monthlyBudget = d.monthlyBudget ?? data.monthlyBudget;
+    const datePosted = d.datePosted ?? data.datePosted;
+
+    const leaseExpiryMinutes = d.leaseExpiryMinutes ?? data.leaseExpiryMinutes;
+    const unpreparedExpiryHours = d.unpreparedExpiryHours ?? data.unpreparedExpiryHours;
+    const reviewExpiryDays = d.reviewExpiryDays ?? data.reviewExpiryDays;
+    const postingStaleDays = d.postingStaleDays ?? data.postingStaleDays;
+
+    const edit = (patch) => setDraft({ ...d, ...patch });
+    const FIELDS = ['cycleHours', 'monthlyBudget', 'datePosted', 'leaseExpiryMinutes',
+        'unpreparedExpiryHours', 'reviewExpiryDays', 'postingStaleDays'];
+    const pending = {
+        cycleHours,
+        monthlyBudget,
+        datePosted,
+        leaseExpiryMinutes,
+        unpreparedExpiryHours,
+        reviewExpiryDays,
+        postingStaleDays,
+    };
+    const dirty = draft !== null && FIELDS.some((f) => pending[f] !== data[f]);
+
+    // The consequence of the number being typed, shown as it is typed. A free
+    // number box has no guard rail, so the cost has to be impossible to miss.
+    const perDay = 24 / Math.max(1, cycleHours);
+    const projected = Math.round(data.creditsPerRun * perDay * 30);
+    const overBudget = monthlyBudget > 0 && projected > monthlyBudget;
 
     return (
         <div className={`mt-4 ${card} ${cardPad}`}>
@@ -123,8 +164,8 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                         </span>
                     </h2>
                     <p className="mt-1 text-xs text-slate-500">
-                        Runs discovery every {data.cycleHours} hours on its own, at
-                        {' '}{Array.from({ length: 24 / data.cycleHours }, (_, i) => two(i * data.cycleHours)).join(':00, ')}:00
+                        Runs discovery every {data.cycleHours} hour{data.cycleHours === 1 ? '' : 's'}
+                        {' '}on its own &mdash; {data.runsPerDay} time{data.runsPerDay === 1 ? '' : 's'} a day
                         {' '}({data.timezone}). &ldquo;Run discovery now&rdquo; works either way.
                     </p>
                 </div>
@@ -137,7 +178,7 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                         aria-checked={on}
                         aria-label="Automatic discovery cycle"
                         disabled={!canEdit || saving}
-                        onClick={toggle}
+                        onClick={() => save({ enabled: !data.enabled })}
                         title={canEdit ? undefined : 'Only an organisation admin can change this'}
                         className={`${toggleTrack} ${on ? toggleTrackOn : toggleTrackOff}`}
                     >
@@ -219,6 +260,132 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                         <p className="mt-1 text-xs text-slate-400">
                             Last automatic run {new Date(data.lastScheduledRunAt).toLocaleString()}
                         </p>
+                    )}
+                </div>
+            </div>
+
+            {/* ── settings ───────────────────────────────────────── */}
+            <div className="mt-5 border-t border-slate-100 pt-4">
+                <div className="grid gap-4 sm:grid-cols-3">
+                    <div>
+                        <label className={fieldLabel} htmlFor="cycleHours">
+                            Run every (hours)
+                        </label>
+                        <input
+                            id="cycleHours"
+                            type="number"
+                            min={data.minCycleHours}
+                            max={data.maxCycleHours}
+                            value={cycleHours}
+                            disabled={!canEdit || saving}
+                            onChange={(e) => edit({ cycleHours: Number(e.target.value) })}
+                            className={input}
+                        />
+                        <p className="mt-1 text-xs text-slate-400">
+                            {data.minCycleHours}&ndash;{data.maxCycleHours}.
+                            {' '}{perDay % 1 === 0 ? perDay : perDay.toFixed(1)} run(s) per day.
+                        </p>
+                    </div>
+
+                    <div>
+                        <label className={fieldLabel} htmlFor="monthlyBudget">
+                            Monthly search budget
+                        </label>
+                        <input
+                            id="monthlyBudget"
+                            type="number"
+                            min={0}
+                            value={monthlyBudget}
+                            disabled={!canEdit || saving}
+                            onChange={(e) => edit({ monthlyBudget: Number(e.target.value) })}
+                            className={input}
+                        />
+                        <p className="mt-1 text-xs text-slate-400">
+                            Credits. Used {data.creditsUsedThisMonth} ({data.percentUsed}%) this month.
+                        </p>
+                    </div>
+
+                    <div>
+                        <label className={fieldLabel} htmlFor="datePosted">
+                            Only jobs posted in the
+                        </label>
+                        <select
+                            id="datePosted"
+                            value={datePosted}
+                            disabled={!canEdit || saving}
+                            onChange={(e) => edit({ datePosted: e.target.value })}
+                            className={input}
+                        >
+                            {WINDOWS.map(([value, text]) => (
+                                <option key={value} value={value}>{text}</option>
+                            ))}
+                        </select>
+                        <p className="mt-1 text-xs text-slate-400">
+                            The narrowest window the provider offers is a day.
+                        </p>
+                    </div>
+                </div>
+
+                {/* Housekeeping. Separate block because these are set once and
+                    forgotten, unlike the three above. */}
+                <details className="mt-4">
+                    <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-700">
+                        Housekeeping intervals
+                    </summary>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                        {[
+                            ['leaseExpiryMinutes', leaseExpiryMinutes, 'Lease expiry', 'minutes',
+                                'How long the desktop app may hold a job before it is released.'],
+                            ['unpreparedExpiryHours', unpreparedExpiryHours, 'Unprepared expiry', 'hours',
+                                'A job that never finished preparing returns to the queue.'],
+                            ['reviewExpiryDays', reviewExpiryDays, 'Review expiry', 'days',
+                                'A filled application nobody reviewed releases its cap slot.'],
+                            ['postingStaleDays', postingStaleDays, 'Posting ageing', 'days',
+                                'A job not seen by any run for this long is treated as gone.'],
+                        ].map(([key, value, text, unit, help]) => (
+                            <div key={key}>
+                                <label className={fieldLabel} htmlFor={key}>{text}</label>
+                                <input
+                                    id={key}
+                                    type="number"
+                                    min={1}
+                                    value={value}
+                                    disabled={!canEdit || saving}
+                                    onChange={(e) => edit({ [key]: Number(e.target.value) })}
+                                    className={input}
+                                />
+                                <p className="mt-1 text-xs text-slate-400">{unit} &middot; {help}</p>
+                            </div>
+                        ))}
+                    </div>
+                </details>
+
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                    <p className={`flex items-center gap-1.5 text-xs ${
+                        overBudget ? TONE_TEXT.danger : TONE_TEXT.warning}`}
+                    >
+                        {overBudget
+                            ? <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+                            : <Coins className="h-3.5 w-3.5 shrink-0" />}
+                        <span>
+                            At this interval, discovery costs up to
+                            {' '}<strong>{projected.toLocaleString()} credits a month</strong>
+                            {overBudget
+                                ? ` — over the ${monthlyBudget.toLocaleString()} budget. Scheduled runs will stop early.`
+                                : ` of the ${monthlyBudget.toLocaleString()} budgeted.`}
+                        </span>
+                    </p>
+
+                    {canEdit && dirty && (
+                        <button
+                            type="button"
+                            onClick={() => save(pending)}
+                            disabled={saving}
+                            className={btnSm.primary}
+                        >
+                            <Save className="h-3.5 w-3.5" />
+                            Save settings
+                        </button>
                     )}
                 </div>
             </div>

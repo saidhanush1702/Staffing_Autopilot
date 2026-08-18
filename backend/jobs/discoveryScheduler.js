@@ -28,7 +28,7 @@ import cron from 'node-cron';
 import { query } from '../db.js';
 import { executeRun } from '../controllers/discoveryController.js';
 import {
-    CRON_EXPRESSION, CYCLE_HOURS, schedulerTimezone, isSchedulerAvailable,
+    TICK_CRON, isDue, schedulerTimezone, isSchedulerAvailable,
 } from '../config/discoverySchedule.js';
 
 let running = false;
@@ -43,12 +43,17 @@ export const runCycle = async () => {
     running = true;
 
     try {
-        // Only tenants that switched the cycle on. A tenant that turned it off
-        // is skipped entirely rather than run and discarded.
+        // Only tenants that switched the cycle on, each with its own interval
+        // and the time of its own last automatic run. A tenant that turned the
+        // cycle off is skipped entirely rather than run and discarded.
         const { rows: orgs } = await query(
-            `SELECT id, name FROM organizations
-              WHERE is_active AND discovery_schedule_enabled
-              ORDER BY name`,
+            `SELECT o.id, o.name, o.discovery_cycle_hours,
+                    (SELECT MAX(r.started_at) FROM discovery_runs r
+                      WHERE r.organization_id = o.id AND r.trigger = 'SCHEDULED')
+                        AS last_scheduled_run_at
+               FROM organizations o
+              WHERE o.is_active AND o.discovery_schedule_enabled
+              ORDER BY o.name`,
         );
 
         if (orgs.length === 0) {
@@ -56,7 +61,16 @@ export const runCycle = async () => {
             return;
         }
 
-        for (const org of orgs) {
+        const now = new Date();
+        // Each tenant sets its own interval, so the tick asks who is DUE rather
+        // than assuming everyone fires together.
+        const due = orgs.filter(
+            (o) => isDue(o.last_scheduled_run_at, o.discovery_cycle_hours, now),
+        );
+
+        if (due.length === 0) return;
+
+        for (const org of due) {
             try {
                 const result = await executeRun(org.id, { trigger: 'SCHEDULED' });
 
@@ -68,7 +82,7 @@ export const runCycle = async () => {
                 console.log(
                     `[discovery] ${org.name}: ${r.provider_calls} API call(s), `
                     + `${r.postings_new} new, ${r.postings_duplicate} repeat, `
-                    + `${r.matches_found} matched, ${r.queued} queued, ${r.held_by_cap} held`
+                    + `${r.matches_found} matched, ${r.queued} queued, ${r.awaiting_cap} awaiting cap`
                     + (r.queries_failed ? `, ${r.queries_failed} search(es) failed` : ''),
                 );
             } catch (err) {
@@ -90,11 +104,13 @@ export const startDiscoveryScheduler = () => {
     }
     if (task) return task;
 
-    task = cron.schedule(CRON_EXPRESSION, runCycle, { timezone: schedulerTimezone() });
+    // A fast fixed heartbeat that asks who is due, rather than a cron built
+    // from one interval — the interval is per organisation now.
+    task = cron.schedule(TICK_CRON, runCycle, { timezone: schedulerTimezone() });
 
     console.log(
-        `   Discovery scheduler ON — every ${CYCLE_HOURS} hours (${schedulerTimezone()}), `
-        + 'per-organisation switch in Job Discovery',
+        `   Discovery scheduler ON — checking every 15 min (${schedulerTimezone()}); `
+        + 'each organisation sets its own interval in Job Discovery',
     );
     return task;
 };

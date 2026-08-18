@@ -64,7 +64,19 @@ import {
 import {
     listPostings, getPosting, listConsultantQueue, updateSource, toggleSourceSchema,
 } from './controllers/postingController.js';
+import {
+    getQueueItem, skipItem, requeueItem, transitionItem, cancelItem, transitionSchema,
+    listApplications, getApplication,
+} from './controllers/queueController.js';
+import { verifyDevice } from './middleware/verifyDevice.js';
+import {
+    activate, activateSchema, heartbeat, deviceQueue,
+    leaseItem, reportFilled, reportParked, reportSkipped, reclassify,
+    reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
+    listDevices, issueDevice, issueDeviceSchema, revokeDevice,
+} from './controllers/deviceController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
+import { startQueueMaintenance } from './jobs/queueMaintenance.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -308,6 +320,66 @@ app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
 app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
 app.get('/api/management/consultants/:id/queue', [verifyToken, isManagement], listConsultantQueue);
 
+/* ──────────────────────── the queue (portal) ───────────────────── */
+//
+// Same state machine the desktop app calls, so a move that is illegal for one
+// is illegal for the other. Cancelling is ORG_ADMIN only: it voids a queue
+// rather than declining a job.
+//
+// Nothing here moves an item to a different consultant. R-03 is enforced by the
+// absence of a route, not by a permission check.
+app.get('/api/management/queue/:id', [verifyToken, isManagement], getQueueItem);
+app.post('/api/management/queue/:id/skip',
+    [verifyToken, isManagement, validate(transitionSchema)], skipItem);
+app.post('/api/management/queue/:id/requeue',
+    [verifyToken, isManagement, validate(transitionSchema)], requeueItem);
+app.post('/api/management/queue/:id/transition',
+    [verifyToken, isManagement, validate(transitionSchema)], transitionItem);
+// The permanent record. Read-only by construction: no route edits or deletes
+// one, and the database refuses it regardless of who asks.
+app.get('/api/management/consultants/:id/applications',
+    [verifyToken, isManagement], listApplications);
+app.get('/api/management/applications/:id', [verifyToken, isManagement], getApplication);
+
+app.post('/api/management/queue/:id/cancel',
+    [verifyToken, isOrgAdmin, validate(transitionSchema)], cancelItem);
+
+/* ─────────────── consultant desktop app (device auth) ──────────── */
+//
+// A separate identity from the browser session: `verifyDevice` authenticates a
+// MACHINE and yields exactly one consultant, so nothing here can reach another
+// person's data or any management route. Activation is the only open route,
+// and it trades a one-time code issued by the owner for a bound device token.
+
+app.post('/api/device/activate', [validate(activateSchema)], activate);
+
+app.get('/api/device/heartbeat', [verifyDevice], heartbeat);
+app.get('/api/device/queue', [verifyDevice], deviceQueue);
+
+// Every state change goes through the shared queue state machine, so the app
+// cannot reach a state the portal would refuse.
+app.post('/api/device/queue/:id/lease', [verifyDevice], leaseItem);
+app.post('/api/device/queue/:id/filled', [verifyDevice, validate(reportSchema)], reportFilled);
+app.post('/api/device/queue/:id/parked', [verifyDevice, validate(reportSchema)], reportParked);
+app.post('/api/device/queue/:id/skipped', [verifyDevice, validate(reportSchema)], reportSkipped);
+app.post('/api/device/queue/:id/reclassify', [verifyDevice, validate(reportSchema)], reclassify);
+// R-02: this RECORDS a submission the consultant already made. It never causes
+// one, and it is the only route that can create an application record.
+app.post('/api/device/queue/:id/submitted',
+    [verifyDevice, validate(reportSchema)], reportSubmitted);
+
+app.post('/api/device/board-status',
+    [verifyDevice, validate(boardStatusSchema)], reportBoardStatus);
+
+/* ─────────────── desktop app access (owner-managed) ────────────── */
+//
+// R-21: only the owner grants access, one live device per consultant, revocable
+// instantly. Issuing replaces whatever that consultant had before.
+app.get('/api/management/devices', [verifyToken, isManagement], listDevices);
+app.post('/api/management/devices',
+    [verifyToken, isOrgAdmin, validate(issueDeviceSchema)], issueDevice);
+app.delete('/api/management/devices/:id', [verifyToken, isOrgAdmin], revokeDevice);
+
 /* ─────────────────────── consultant portal ─────────────────────── */
 
 app.get('/api/portal/me', [verifyToken, isConsultant], myProfile);
@@ -345,6 +417,10 @@ const start = async () => {
     }
 
     startDiscoveryScheduler();
+    // Deliberately NOT gated on DISCOVERY_ENABLED: expiring an abandoned lease
+    // or releasing a stale cap slot is repair work on state we already hold,
+    // not a reason to reach out to a provider.
+    startQueueMaintenance();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);
