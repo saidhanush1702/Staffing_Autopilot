@@ -29,6 +29,7 @@ const actionColour = (action = '') => {
 };
 
 const AuditLogPanel = ({ module }) => {
+    const { user } = useAuth();
     const [open, setOpen] = useState(false);
     const [logs, setLogs] = useState([]);
     const [total, setTotal] = useState(0);

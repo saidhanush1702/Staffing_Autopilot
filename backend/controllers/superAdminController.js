@@ -151,6 +151,24 @@ export const createOrganization = async (req, res, next) => {
                 [adminId, orgId, adminName, adminEmail, enc, iv, tag, req.user.id],
             );
 
+            // Every provider-mode source needs a row here, or the new agency
+            // cannot enable discovery at all: the toggle looks for its own row
+            // and answers "not set up for your organisation" when there is none.
+            // Migration 031 backfilled the agencies that existed then, which is
+            // exactly why this was missed — the gap only shows on agencies
+            // created afterwards.
+            await client.query(
+                `INSERT INTO organization_providers
+                    (id, organization_id, source_id, is_enabled,
+                     monthly_budget, max_pages, rate_limit_ms, credential_env)
+                 SELECT gen_random_uuid()::text, $1, s.id,
+                        FALSE, 250, s.max_pages, s.rate_limit_ms, 'SERPAPI_KEY'
+                   FROM lkp_job_sources s
+                  WHERE s.fetch_mode = 'PROVIDER'
+                 ON CONFLICT (organization_id, source_id) DO NOTHING`,
+                [orgId],
+            );
+
             return { orgId, adminId };
         });
 

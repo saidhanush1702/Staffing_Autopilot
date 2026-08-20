@@ -73,7 +73,8 @@ import {
     activate, activateSchema, heartbeat, deviceQueue,
     leaseItem, reportFilled, reportParked, reportSkipped, reclassify,
     reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
-    listDevices, issueDevice, issueDeviceSchema, revokeDevice,
+    listDevices, issueDevice, issueDeviceSchema, revokeDevice, deviceResume,
+    revealActivationCode,
 } from './controllers/deviceController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
 import { startQueueMaintenance } from './jobs/queueMaintenance.js';
@@ -359,6 +360,9 @@ app.get('/api/device/queue', [verifyDevice], deviceQueue);
 // Every state change goes through the shared queue state machine, so the app
 // cannot reach a state the portal would refuse.
 app.post('/api/device/queue/:id/lease', [verifyDevice], leaseItem);
+// Per job, never in bulk (spec §6) — the queue item is part of the path, and
+// every delivery is audited with the device that asked.
+app.get('/api/device/queue/:id/resume', [verifyDevice], deviceResume);
 app.post('/api/device/queue/:id/filled', [verifyDevice, validate(reportSchema)], reportFilled);
 app.post('/api/device/queue/:id/parked', [verifyDevice, validate(reportSchema)], reportParked);
 app.post('/api/device/queue/:id/skipped', [verifyDevice, validate(reportSchema)], reportSkipped);
@@ -378,6 +382,10 @@ app.post('/api/device/board-status',
 app.get('/api/management/devices', [verifyToken, isManagement], listDevices);
 app.post('/api/management/devices',
     [verifyToken, isOrgAdmin, validate(issueDeviceSchema)], issueDevice);
+// Shown again on demand, like a user's password. ORG_ADMIN only, and audited
+// every time — reading a credential is an event somebody may need to account for.
+app.get('/api/management/devices/:id/activation-code',
+    [verifyToken, isOrgAdmin], revealActivationCode);
 app.delete('/api/management/devices/:id', [verifyToken, isOrgAdmin], revokeDevice);
 
 /* ─────────────────────── consultant portal ─────────────────────── */

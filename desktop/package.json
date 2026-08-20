@@ -2,7 +2,7 @@
   "name": "smartapply-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "SmartApply consultant desktop app — fills job applications and stops for the consultant to submit.",
+  "description": "SmartApply consultant desktop app \u2014 fills job applications and stops for the consultant to submit.",
   "main": "src/main/index.js",
   "type": "commonjs",
   "scripts": {
@@ -12,10 +12,12 @@
     "build:renderer": "vite build",
     "start": "npm run build:renderer && electron .",
     "test": "node tests/run.mjs",
+    "verify:board": "node tools/verify-board.mjs",
     "dist": "npm run build:renderer && electron-builder"
   },
   "dependencies": {
     "axios": "^1.7.9",
+    "electron-updater": "^6.8.9",
     "playwright-core": "^1.49.1"
   },
   "devDependencies": {
@@ -32,9 +34,43 @@
   "build": {
     "appId": "com.molinatek.smartapply",
     "productName": "SmartApply",
-    "files": ["src/main/**", "src/preload/**", "dist-renderer/**", "package.json"],
-    "win": { "target": "nsis" },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
-    "publish": [{ "provider": "github" }]
+    "files": [
+      "src/main/**",
+      "src/preload/**",
+      "dist-renderer/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": [
+      {
+        "provider": "github"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   }
 }

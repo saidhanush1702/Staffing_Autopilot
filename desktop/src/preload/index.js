@@ -31,6 +31,19 @@ contextBridge.exposeInMainWorld('smartapply', {
     /** Hand a link to the real browser instead of opening it in the app. */
     openExternal: (url) => ipcRenderer.invoke('openExternal', url),
 
+    /** Bring a filled form back in front of the consultant to check. */
+    openReview: (itemId) => ipcRenderer.invoke('openReview', itemId),
+
+    /**
+     * Record that the CONSULTANT submitted an application. Note what this is
+     * not: there is no `submit` channel, here or in the main process. The app
+     * cannot press submit, by construction (R-02).
+     */
+    markSubmitted: (itemId) => ipcRenderer.invoke('markSubmitted', itemId),
+
+    /** Throw away a filled form the consultant does not want to send. */
+    discardReview: (itemId, reason) => ipcRenderer.invoke('discardReview', itemId, reason),
+
     /**
      * Push updates. Returns an unsubscribe function, because a React effect
      * that cannot detach its listener leaks one per remount.

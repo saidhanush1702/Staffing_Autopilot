@@ -22,8 +22,12 @@ const { Store } = require('../src/main/store.js');
 const { Outbox } = require('../src/main/outbox.js');
 const { fingerprint } = require('../src/main/fingerprint.js');
 const { BOARDS, boardForPortal } = require('../src/main/browser/boards.js');
-const { CycleEngine, nextWakeMs, clearWorkDir } = require('../src/main/cycle.js');
-const { JITTER_MAX_MS } = require('../src/main/config.js');
+const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
+const { buildAnswerBook, resolveAnswer, chooseOption } = require('../src/main/browser/answers.js');
+const { fillForm } = require('../src/main/browser/filler.js');
+const { resolveBrowser } = require('../src/main/browser/engine.js');
+const { record } = require('../src/main/diagnostics.js');
+const { POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS } = require('../src/main/config.js');
 
 let pass = 0; let fail = 0;
 const check = (label, actual, expected) => {
@@ -55,16 +59,35 @@ const fakeHub = (overrides = {}) => {
         reclassify: rec('reclassify'),
         submitted: rec('submitted'),
         boardStatus: rec('boardStatus'),
+        resume: overrides.resume ?? (() => Promise.resolve(null)),
     };
 };
 
-const fakeSessions = (opts = {}) => ({
-    isBotChecked: () => Promise.resolve(opts.botChecked ?? false),
-    isSignedIn: () => Promise.resolve(opts.signedIn ?? true),
-    promptSignIn: () => Promise.resolve({ awaitingHuman: true }),
-    openJob: () => Promise.resolve(),
-    page: () => Promise.resolve({ url: () => opts.landsOn ?? 'https://wellfound.com/jobs/1' }),
-});
+const fakeSessions = (opts = {}) => {
+    const calls = [];
+    return {
+        calls,
+        isBotChecked: () => Promise.resolve(opts.botChecked ?? false),
+        isSignedIn: () => Promise.resolve(opts.signedIn ?? true),
+        promptSignIn: () => { calls.push('promptSignIn'); return Promise.resolve({ awaitingHuman: true }); },
+        openJob: () => { calls.push('openJob'); return Promise.resolve(); },
+        page: () => Promise.resolve({
+            url: () => opts.landsOn ?? 'https://wellfound.com/jobs/1',
+            bringToFront: () => Promise.resolve(),
+            $$eval: async () => opts.fields ?? [],
+            locator: () => ({
+                nth: () => ({
+                    click: async () => {},
+                    fill: async () => {},
+                    pressSequentially: async () => {},
+                    selectOption: async () => {},
+                    check: async () => {},
+                    setInputFiles: async () => {},
+                }),
+            }),
+        }),
+    };
+};
 
 const item = (over = {}) => ({
     id: over.id ?? 'q1',
@@ -74,10 +97,15 @@ const item = (over = {}) => ({
     ...over,
 });
 
-const engineWith = (hub, sessions) => {
+const engineWith = (hub, sessions, over = {}) => {
     const store = new Store(path.join(tmp, `state-${Math.random()}.json`));
     return new CycleEngine({
         hub, sessions, store, outbox: new Outbox(path.join(tmp, `ob-${Math.random()}.json`)), paths,
+        // The gate is proven, not waited out: a fake browser will never become
+        // signed in, so the real five-minute window would just stall the suite.
+        signInWaitMs: 30,
+        signInPollMs: 5,
+        ...over,
     });
 };
 
@@ -89,18 +117,22 @@ check('four boards known', Object.keys(BOARDS).sort(),
 // Load-bearing: an unverified recipe must never fill a real form.
 check('every recipe is still unverified',
     Object.values(BOARDS).every((b) => b.verified === false), true);
-check('LinkedIn has its own lower ceiling (R-22)', BOARDS.LINKEDIN.maxPerCycle, 2);
+check('LinkedIn has its own lower ceiling, per DAY (R-22)', BOARDS.LINKEDIN.maxPerDay, 5);
+check('  and no board still carries a per-pass ceiling',
+    Object.values(BOARDS).some((b) => 'maxPerCycle' in b), false);
 check('an ATS portal maps to no board', boardForPortal('GREENHOUSE'), null);
 check('a board portal maps to its board', boardForPortal('BUILTIN').label, 'Built In');
 
-/* ── wake jitter ──────────────────────────────────────────────────────── */
+/* ── polling, not scheduling ──────────────────────────────────────────── */
 
-section('wake jitter (spec 5.3 — not machine-timed)');
-check('never earlier than the interval', nextWakeMs(1000, () => 0), 1000);
-check('never later than interval + max jitter',
-    nextWakeMs(1000, () => 1), 1000 + JITTER_MAX_MS);
-const spread = new Set(Array.from({ length: 200 }, () => nextWakeMs(3600_000)));
-check('successive wakes differ', spread.size > 150, true);
+section('poll pacing — the 4h cycle belongs to the hub, not the app');
+check('a busy queue is checked again soon', nextPollMs(true, () => 0), POLL_MS);
+check('an empty queue waits longer', nextPollMs(false, () => 0), IDLE_POLL_MS);
+check('busy is sooner than idle', nextPollMs(true, () => 1) < nextPollMs(false, () => 0), true);
+check('never later than the interval + max jitter',
+    nextPollMs(true, () => 1), POLL_MS + POLL_JITTER_MS);
+const spread = new Set(Array.from({ length: 200 }, () => nextPollMs(true)));
+check('successive polls differ (spec 5.3 — not machine-timed)', spread.size > 150, true);
 
 /* ── the cycle ────────────────────────────────────────────────────────── */
 
@@ -136,8 +168,16 @@ hub = fakeHub({
         items: Array.from({ length: 6 }, (_, i) => item({ id: `l${i}`, portal: 'LINKEDIN' })),
     }),
 });
-r = await engineWith(hub, fakeSessions({ landsOn: 'https://www.linkedin.com/jobs/view/1' })).run();
-check('cap of 10 but LinkedIn allows 2 per cycle', r.leased, 2);
+const linkedInEngine = engineWith(hub,
+    fakeSessions({ landsOn: 'https://www.linkedin.com/jobs/view/1' }));
+r = await linkedInEngine.run();
+check('cap of 10 but LinkedIn allows 5 a day', r.leased, 5);
+
+// The ceiling is per DAY, and the app polls continuously — so the thing that
+// actually matters is that a SECOND pass on the same day adds nothing. A
+// per-pass ceiling would quietly allow five more every ninety seconds.
+r = await linkedInEngine.run();
+check('  and a second pass the same day takes none', r.leased, 0);
 
 section('cycle — a bot-check stops that board immediately (R-22)');
 
@@ -196,7 +236,7 @@ hub = fakeHub({
     queue: () => Promise.resolve({ items: [item()] }),
 });
 r = await engineWith(hub, fakeSessions({ landsOn: 'https://wellfound.com/jobs/1/apply' })).run();
-check('an unverified recipe never fills', r.fillable, 0);
+check('an unverified recipe never fills', r.filled, 0);
 check('  it is handed over instead', r.handedToHuman, 1);
 
 section('cycle — an unknown portal is handed back, not guessed at');
@@ -249,6 +289,306 @@ check('and cleared on the way in, so a crash leaves nothing',
 section('machine fingerprint (R-21)');
 check('64 hex characters', /^[0-9a-f]{64}$/.test(fingerprint()), true);
 check('stable across calls', fingerprint() === fingerprint(), true);
+
+/* ── answer matching ──────────────────────────────────────────────────── */
+
+section('answer matching — tight on purpose');
+
+const book = buildAnswerBook({
+    profile: {
+        name: 'Mary Jane Watson',
+        email: 'mj@example.com',
+        phone: '+1 555 0100',
+        city: 'Austin',
+        state: 'TX',
+        linkedin_url: 'https://linkedin.com/in/mj',
+        work_auth: 'US Citizen',
+    },
+    approvedAnswers: [
+        { question_text: 'Are you willing to relocate?', answer_text: 'Yes', question_id: 'Q1' },
+        { question_text: 'Current city', answer_text: 'Dallas', question_id: 'Q2' },
+    ],
+});
+
+check('a profile field is found by its label',
+    resolveAnswer('Email Address', book).value, 'mj@example.com');
+check('  punctuation and case do not matter',
+    resolveAnswer('  E-MAIL:  ', book).value, 'mj@example.com');
+check('a full name splits into first and last',
+    [resolveAnswer('First name', book).value, resolveAnswer('Last name', book).value],
+    ['Mary', 'Jane Watson']);
+check('an approved answer is found', resolveAnswer('Are you willing to relocate?', book).value, 'Yes');
+// A reviewed answer outranks an unreviewed profile value for the same question.
+check('an approved answer beats the profile', resolveAnswer('Current city', book).source, 'ANSWER');
+check('  and the profile still answers its own label',
+    resolveAnswer('City', book).source, 'PROFILE');
+check('an unmatched question resolves to nothing',
+    resolveAnswer('Describe a time you led a project', book), null);
+// The whole argument for tight matching: near-misses must NOT match.
+check('a similar-but-different question does not match',
+    resolveAnswer('Are you willing to travel?', book), null);
+
+check('an option is chosen by exact text', chooseOption(['Yes', 'No'], 'Yes'), 'Yes');
+check('  and by a unique prefix',
+    chooseOption(['Yes, I am authorized', 'No'], 'Yes'), 'Yes, I am authorized');
+check('  but ambiguity chooses nothing',
+    chooseOption(['Yes, with sponsorship', 'Yes, without sponsorship'], 'Yes'), null);
+
+/* ── filling ──────────────────────────────────────────────────────────── */
+
+section('filling — what it types, and what it refuses');
+
+/** A page that records what was done to it, so no browser is needed. */
+const fakePage = (fields) => {
+    const acted = [];
+    const control = (i) => ({
+        click: async () => {},
+        fill: async () => {},
+        pressSequentially: async (v) => acted.push({ what: 'type', i, value: v }),
+        selectOption: async (o) => acted.push({ what: 'select', i, value: o.label }),
+        check: async () => acted.push({ what: 'check', i }),
+        setInputFiles: async (f) => acted.push({ what: 'file', i, value: f }),
+    });
+    return {
+        acted,
+        $$eval: async () => fields,
+        locator: () => ({ nth: control }),
+    };
+};
+
+const field = (over = {}) => ({
+    index: 0, tag: 'input', type: 'text', name: '', label: '', groupLabel: '',
+    required: false, disabled: false, visible: true, options: [], ...over,
+});
+
+const NO_PAUSE = { minMs: 0, maxMs: 0, betweenFieldsMs: [0, 0] };
+
+const profile = { name: 'Mary Jane Watson', email: 'mj@example.com', phone: '+1 555 0100' };
+
+let page = fakePage([
+    field({ index: 0, label: 'Email', type: 'email' }),
+    field({ index: 1, label: 'Phone number', type: 'tel' }),
+    field({ index: 2, label: 'Password', type: 'password', required: true }),
+    field({ index: 3, label: 'Why do you want this job?', type: 'textarea', required: true }),
+    field({ index: 4, label: 'Resume', type: 'file' }),
+]);
+
+let out = await fillForm(page, {
+    profile, approvedAnswers: [], resumePath: '/tmp/cv.pdf', typing: NO_PAUSE,
+});
+
+check('the email is typed', page.acted.find((a) => a.i === 0)?.value, 'mj@example.com');
+check('the phone is typed', page.acted.find((a) => a.i === 1)?.value, '+1 555 0100');
+// R-18, enforced where it cannot be forgotten.
+check('the password field is never touched',
+    page.acted.some((a) => a.i === 2), false);
+check('  and the refusal is reported', out.refusals.length, 1);
+check('the resume is attached', page.acted.find((a) => a.what === 'file')?.value, '/tmp/cv.pdf');
+check('an unanswerable required question becomes an unknown',
+    out.unknown.map((u) => [u.questionText, u.required]),
+    [['Why do you want this job?', true]]);
+check('  and nothing was invented for it',
+    page.acted.some((a) => a.i === 3), false);
+
+// A hidden or disabled control is not a question anybody is asking.
+page = fakePage([
+    field({ index: 0, label: 'Email', visible: false }),
+    field({ index: 1, label: 'Phone', disabled: true }),
+    field({ index: 2, label: 'Submit', type: 'submit' }),
+]);
+out = await fillForm(page, { profile, approvedAnswers: [], typing: NO_PAUSE });
+check('hidden, disabled and button controls are all skipped', page.acted.length, 0);
+check('  and none of them is reported as an unknown question', out.unknown.length, 0);
+
+// A radio group is one question, answered once.
+page = fakePage([
+    field({ index: 0, type: 'radio', name: 'auth', label: 'Yes', groupLabel: 'Work authorization' }),
+    field({ index: 1, type: 'radio', name: 'auth', label: 'No', groupLabel: 'Work authorization' }),
+]);
+out = await fillForm(page, {
+    profile: { ...profile, work_auth: 'Yes' }, approvedAnswers: [], typing: NO_PAUSE,
+});
+check('a radio group is answered once', page.acted.length, 1);
+check('  with the option that matches', page.acted[0].i, 0);
+check('  recorded as one question', out.qa.filter((q) => q.fieldType === 'radio').length, 1);
+
+// A select whose options do not contain the answer is an unknown, not a guess.
+page = fakePage([
+    field({ index: 0, tag: 'select', type: 'select', label: 'Years of experience',
+        required: true, options: ['0-2', '3-5', '6+'] }),
+]);
+out = await fillForm(page, {
+    profile,
+    approvedAnswers: [{ question_text: 'Years of experience', answer_text: 'Nine', question_id: 'Q9' }],
+    typing: NO_PAUSE,
+});
+check('a select with no matching option is left alone', page.acted.length, 0);
+check('  and reported as unknown', out.unknown.length, 1);
+
+/* ── the sign-in gate ─────────────────────────────────────────────────── */
+
+section('sign-in — the consultant does it, and work resumes after');
+
+// Signed out at first, signed in by the time we look again: the item must be
+// worked in the SAME pass, not left until the next poll.
+let looks = 0;
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({ items: [item()] }),
+});
+let sessions = fakeSessions();
+sessions.isSignedIn = () => {
+    looks += 1;
+    return Promise.resolve(looks > 1);
+};
+r = await engineWith(hub, sessions).run();
+check('the login window was opened', sessions.calls.includes('promptSignIn'), true);
+check('the stall was reported to the hub',
+    hub.calls.some((c) => c.name === 'boardStatus' && c.args[0].state === 'SESSION_EXPIRED'), true);
+check('signing in was noticed and reported OK',
+    hub.calls.some((c) => c.name === 'boardStatus' && c.args[0].state === 'OK'), true);
+check('  and the item was then worked in the same pass', r.opened, 1);
+
+// Never signed in: the board is left for later, and nothing is leased.
+sessions = fakeSessions({ signedIn: false });
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({ items: [item()] }),
+});
+r = await engineWith(hub, sessions).run();
+check('a login that never happens leases nothing', r.leased, 0);
+check('  and is surfaced as needing the consultant', r.signInNeeded, ['WELLFOUND']);
+
+
+/* ── the fill path ────────────────────────────────────────────────────── */
+
+section('filling end to end — only on a verified board');
+
+// Every shipped recipe is unverified, which is what stops a guessed selector
+// typing into a real employer's form. To exercise the path at all, one board is
+// marked verified for the length of this section and put back afterwards.
+BOARDS.WELLFOUND.verified = true;
+
+const formField = (over = {}) => ({
+    index: 0, tag: 'input', type: 'text', name: '', label: '', groupLabel: '',
+    required: false, disabled: false, visible: true, options: [], ...over,
+});
+
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item()],
+        profile: { name: 'Mary Jane Watson', email: 'mj@example.com', phone: '+1 555 0100' },
+        approvedAnswers: [],
+    }),
+    resume: () => Promise.resolve('/tmp/cv.pdf'),
+});
+let engine = engineWith(hub, fakeSessions({
+    landsOn: 'https://wellfound.com/jobs/1/apply',
+    fields: [
+        formField({ index: 0, label: 'Email', type: 'email' }),
+        formField({ index: 1, label: 'Full name' }),
+    ],
+}));
+r = await engine.run();
+
+check('an answerable form is filled', r.filled, 1);
+check('  the hub is told it awaits review',
+    hub.calls.some((c) => c.name === 'filled'), true);
+// R-02, at the only place it could be broken.
+check('  and submit was never called', hub.calls.some((c) => c.name === 'submitted'), false);
+check('  it is held for the consultant to review',
+    engine.store.get('awaitingReview').length, 1);
+check('  with the answers it typed, in order',
+    engine.store.get('awaitingReview')[0].qa.map((q) => q.answerText),
+    ['mj@example.com', 'Mary Jane Watson']);
+
+// A required question nobody has answered stops the application.
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item()],
+        profile: { name: 'Mary Jane Watson', email: 'mj@example.com' },
+        approvedAnswers: [],
+    }),
+    resume: () => Promise.resolve('/tmp/cv.pdf'),
+});
+engine = engineWith(hub, fakeSessions({
+    landsOn: 'https://wellfound.com/jobs/1/apply',
+    fields: [
+        formField({ index: 0, label: 'Email', type: 'email' }),
+        formField({ index: 1, label: 'What is your expected rate?', required: true }),
+    ],
+}));
+r = await engine.run();
+
+check('an unknown required question parks the application', r.parked, 1);
+check('  the question is sent to the hub for approval',
+    hub.calls.find((c) => c.name === 'parked').args[1].unknownQuestions[0].questionText,
+    'What is your expected rate?');
+check('  and nothing is put in front of the consultant to submit',
+    engine.store.get('awaitingReview').length, 0);
+
+/* ── review and submit ────────────────────────────────────────────────── */
+
+section('review — the app records a submission, it never makes one');
+
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item()],
+        profile: { name: 'Mary Jane Watson', email: 'mj@example.com' },
+        approvedAnswers: [],
+    }),
+    resume: () => Promise.resolve('/tmp/cv.pdf'),
+});
+engine = engineWith(hub, fakeSessions({
+    landsOn: 'https://wellfound.com/jobs/1/apply',
+    fields: [formField({ index: 0, label: 'Email', type: 'email' })],
+}));
+await engine.run();
+
+await engine.reportSubmitted('q1');
+check('submitting reports the full question-and-answer list',
+    hub.calls.find((c) => c.name === 'submitted').args[1].qa.length, 1);
+check('  and clears it from the review list', engine.store.get('awaitingReview').length, 0);
+check('  reporting one that is gone is refused, not retried',
+    (await engine.reportSubmitted('q1')).ok, false);
+
+BOARDS.WELLFOUND.verified = false;
+check('the board is left unverified again', BOARDS.WELLFOUND.verified, false);
+
+
+/* ── packaging concerns ───────────────────────────────────────────────── */
+
+section('a packaged build can still find a browser');
+
+// The bug this guards: the main process used to require('playwright'), which is
+// a devDependency. It resolves on every machine the app was ever run on — and
+// on none of the machines the installer reaches.
+const resolved = resolveBrowser();
+check('a browser is resolved', typeof resolved.chromium?.launchPersistentContext, 'function');
+check('  and it says which one it found',
+    ['bundled', 'system-chrome'].includes(resolved.source), true);
+check('  a system Chrome is driven by channel, a bundled one is not',
+    resolved.source === 'bundled'
+        ? Object.keys(resolved.launchOptions).length === 0
+        : resolved.launchOptions.channel === 'chrome',
+    true);
+
+section('errors are written down, and the log stays bounded');
+
+const logsDir = path.join(tmp, 'logs');
+record(logsDir, 'testEvent', 'something went wrong');
+const logFile = path.join(logsDir, 'errors.log');
+check('the error reached the log', /testEvent {2}something went wrong/.test(fs.readFileSync(logFile, 'utf8')), true);
+check('  stamped with a time', /^\d{4}-\d{2}-\d{2}T/.test(fs.readFileSync(logFile, 'utf8')), true);
+
+// A log that fills the disk is its own outage.
+fs.writeFileSync(logFile, 'x'.repeat(3 * 1024 * 1024));
+record(logsDir, 'afterRotation', 'still logging');
+check('an oversized log is rotated away', fs.existsSync(`${logFile}.1`), true);
+check('  and the new one starts small', fs.statSync(logFile).size < 1024, true);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 

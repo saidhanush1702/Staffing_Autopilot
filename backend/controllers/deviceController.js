@@ -19,13 +19,16 @@
  * The app fills a form and stops at AWAITING_REVIEW. `submitted` records what a
  * person has already sent; it does not cause a submission.
  */
+import fs from 'node:fs';
 import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { checkTransition } from '../config/queueStates.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
-import { hashToken, newToken } from '../middleware/verifyDevice.js';
+import { hashToken, newToken, newActivationCode } from '../middleware/verifyDevice.js';
 import { logAction } from './auditLogController.js';
+import { resolveStoredPath } from '../utils/upload.js';
+import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 
 /* ── schemas ──────────────────────────────────────────────────────────── */
 
@@ -233,17 +236,42 @@ export const deviceQueue = async (req, res, next) => {
         // Approved answers, per item rather than the whole bank — the hub sends
         // only what the work in front of the app needs.
         const { rows: answers } = await query(
-            `SELECT a.id, a.answer_text, q.question_text, q.id AS question_id,
+            `SELECT a.id, a.approved_text AS answer_text,
+                    q.question_text, q.id AS question_id,
                     c.name AS category
                FROM answers a
                JOIN questions q ON q.id = a.question_id
           LEFT JOIN lkp_question_categories c ON c.id = q.category_id
                JOIN lkp_answer_statuses s ON s.id = a.status_id
-              WHERE a.consultant_id = $1 AND s.name = 'APPROVED'`,
-            [consultantId],
+              WHERE a.consultant_id = $1
+                AND a.organization_id = $2
+                -- Only the live revision, and only the reviewed wording. An
+                -- answer is superseded by editing it, and the device must never
+                -- type a draft (proposed_text) that nobody has approved.
+                AND a.is_current
+                AND s.name = 'APPROVED'
+                AND a.approved_text IS NOT NULL`,
+            [consultantId, orgId],
         );
 
-        return res.json({ items: rows, approvedAnswers: answers });
+        // The consultant's own details, so the filler has something to type.
+        // Sent with the queue rather than fetched separately: the app needs
+        // both or neither, and one round trip cannot half-succeed.
+        const { rows: profile } = await query(
+            `SELECT u.name, u.email, p.phone, p.city, p.state, p.linkedin_url,
+                    w.name AS work_auth, p.base_resume_artifact_id
+               FROM consultant_profiles p
+               JOIN users u ON u.id = p.user_id
+          LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
+              WHERE p.user_id = $1 AND p.organization_id = $2`,
+            [consultantId, orgId],
+        );
+
+        return res.json({
+            items: rows,
+            approvedAnswers: answers,
+            profile: profile[0] ?? null,
+        });
     } catch (err) {
         return next(err);
     }
@@ -575,6 +603,65 @@ export const reportBoardStatus = async (req, res, next) => {
     }
 };
 
+/**
+ * GET /api/device/queue/:id/resume — the resume for ONE job.
+ *
+ * Spec §6: "Resumes are delivered per job, never in bulk. Every delivery is
+ * logged with time, person, and machine." So this is keyed on the queue item
+ * rather than on the consultant: there is no route that hands a device a
+ * resume without naming the job it is for, and every hit writes an audit row
+ * carrying the device id.
+ *
+ * A tailored resume is used when one exists, and the base resume otherwise.
+ * That fallback is what lets the app work before AI tailoring is built, and it
+ * stays correct afterwards.
+ */
+export const deviceResume = async (req, res, next) => {
+    try {
+        const item = await loadOwnedItem(req.device, req.params.id);
+        if (!item) return res.status(404).json({ error: 'Queue item not found.' });
+
+        const { rows } = await query(
+            `SELECT r.id, r.stored_name, r.original_name, r.mime_type, r.kind
+               FROM queue_items q
+               JOIN consultant_profiles p ON p.user_id = q.consultant_id
+               JOIN resume_artifacts r
+                 ON r.id = COALESCE(q.tailored_resume_artifact_id,
+                                    p.base_resume_artifact_id)
+              WHERE q.id = $1 AND q.organization_id = $2`,
+            [item.id, req.device.orgId],
+        );
+        const artifact = rows[0];
+        if (!artifact) {
+            return res.status(404).json({
+                error: 'This consultant has no resume on file, so nothing can be attached.',
+            });
+        }
+
+        const absolutePath = resolveStoredPath(req.device.orgId, artifact.stored_name);
+        if (!fs.existsSync(absolutePath)) {
+            return res.status(410).json({ error: 'The stored file is missing from disk.' });
+        }
+
+        logAction({
+            orgId: req.device.orgId, module: 'resumes', action: 'Sent Resume',
+            entityType: 'ResumeArtifact', entityId: artifact.id,
+            entityName: artifact.original_name,
+            performedBy: req.device.consultantId, performedByRole: 'CONSULTANT',
+            description: `Delivered the ${artifact.kind} resume to the desktop app `
+                + `for ${item.company} — ${item.title} (device ${req.device.id})`,
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        res.setHeader('Content-Type', artifact.mime_type);
+        res.setHeader('Content-Disposition',
+            `attachment; filename="${artifact.original_name.replace(/"/g, '')}"`);
+        return fs.createReadStream(absolutePath).pipe(res);
+    } catch (err) {
+        return next(err);
+    }
+};
+
 /* ── owner-side: issuing and revoking access ──────────────────────────── */
 
 export const issueDeviceSchema = Joi.object({
@@ -609,6 +696,7 @@ export const issueDevice = async (req, res, next) => {
         }
 
         const code = newActivationCode();
+        const sealed = encryptPassword(code);
         const deviceId = uuidv4();
         const expires = new Date(Date.now() + (req.body.expiresInHours ?? 48) * 3_600_000);
 
@@ -625,10 +713,15 @@ export const issueDevice = async (req, res, next) => {
             await client.query(
                 `INSERT INTO devices
                     (id, organization_id, consultant_id, activation_hash,
+                     activation_enc, activation_iv, activation_tag,
                      activation_expires, issued_by)
-                 VALUES ($1,$2,$3,$4,$5,$6)`,
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
                 [deviceId, req.user.orgId, req.body.consultantId,
-                    hashToken(code), expires, req.user.id],
+                    // The hash is what activation is checked against. The
+                    // ciphertext beside it exists only so an admin can be shown
+                    // the code again, and is never used to authenticate.
+                    hashToken(code), sealed.enc, sealed.iv, sealed.tag,
+                    expires, req.user.id],
             );
         });
 
@@ -685,6 +778,88 @@ export const revokeDevice = async (req, res, next) => {
         }).catch(() => {});
 
         return res.json({ message: 'Device access revoked.' });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * GET /api/management/devices/:id/activation-code — ORG_ADMIN only.
+ *
+ * Shows an issued code again, the same way a user's password can be shown
+ * again. The owner's decision: an admin who loses the message they pasted a
+ * code into should not have to reissue, because reissuing revokes the device
+ * the consultant may already be using.
+ *
+ * ── WHAT THIS ENDPOINT IS HONEST ABOUT ────────────────────────────────
+ *
+ * An activation code is single-use. Once a device has activated, the code no
+ * longer activates anything — so this returns the code together with whether it
+ * is still usable, rather than handing back a dead string that looks live. An
+ * admin reading "already used" knows to reissue; an admin reading a code with
+ * no context would send it to a consultant and wonder why it failed.
+ *
+ * Every reveal is audited, for the same reason viewing a password is: reading a
+ * credential is an event somebody may later need to account for.
+ */
+export const revealActivationCode = async (req, res, next) => {
+    try {
+        const { rows } = await query(
+            `SELECT d.id, d.activation_enc, d.activation_iv, d.activation_tag,
+                    d.activation_expires, d.activated_at, d.revoked_at,
+                    u.name AS consultant_name
+               FROM devices d
+               JOIN users u ON u.id = d.consultant_id
+              WHERE d.id = $1 AND d.organization_id = $2`,
+            [req.params.id, req.user.orgId],
+        );
+        const device = rows[0];
+        if (!device) return res.status(404).json({ error: 'Device not found.' });
+
+        // Devices issued before migration 034 have a hash and no ciphertext.
+        // Their codes are genuinely gone, and saying so is better than a 500.
+        if (!device.activation_enc) {
+            return res.status(409).json({
+                error: 'This code was issued before codes could be shown again, '
+                    + 'so it cannot be recovered. Issue a new one.',
+            });
+        }
+
+        let activationCode;
+        try {
+            activationCode = decryptPassword({
+                enc: device.activation_enc,
+                iv: device.activation_iv,
+                tag: device.activation_tag,
+            });
+        } catch {
+            return res.status(409).json({
+                error: 'The code could not be decrypted. The encryption key may have '
+                    + 'changed since it was issued.',
+            });
+        }
+
+        const expired = new Date(device.activation_expires) < new Date();
+        const usable = !device.activated_at && !device.revoked_at && !expired;
+
+        logAction({
+            orgId: req.user.orgId, module: 'devices', action: 'Viewed Activation Code',
+            entityType: 'Device', entityId: device.id, entityName: device.consultant_name,
+            performedBy: req.user.id, performedByRole: req.user.role,
+            description: `Viewed the desktop app activation code for ${device.consultant_name}`,
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({
+            activationCode,
+            consultant: { name: device.consultant_name },
+            expiresAt: device.activation_expires,
+            usable,
+            // Why it is not usable, in the words the screen will show.
+            state: device.revoked_at ? 'REVOKED'
+                : device.activated_at ? 'ALREADY_USED'
+                    : expired ? 'EXPIRED' : 'USABLE',
+        });
     } catch (err) {
         return next(err);
     }

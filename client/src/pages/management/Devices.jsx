@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
     Laptop, Plus, Loader2, AlertCircle, Copy, Check, Power,
-    Wifi, WifiOff, Clock, ShieldOff, TriangleAlert,
+    Wifi, WifiOff, Clock, ShieldOff, TriangleAlert, KeyRound,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -27,12 +27,21 @@ const STATE = {
 /**
  * Desktop app access — ORG_ADMIN issues, anyone in management can look.
  *
- * ── WHY THE CODE IS SHOWN ONLY ONCE ───────────────────────────────────
+ * ── WHY A CODE CAN BE READ BACK ───────────────────────────────────────
  *
- * The activation code is stored hashed, exactly like a password, so nothing can
- * retrieve it later — not this screen, not an admin reading the database. That
- * is deliberate: a code that can be looked up forever is a credential sitting
- * in a table. If it is lost, issue another; issuing revokes the old one.
+ * The activation code is encrypted rather than hashed, so an admin can be shown
+ * it again — the same way this system already lets one look up a user's
+ * password. The alternative costs more than it protects: an unrecoverable code
+ * means losing the message you pasted it into forces a reissue, and reissuing
+ * revokes the device the consultant may already be using.
+ *
+ * The trade is real, so the code gets a password's protection and no less:
+ * AES-256-GCM under a key held in the environment, ORG_ADMIN only, and every
+ * reveal written to the audit log.
+ *
+ * A code is single-use, so this screen says whether the one it is showing still
+ * works. Handing back a dead string that looks live would be worse than not
+ * showing it at all.
  */
 const Devices = () => {
     const { user } = useAuth();
@@ -48,6 +57,8 @@ const Devices = () => {
     const [issued, setIssued] = useState(null);
     const [copied, setCopied] = useState(false);
     const [revoking, setRevoking] = useState(null);
+    const [showing, setShowing] = useState(null);      // { device, code }
+    const [shownCopied, setShownCopied] = useState(false);
 
     const load = useCallback(async () => {
         try {
@@ -79,6 +90,20 @@ const Devices = () => {
             await load();
         } catch (err) {
             setError(errorMessage(err, 'Could not issue an activation code.'));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const reveal = async (device) => {
+        setBusy(true);
+        setError('');
+        try {
+            const { data } = await api.get(`/management/devices/${device.id}/activation-code`);
+            setShowing({ device, ...data });
+            setShownCopied(false);
+        } catch (err) {
+            setError(errorMessage(err, 'Could not read that activation code.'));
         } finally {
             setBusy(false);
         }
@@ -201,6 +226,14 @@ const Devices = () => {
                                 </td>
                                 {isAdmin && (
                                     <td className={`${tableCell} text-right`}>
+                                        <button
+                                            type="button"
+                                            onClick={() => reveal(d)}
+                                            disabled={busy}
+                                            className={`${btnSm.secondary} mr-2`}
+                                        >
+                                            <KeyRound className="h-3.5 w-3.5" /> Show code
+                                        </button>
                                         {!d.revoked_at && (
                                             <button
                                                 type="button"
@@ -270,9 +303,8 @@ const Devices = () => {
                                 </button>
                             </div>
                             <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
-                                This code is shown once and cannot be looked up again — it is
-                                stored hashed, like a password. If it is lost, issue a new one.
-                                Expires {new Date(issued.expiresAt).toLocaleString()}.
+                                Expires {new Date(issued.expiresAt).toLocaleString()}, and works
+                                once. You can look it up again from the list if you lose it.
                             </p>
                         </>
                     ) : (
@@ -286,7 +318,7 @@ const Devices = () => {
                             >
                                 <option value="">Choose a consultant…</option>
                                 {consultants.map((c) => (
-                                    <option key={c.id} value={c.id}>{c.name}</option>
+                                    <option key={c.user_id} value={c.user_id}>{c.name}</option>
                                 ))}
                             </select>
                             <p className="mt-2 text-xs text-slate-500">
@@ -296,6 +328,78 @@ const Devices = () => {
                             </p>
                         </>
                     )}
+                </Modal>
+            )}
+
+            {/* ── show an issued code again ──────────────────────── */}
+            {showing && (
+                <Modal
+                    size="sm"
+                    tone="brand"
+                    icon={KeyRound}
+                    title="Activation code"
+                    onClose={() => setShowing(null)}
+                    footer={(
+                        <div className="flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setShowing(null)}
+                                className={btn.primary}
+                            >
+                                Done
+                            </button>
+                        </div>
+                    )}
+                >
+                    <p className="text-sm text-slate-600">
+                        The code issued to <strong>{showing.consultant.name}</strong>.
+                    </p>
+
+                    <div className={`mt-3 ${card} ${cardPad} text-center`}>
+                        <p className="font-mono text-2xl tracking-widest text-slate-900">
+                            {showing.activationCode}
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                navigator.clipboard?.writeText(showing.activationCode);
+                                setShownCopied(true);
+                            }}
+                            className={`mt-3 ${btnSm.secondary}`}
+                        >
+                            {shownCopied
+                                ? <><Check className="h-3.5 w-3.5" /> Copied</>
+                                : <><Copy className="h-3.5 w-3.5" /> Copy</>}
+                        </button>
+                    </div>
+
+                    {/* A code that no longer works must say so. Sending a consultant
+                        a dead string and letting them discover it is worse than
+                        showing nothing. */}
+                    {showing.usable ? (
+                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.success}`}>
+                            Still usable. Expires {new Date(showing.expiresAt).toLocaleString()},
+                            and works once.
+                        </p>
+                    ) : (
+                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                            {showing.state === 'ALREADY_USED'
+                                && 'This code has already been used to set up a device, so it '
+                                   + 'will not activate another. Issue a new one if they need '
+                                   + 'to set up again.'}
+                            {showing.state === 'EXPIRED'
+                                && 'This code has expired and will no longer activate anything. '
+                                   + 'Issue a new one.'}
+                            {showing.state === 'REVOKED'
+                                && 'This device was revoked, so the code is dead. Issue a new one '
+                                   + 'to restore access.'}
+                        </p>
+                    )}
+
+                    <p className="mt-3 text-xs text-slate-500">
+                        Viewing a code is recorded in the audit log, the same as viewing
+                        a password.
+                    </p>
                 </Modal>
             )}
 

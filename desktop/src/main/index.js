@@ -14,6 +14,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const {
     app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage,
+    crashReporter,
 } = require('electron');
 
 const config = require('./config.js');
@@ -23,7 +24,10 @@ const { Secrets } = require('./secrets.js');
 const { fingerprint } = require('./fingerprint.js');
 const { HubClient } = require('./hubClient.js');
 const { BrowserSessions } = require('./browser/session.js');
-const { CycleEngine, nextWakeMs } = require('./cycle.js');
+const { resolveBrowser } = require('./browser/engine.js');
+const { CycleEngine, nextPollMs } = require('./cycle.js');
+const { startDiagnostics } = require('./diagnostics.js');
+const { startUpdater } = require('./updater.js');
 
 // Two copies pulling one queue would apply to the same job twice, under one
 // person's name. The OS-level lock is the only thing that reliably prevents a
@@ -39,6 +43,8 @@ let secrets = null;
 let hub = null;
 let sessions = null;
 let engine = null;
+let diagnostics = null;
+let stopUpdater = null;
 let heartbeatTimer = null;
 let cycleTimer = null;
 let status = { state: 'STARTING', detail: '' };
@@ -76,6 +82,7 @@ const snapshot = () => ({
     lastCycleAt: store?.get('lastCycleAt') ?? null,
     nextCycleAt: store?.get('nextCycleAt') ?? null,
     cycleLog: (store?.get('cycleLog') ?? []).slice(-10).reverse(),
+    awaitingReview: store?.get('awaitingReview') ?? [],
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
 });
@@ -187,9 +194,15 @@ const heartbeat = async () => {
     }
 };
 
-const scheduleCycle = (intervalMs = config.CYCLE_DEFAULT_MS) => {
+/**
+ * Come back and look for work again.
+ *
+ * `hadWork` decides how soon: a queue that just gave us something is likely to
+ * have more, and an empty one is not worth checking every ninety seconds.
+ */
+const scheduleCycle = (hadWork = false) => {
     clearTimeout(cycleTimer);
-    const wait = nextWakeMs(intervalMs);
+    const wait = nextPollMs(hadWork);
     store.set({ nextCycleAt: new Date(Date.now() + wait).toISOString() });
     cycleTimer = setTimeout(() => { runCycle('scheduled'); }, wait);
 };
@@ -197,15 +210,22 @@ const scheduleCycle = (intervalMs = config.CYCLE_DEFAULT_MS) => {
 const runCycle = async (trigger) => {
     if (!secrets.read()) { setStatus('NEEDS_ACTIVATION'); return; }
     setStatus('WORKING', trigger === 'manual' ? 'checking now' : '');
+    let hadWork = false;
     try {
         const result = await engine.run();
-        const needsYou = (result.signInNeeded?.length ?? 0) > 0
+        hadWork = (result.pulled ?? 0) > 0;
+        // Anything waiting on the consultant outranks "idle": a filled form
+        // nobody submits is the one state where the app is finished and the
+        // work still is not.
+        const waiting = (store.get('awaitingReview') ?? []).length;
+        const needsYou = waiting > 0
+            || (result.signInNeeded?.length ?? 0) > 0
             || (result.handedToHuman ?? 0) > 0;
         setStatus(result.paused ? 'PAUSED' : (needsYou ? 'NEEDS_YOU' : 'IDLE'));
     } catch (err) {
         if (err.name !== 'Revoked') setStatus('OFFLINE', err.message);
     } finally {
-        scheduleCycle();
+        scheduleCycle(hadWork);
     }
 };
 
@@ -235,7 +255,7 @@ const registerIpc = () => {
             });
             setStatus('IDLE');
             heartbeat();
-            scheduleCycle(config.CYCLE_DEFAULT_MS);
+            scheduleCycle(true);
             return { ok: true, consultant: res.consultant };
         } catch (err) {
             return { ok: false, error: err.message };
@@ -255,12 +275,49 @@ const registerIpc = () => {
     });
 
     ipcMain.handle('openExternal', (_e, url) => { shell.openExternal(url); return { ok: true }; });
+
+    /* ── review and submit ─────────────────────────────────────────────
+     *
+     * R-02 lives at this boundary. There is a channel that OPENS a filled form
+     * for the consultant and a channel that RECORDS what they submitted, and
+     * there is deliberately no channel that submits. The renderer could not
+     * ask the app to press submit even if something compromised it, because
+     * nothing on the other side would answer.
+     */
+
+    ipcMain.handle('openReview', async (_e, itemId) => {
+        try {
+            return await engine.openForReview(itemId);
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('markSubmitted', async (_e, itemId) => {
+        try {
+            const res = await engine.reportSubmitted(itemId);
+            setStatus(status.state);
+            return res;
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('discardReview', async (_e, itemId, reason) => {
+        try {
+            const res = await engine.discardReview(itemId, reason);
+            setStatus(status.state);
+            return res;
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
 };
 
 /* ── boot ─────────────────────────────────────────────────────────────── */
 
 app.on('second-instance', showWindow);
-app.on('before-quit', () => { app.isQuitting = true; });
+app.on('before-quit', () => { app.isQuitting = true; stopUpdater?.(); });
 // The tray is the app. Closing the last window must not end it.
 app.on('window-all-closed', () => {});
 
@@ -269,6 +326,13 @@ app.whenReady().then(() => {
     for (const dir of [paths.profiles, paths.work, paths.logs]) {
         fs.mkdirSync(dir, { recursive: true });
     }
+
+    // Before anything else that can throw: a crash during start-up is exactly
+    // the one this needs to catch.
+    diagnostics = startDiagnostics({
+        app, crashReporter, logsDir: paths.logs,
+        log: (m) => { win?.webContents.send('log', m); },
+    });
 
     store = new Store(paths.state);
     outbox = new Outbox(paths.outbox);
@@ -280,11 +344,11 @@ app.whenReady().then(() => {
         onRevoked: handleRevoked,
     });
 
-    // Playwright is required here rather than at module load so the pure modules
-    // stay testable without it installed.
-    // eslint-disable-next-line global-require
-    const { chromium } = require('playwright');
-    sessions = new BrowserSessions({ chromium, profilesDir: paths.profiles });
+    // Resolved here rather than at module load so the pure modules stay
+    // testable without any browser installed at all.
+    const { chromium, launchOptions, source } = resolveBrowser();
+    diagnostics.record('browser', `driving ${source}`);
+    sessions = new BrowserSessions({ chromium, profilesDir: paths.profiles, launchOptions });
 
     engine = new CycleEngine({
         hub, sessions, store, outbox, paths,
@@ -309,4 +373,10 @@ app.whenReady().then(() => {
     }
 
     heartbeatTimer = setInterval(heartbeat, config.HEARTBEAT_MS);
+
+    stopUpdater = startUpdater({
+        app,
+        log: (m) => { win?.webContents.send('log', m); },
+        record: diagnostics.record,
+    });
 });

@@ -125,16 +125,16 @@ const main = async () => {
         await runMigrations(client);
 
         console.log('\nRunning seeds...\n');
-        await runSeed001(client);   // lookups
-        await runSeed002(client);   // super admin
-        await runSeed003(client);   // demo organisation + users + assignments
-        // Runs after 003 because it seeds a question set PER ORGANISATION,
-        // so the organisations have to exist first.
-        await runSeed004(client);   // standard application questions
-        await runSeed005(client);   // job boards, portal types, queue states
-        // Last, because it needs the portal types and sources above, and the
-        // demo organisation from 003.
-        await runSeed006(client);   // engineered demo postings
+        // await runSeed001(client);   // lookups
+        // await runSeed002(client);   // super admin
+        // await runSeed003(client);   // demo organisation + users + assignments
+        // // Runs after 003 because it seeds a question set PER ORGANISATION,
+        // // so the organisations have to exist first.
+        // await runSeed004(client);   // standard application questions
+        // await runSeed005(client);   // job boards, portal types, queue states
+        // // Last, because it needs the portal types and sources above, and the
+        // // demo organisation from 003.
+        // await runSeed006(client);   // engineered demo postings
         console.log('\n✅ All migrations and seeds completed.');
     } catch (err) {
         failed = true;

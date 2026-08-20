@@ -14,20 +14,34 @@ const HUB_URL = process.env.SMARTAPPLY_HUB ?? 'http://localhost:5001/api';
 const HEARTBEAT_MS = 60_000;
 
 /**
- * The cycle interval is the HUB's decision, not ours — an agency sets it and we
- * are told. These are only the bounds we will accept from it, so a bad value
- * cannot make the app hammer or sleep forever.
+ * ── THE APP IS NOT ON A SCHEDULE ──────────────────────────────────────
+ *
+ * The four-hour cycle belongs to the HUB, and it governs one thing: how often
+ * new jobs are DISCOVERED. The desktop app is not on that clock. It works
+ * whenever the consultant's queue has something in it, which is what a person
+ * would do, and it goes quiet when the queue is empty.
+ *
+ * So this is a polling interval, not a cycle length. It is short, because work
+ * that has been waiting an hour for no reason is work the consultant could have
+ * had; and it is jittered, because a poll landing on the same second forever is
+ * a pattern (spec §5.3).
  */
-const CYCLE_MIN_MS = 15 * 60_000;
-const CYCLE_MAX_MS = 24 * 3_600_000;
-const CYCLE_DEFAULT_MS = 4 * 3_600_000;
+const POLL_MS = 90_000;
+const POLL_JITTER_MS = 60_000;
+
+/** How long we wait, once, for a queue that has gone quiet to refill. */
+const IDLE_POLL_MS = 5 * 60_000;
 
 /**
- * A random slice added to every wake, so activity is not machine-timed
- * (spec §5.3). Up to 12 minutes: long enough to break the pattern, short enough
- * that a 4-hour cycle is still a 4-hour cycle.
+ * How long the app waits for a consultant to finish signing in manually before
+ * giving up on that board for now.
+ *
+ * It waits at all because abandoning the board the moment a login is needed
+ * would mean the work sits untouched until the next poll, even though the
+ * person is right there looking at the window we just opened for them.
  */
-const JITTER_MAX_MS = 12 * 60_000;
+const SIGNIN_WAIT_MS = 5 * 60_000;
+const SIGNIN_POLL_MS = 3_000;
 
 /** Human-paced typing (R-19). Per character, with jitter on top. */
 const TYPING = { minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400] };
@@ -35,10 +49,11 @@ const TYPING = { minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400] };
 module.exports = {
     HUB_URL,
     HEARTBEAT_MS,
-    CYCLE_MIN_MS,
-    CYCLE_MAX_MS,
-    CYCLE_DEFAULT_MS,
-    JITTER_MAX_MS,
+    POLL_MS,
+    POLL_JITTER_MS,
+    IDLE_POLL_MS,
+    SIGNIN_WAIT_MS,
+    SIGNIN_POLL_MS,
     TYPING,
     APP_VERSION: require('../../package.json').version,
     // Resolved lazily: app.getPath('userData') is unavailable until Electron is

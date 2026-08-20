@@ -63,9 +63,11 @@ const BOARDS = {
         // R-22: any of these stops LinkedIn for the rest of the day.
         botCheck: ['#captcha-internal'],
         verified: false,
-        // R-22's "lowest volume". The engine caps LinkedIn separately from, and
-        // inside, the consultant's overall daily cap.
-        maxPerCycle: 2,
+        // R-22's "lowest volume". Counted per DAY, not per pass: the app works
+        // continuously whenever the queue has something in it, so a per-pass
+        // ceiling would simply repeat every poll. The engine applies this
+        // inside the consultant's overall daily cap, never alongside it.
+        maxPerDay: 5,
     },
 };
 

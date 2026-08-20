@@ -1,3 +1,5 @@
+import Review from './Review.jsx';
+
 const TONE = {
     IDLE: ['idle', 'Idle'],
     WORKING: ['ok', 'Working'],
@@ -78,6 +80,9 @@ const Status = ({ snap, log, onRefresh }) => {
                 </>
             )}
 
+            {/* The one thing on this screen that is actually waiting on a person. */}
+            <Review items={snap.awaitingReview} onRefresh={onRefresh} />
+
             <h2>Today</h2>
             <div className="card grid">
                 <div>
@@ -87,6 +92,10 @@ const Status = ({ snap, log, onRefresh }) => {
                 <div>
                     <p className="label">Ready to work</p>
                     <p className="value">{snap.queue?.length ?? 0}</p>
+                </div>
+                <div>
+                    <p className="label">Waiting on you</p>
+                    <p className="value">{snap.awaitingReview?.length ?? 0}</p>
                 </div>
                 <div>
                     <p className="label">Waiting to report</p>
@@ -120,7 +129,7 @@ const Status = ({ snap, log, onRefresh }) => {
                                 <span className="muted">
                                     {c.paused ? 'paused'
                                         : c.capReached ? 'daily limit reached'
-                                            : `${c.opened ?? 0} opened · ${c.handedToHuman ?? 0} for you`}
+                                            : `${c.filled ?? 0} filled · ${c.parked ?? 0} parked · ${c.handedToHuman ?? 0} for you`}
                                 </span>
                             </div>
                             {(c.errors?.length ?? 0) > 0 && (

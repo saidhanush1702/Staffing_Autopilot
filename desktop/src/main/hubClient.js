@@ -18,6 +18,8 @@
  * immediately". There is no push channel and nothing to keep in sync — the next
  * call simply fails, which is at most one heartbeat away.
  */
+const fs = require('node:fs');
+const path = require('node:path');
 const axios = require('axios');
 const { HUB_URL, APP_VERSION } = require('./config.js');
 
@@ -93,6 +95,41 @@ class HubClient {
     reclassify(id, body) { return this.#call('post', `/device/queue/${id}/reclassify`, body ?? {}); }
     submitted(id, body) { return this.#call('post', `/device/queue/${id}/submitted`, body); }
     boardStatus(body) { return this.#call('post', '/device/board-status', body); }
+
+    /**
+     * Download the resume for ONE job into the work directory.
+     *
+     * Per job, never in bulk (spec §6) — the queue item is in the path, and the
+     * hub audits each delivery against this device. The file lands in `work`,
+     * which the cycle wipes at both ends, so a resume never outlives the
+     * application it was fetched for (R-20).
+     *
+     * @returns the path written, or null when the consultant has no resume
+     */
+    async resume(id, workDir) {
+        const res = await this.http.request({
+            method: 'get',
+            url: `/device/queue/${id}/resume`,
+            headers: this.#headers(),
+            responseType: 'arraybuffer',
+            validateStatus: (s) => s === 200 || s === 404 || s === 410 || s === 401,
+        });
+
+        if (res.status === 401) {
+            this.onRevoked?.('The hub refused this device.');
+            throw new Revoked();
+        }
+        if (res.status !== 200) return null;
+
+        const disposition = res.headers['content-disposition'] ?? '';
+        const named = /filename="?([^"]+)"?/.exec(disposition);
+        // The filename comes from the hub, so it is treated as untrusted: only
+        // the basename is kept, and it can never climb out of `work`.
+        const safe = path.basename(named?.[1] ?? `resume-${id}.pdf`).replace(/[\\/:*?"<>|]/g, '_');
+        const dest = path.join(workDir, safe);
+        fs.writeFileSync(dest, Buffer.from(res.data));
+        return dest;
+    }
 
     /** Used by the outbox drainer, which already knows the path and body. */
     post(path, body) { return this.#call('post', path, body); }

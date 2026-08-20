@@ -29,9 +29,12 @@ class BrowserSessions {
      * @param chromium injected rather than required at module load, so the
      *   engine can be unit-tested against a fake without Playwright present.
      */
-    constructor({ chromium, profilesDir }) {
+    constructor({ chromium, profilesDir, launchOptions = {} }) {
         this.chromium = chromium;
         this.profilesDir = profilesDir;
+        // Whatever the resolver decided this build needs — nothing for a
+        // bundled Chromium, `channel: 'chrome'` when driving an installed one.
+        this.launchOptions = launchOptions;
         this.contexts = new Map();
     }
 
@@ -55,6 +58,7 @@ class BrowserSessions {
             headless: false,
             viewport: null,
             args: ['--disable-blink-features=AutomationControlled'],
+            ...this.launchOptions,
         });
         ctx.setDefaultNavigationTimeout(NAV_TIMEOUT);
         this.contexts.set(board, ctx);
