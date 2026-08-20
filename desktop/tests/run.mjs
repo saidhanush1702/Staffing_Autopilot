@@ -144,21 +144,28 @@ let r = await engineWith(fakeHub({
 check('a paused consultant is left alone', r.paused, true);
 check('  and nothing was pulled', r.pulled, 0);
 
-r = await engineWith(fakeHub({
-    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 5, paused: false }),
-}), fakeSessions()).run();
-check('cap already reached — stops before pulling', r.capReached, true);
+section('cycle — there is no daily cap; everything queued is worked');
 
-section('cycle — the daily cap is enforced locally too (R-17)');
-
+// The daily cap is gone by decision. Every job that reaches the queue is
+// worked: filled if we handle that board, handed to the consultant if not.
+// These assertions are the guard against it quietly coming back — a limit that
+// reappears would show up as items silently going untouched.
 const many = Array.from({ length: 10 }, (_, i) => item({ id: `q${i}` }));
 let hub = fakeHub({
-    heartbeat: () => Promise.resolve({ dailyCap: 3, usedToday: 0, paused: false, pausedBoards: [] }),
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
     queue: () => Promise.resolve({ items: many }),
 });
 r = await engineWith(hub, fakeSessions()).run();
-check('ten available, cap of three → three leased', r.leased, 3);
-check('  and exactly three handed to the consultant', r.handedToHuman, 3);
+check('ten available → all ten leased', r.leased, 10);
+check('  and all ten handed to the consultant', r.handedToHuman, 10);
+check('  nothing was held back', r.capReached, undefined);
+
+// A heartbeat that mentions no cap at all is the normal case now.
+r = await engineWith(fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({ items: [item()] }),
+}), fakeSessions()).run();
+check('a heartbeat without cap fields works normally', r.opened, 1);
 
 section('cycle — LinkedIn is capped tighter than the rest (R-22)');
 
@@ -195,14 +202,31 @@ check('  with state BOT_CHECK', hub.calls[0].args[0].state, 'BOT_CHECK');
 
 section('cycle — an expired session pauses the board, not the app');
 
+// The gate only applies to a board we FILL. On a verified one a missing
+// session really does stop the work, so this section marks it verified.
+BOARDS.WELLFOUND.verified = true;
+
 hub = fakeHub({
-    heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
     queue: () => Promise.resolve({ items: [item()] }),
 });
 r = await engineWith(hub, fakeSessions({ signedIn: false })).run();
 check('sign-in is requested', r.signInNeeded, ['WELLFOUND']);
 check('  and the stall is reported', hub.calls[0].args[0].state, 'SESSION_EXPIRED');
 check('  nothing was leased meanwhile', r.leased, 0);
+
+BOARDS.WELLFOUND.verified = false;
+
+// And the reason it is conditional: the detection selectors are guesses too.
+// On an unverified board the app only opens the job and hands it over, so a
+// guess that says "not signed in" must not stall work that needs no session.
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({ items: [item()] }),
+});
+r = await engineWith(hub, fakeSessions({ signedIn: false })).run();
+check('an unverified board does not ask for a sign-in at all', r.signInNeeded, []);
+check('  and the item is worked anyway', r.handedToHuman, 1);
 
 section('cycle — a board the hub already paused is skipped');
 
@@ -429,6 +453,9 @@ check('  and reported as unknown', out.unknown.length, 1);
 
 section('sign-in — the consultant does it, and work resumes after');
 
+// Again: the gate is for boards we fill, so this section verifies one.
+BOARDS.WELLFOUND.verified = true;
+
 // Signed out at first, signed in by the time we look again: the item must be
 // worked in the SAME pass, not left until the next poll.
 let looks = 0;
@@ -458,6 +485,8 @@ hub = fakeHub({
 r = await engineWith(hub, sessions).run();
 check('a login that never happens leases nothing', r.leased, 0);
 check('  and is surfaced as needing the consultant', r.signInNeeded, ['WELLFOUND']);
+
+BOARDS.WELLFOUND.verified = false;
 
 
 /* ── the fill path ────────────────────────────────────────────────────── */

@@ -106,13 +106,6 @@ export const PROFILE_FIELDS = {
     },
 
     // ── admin-only: never proposed by a consultant ────────────────────
-    daily_cap: {
-        label: 'Daily application cap',
-        type: 'number',
-        required: false,
-        consultantEditable: false,
-        adminOnly: true,
-    },
     consent_on_file: {
         label: 'Consent form signed',
         type: 'boolean',

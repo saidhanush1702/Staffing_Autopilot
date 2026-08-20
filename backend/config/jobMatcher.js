@@ -198,8 +198,17 @@ export const scoreMatch = (posting, criteria, { workTypeName } = {}) => {
     };
 };
 
-/** Below this a match is not worth a slot against a daily cap. */
-export const MATCH_THRESHOLD = 40;
+/**
+ * Below this a match is not worth a slot against a daily cap.
+ *
+ * At 70 a posting cannot pass on defaults alone: the neutral scores given when
+ * criteria say nothing (20 title + 12 keywords + 8 location) total 40, so
+ * clearing 70 requires real positive signals — a genuine title match, or a title
+ * match plus location and work type. That is the point of raising it. It also
+ * means thin criteria produce no queue at all rather than a queue of loose
+ * matches, which is the trade being made deliberately.
+ */
+export const MATCH_THRESHOLD = 70;
 
 /**
  * Does this criteria set say anything POSITIVE about what is wanted?

@@ -75,7 +75,6 @@ const setStatus = (state, detail = '') => {
 
 const snapshot = () => ({
     consultant: store?.get('consultant') ?? null,
-    dailyCap: store?.get('dailyCap') ?? 0,
     paused: store?.get('paused') ?? false,
     pausedBoards: store?.get('pausedBoards') ?? [],
     queue: store?.get('queue') ?? [],
@@ -177,7 +176,6 @@ const heartbeat = async () => {
     try {
         const beat = await hub.heartbeat();
         store.set({
-            dailyCap: beat.dailyCap,
             paused: beat.paused,
             pausedBoards: beat.pausedBoards ?? [],
         });
@@ -251,7 +249,6 @@ const registerIpc = () => {
                 consultant: res.consultant,
                 machineFingerprint: fp,
                 activatedAt: new Date().toISOString(),
-                dailyCap: res.dailyCap ?? 0,
             });
             setStatus('IDLE');
             heartbeat();
@@ -262,7 +259,16 @@ const registerIpc = () => {
         }
     });
 
-    ipcMain.handle('runNow', () => { runCycle('manual'); return { ok: true }; });
+    ipcMain.handle('runNow', () => {
+        // A pass already under way silently swallowed this, so the button
+        // looked broken during exactly the minutes it was busiest. Say so.
+        if (engine.running) {
+            win?.webContents.send('log', 'already checking — this run is still going');
+            return { ok: true, alreadyRunning: true };
+        }
+        runCycle('manual');
+        return { ok: true };
+    });
 
     // Opening a board's login window is the consultant's action, so it is a
     // channel rather than something the engine does behind their back.
@@ -270,8 +276,34 @@ const registerIpc = () => {
         const { BOARDS } = require('./browser/boards.js');
         const def = BOARDS[board];
         if (!def) return { ok: false, error: `Unknown board ${board}` };
-        await sessions.promptSignIn(def);
-        return { ok: true };
+
+        try {
+            await sessions.promptSignIn(def);
+
+            // Opening the window is not the end of it. The board is on hold at
+            // the hub until something says otherwise, and the only thing that
+            // used to say otherwise was a work pass — so a board with no
+            // pending work stayed marked "sign-in expired" forever, however
+            // many times the consultant actually signed in.
+            //
+            // So we wait here for them, exactly as a work pass does.
+            const deadline = Date.now() + config.SIGNIN_WAIT_MS;
+            while (Date.now() < deadline) {
+                await new Promise((r) => { setTimeout(r, config.SIGNIN_POLL_MS); });
+                if (await sessions.isSignedIn(def)) {
+                    await hub.boardStatus({
+                        board: def.name, state: 'OK', detail: 'Signed in',
+                    }).catch(() => {});
+                    await heartbeat();
+                    win?.webContents.send('log', `${def.label}: signed in`);
+                    runCycle('manual');
+                    return { ok: true, signedIn: true };
+                }
+            }
+            return { ok: true, signedIn: false };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
     });
 
     ipcMain.handle('openExternal', (_e, url) => { shell.openExternal(url); return { ok: true }; });

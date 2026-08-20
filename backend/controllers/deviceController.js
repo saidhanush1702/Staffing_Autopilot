@@ -74,11 +74,9 @@ export const activate = async (req, res, next) => {
     try {
         const { rows } = await query(
             `SELECT d.id, d.consultant_id, d.organization_id, d.activation_expires,
-                    d.activated_at, d.revoked_at, u.name, u.employment_status,
-                    p.daily_cap
+                    d.activated_at, d.revoked_at, u.name, u.employment_status
                FROM devices d
                JOIN users u ON u.id = d.consultant_id
-          LEFT JOIN consultant_profiles p ON p.user_id = d.consultant_id
               WHERE d.activation_hash = $1`,
             [hashToken(req.body.activationCode.trim().toUpperCase())],
         );
@@ -131,7 +129,6 @@ export const activate = async (req, res, next) => {
             // Shown once. There is no route that returns it again.
             deviceToken: token,
             consultant: { id: device.consultant_id, name: device.name },
-            dailyCap: device.daily_cap ?? 0,
         });
     } catch (err) {
         return next(err);
@@ -151,12 +148,18 @@ export const heartbeat = async (req, res, next) => {
     try {
         const { consultantId, orgId, id: deviceId } = req.device;
 
+        // ── NO DAILY CAP ──────────────────────────────────────────────
+        //
+        // There used to be one, reported here and enforced again in the app.
+        // It is gone by decision: every matched job now goes straight to the
+        // desktop app or to the consultant, and nothing is held back.
+        //
+        // `is_paused` is what remains, and it is the better control anyway —
+        // it says "this person applies to nothing right now", which is an
+        // actual state somebody wants, rather than a number to tune.
         const [{ rows: capRows }, { rows: boards }] = await Promise.all([
             query(
-                `SELECT p.daily_cap, p.is_paused, o.timezone
-                   FROM consultant_profiles p
-                   JOIN organizations o ON o.id = p.organization_id
-                  WHERE p.user_id = $1`,
+                'SELECT p.is_paused FROM consultant_profiles p WHERE p.user_id = $1',
                 [consultantId],
             ),
             query(
@@ -166,29 +169,13 @@ export const heartbeat = async (req, res, next) => {
             ),
         ]);
 
-        const cap = capRows[0] ?? {};
-
-        // What the app must not exceed locally (R-17 requires the cap be
-        // enforced in the app as well as here).
-        const { rows: used } = await query(
-            `SELECT COUNT(*)::int AS used
-               FROM queue_items q
-               JOIN lkp_queue_statuses st ON st.id = q.status_id
-              WHERE q.consultant_id = $1
-                AND q.became_ready_at IS NOT NULL
-                AND (q.became_ready_at AT TIME ZONE COALESCE($2, 'UTC'))::date
-                  = (now() AT TIME ZONE COALESCE($2, 'UTC'))::date
-                AND st.name IN ('READY','FILLING','PARKED_UNKNOWN','AWAITING_REVIEW','SUBMITTED')`,
-            [consultantId, cap.timezone],
-        );
+        const profile = capRows[0] ?? {};
 
         return res.json({
             ok: true,
             serverTime: new Date().toISOString(),
-            dailyCap: cap.daily_cap ?? 0,
-            usedToday: used[0].used,
             // A paused consultant's app should do nothing at all.
-            paused: cap.is_paused ?? false,
+            paused: profile.is_paused ?? false,
             pausedBoards: boards.map((b) => ({
                 board: b.board, state: b.state, until: b.paused_until,
             })),

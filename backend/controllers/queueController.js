@@ -24,7 +24,11 @@ export const transitionSchema = Joi.object({
     // Absent on /skip and /requeue, which imply their own target.
     to: Joi.string().max(30),
     reason: Joi.string().max(500).allow('', null),
-}).min(1);
+});
+// No `.min(1)`. It used to be there, and it made /requeue impossible: requeue
+// takes no input at all, so the client correctly sent {} and Joi refused it with
+// "value must have at least 1 key". The check it was standing in for lives in
+// transitionItem, which requires `to` on the generic route and says so.
 
 /** The item, plus enough context to authorise and audit the move. */
 const loadItem = async (orgId, itemId) => {

@@ -40,7 +40,6 @@ const EMPTY = {
     machineFingerprint: null,
     activatedAt: null,
     // Last known settings from the hub.
-    dailyCap: 0,
     paused: false,
     pausedBoards: [],
     // The cycle's own bookkeeping.

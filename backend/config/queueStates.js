@@ -91,23 +91,6 @@ for (const from of CANCELLABLE) TRANSITIONS[from].push('CANCELLED');
 /** States that require a reason on arrival — refused without one. */
 export const REASON_REQUIRED = new Set(['SKIPPED', 'CANCELLED', 'PARKED_UNKNOWN']);
 
-/** Only these hold a daily cap slot. See `countsAgainstCap`. */
-const HOLDS_A_SLOT = new Set([
-    'READY', 'FILLING', 'PARKED_UNKNOWN', 'AWAITING_REVIEW', 'SUBMITTED',
-]);
-
-/**
- * Whether an item in this state is using one of the consultant's daily slots.
- *
- * A slot is taken on reaching READY, not on being queued. The difference
- * matters: the discovery cycle creates items before the preparation stage has
- * run, so counting at creation would let a failed tailoring burn a
- * consultant's whole day without a single application going out.
- *
- * SKIPPED and CANCELLED release the slot; SUBMITTED keeps it, because it was
- * genuinely spent.
- */
-export const countsAgainstCap = (state) => HOLDS_A_SLOT.has(state);
 
 export const isTerminal = (state) => TERMINAL.has(state);
 
@@ -150,4 +133,4 @@ export const checkTransition = (from, to, { reason } = {}) => {
     return { ok: true };
 };
 
-export const __test = { TRANSITIONS, HOLDS_A_SLOT };
+export const __test = { TRANSITIONS };

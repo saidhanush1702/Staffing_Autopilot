@@ -86,10 +86,6 @@ const Status = ({ snap, log, onRefresh }) => {
             <h2>Today</h2>
             <div className="card grid">
                 <div>
-                    <p className="label">Daily limit</p>
-                    <p className="value">{snap.dailyCap}</p>
-                </div>
-                <div>
                     <p className="label">Ready to work</p>
                     <p className="value">{snap.queue?.length ?? 0}</p>
                 </div>
@@ -128,8 +124,7 @@ const Status = ({ snap, log, onRefresh }) => {
                                 <strong>{when(c.at)}</strong>
                                 <span className="muted">
                                     {c.paused ? 'paused'
-                                        : c.capReached ? 'daily limit reached'
-                                            : `${c.filled ?? 0} filled · ${c.parked ?? 0} parked · ${c.handedToHuman ?? 0} for you`}
+                                        : `${c.filled ?? 0} filled · ${c.parked ?? 0} parked · ${c.handedToHuman ?? 0} for you`}
                                 </span>
                             </div>
                             {(c.errors?.length ?? 0) > 0 && (

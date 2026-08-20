@@ -252,10 +252,6 @@ const MyProfile = () => {
                     <p className="text-sm font-medium text-slate-700">Set by your agency</p>
                     <dl className="mt-2 space-y-1 text-sm">
                         <div className="flex justify-between">
-                            <dt className="text-slate-500">Daily application cap</dt>
-                            <dd className="text-slate-800">{profile.daily_cap}</dd>
-                        </div>
-                        <div className="flex justify-between">
                             <dt className="text-slate-500">Consent on file</dt>
                             <dd className="text-slate-800">
                                 {profile.consent_on_file

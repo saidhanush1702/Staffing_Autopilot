@@ -22,11 +22,16 @@
  *
  * ── WHERE THE LIMITS LIVE ─────────────────────────────────────────────
  *
- * One application at a time (R-19), the daily cap enforced locally as well as
- * at the hub (R-17), LinkedIn's own lower ceiling counted per DAY and its full
- * stop on any bot-check (R-22), and working files deleted at both ends of every
- * pass (R-20). All of it is here, in the engine, so that no board recipe can
- * forget one of them.
+ * One application at a time (R-19), LinkedIn's own lower ceiling counted per
+ * DAY and its full stop on any bot-check (R-22), and working files deleted at
+ * both ends of every pass (R-20). All of it is here, in the engine, so that no
+ * board recipe can forget one of them.
+ *
+ * There is no daily application cap. Every job that reaches the queue is worked
+ * — filled here if the board is one we handle, handed to the consultant if not.
+ * What remains is `is_paused`, which stops a consultant entirely, and the
+ * per-board ceiling, which exists to protect the ACCOUNT rather than to ration
+ * applications.
  *
  * ── AND WHAT THE ENGINE WILL NOT DO ───────────────────────────────────
  *
@@ -113,24 +118,16 @@ class CycleEngine {
 
             const beat = await this.hub.heartbeat();
             this.store.set({
-                dailyCap: beat.dailyCap,
                 paused: beat.paused,
                 pausedBoards: beat.pausedBoards ?? [],
             });
 
-            // A paused consultant's app does nothing at all.
+            // A paused consultant's app does nothing at all. This is now the
+            // ONLY thing that stops a pass before it starts — the daily cap it
+            // used to share that job with is gone.
             if (beat.paused) {
                 this.log('consultant is paused — nothing to do');
                 return { ...stats, paused: true };
-            }
-
-            // The local half of R-17. The hub is the authority on what the cap
-            // IS; this is the app refusing to exceed it independently, so a
-            // disagreement fails closed rather than over-applying.
-            const remaining = Math.max(0, (beat.dailyCap ?? 0) - (beat.usedToday ?? 0));
-            if (remaining === 0) {
-                this.log('daily cap already reached');
-                return { ...stats, capReached: true };
             }
 
             const pausedUntil = new Map(
@@ -144,11 +141,6 @@ class CycleEngine {
             let worked = 0;
 
             for (const item of items) {
-                if (worked >= remaining) {
-                    this.log(`stopping: ${worked} of ${remaining} cap slots used`);
-                    break;
-                }
-
                 const board = boardForPortal(item.portal);
                 if (!board) {
                     // The hub thought this was ours; we have no recipe for it.
@@ -257,7 +249,22 @@ class CycleEngine {
         // The consultant signs in themselves (R-18). We open the window, wait,
         // and then carry straight on with this same item — the work does not
         // sit until the next poll just because a login was needed.
-        if (!(await this.sessions.isSignedIn(board))) {
+        // ── THE SIGN-IN GATE ONLY APPLIES TO BOARDS WE FILL ───────────
+        //
+        // On an unverified board the app opens the job, reads which host the
+        // apply flow lands on, and hands the item to the consultant. It types
+        // nothing and needs no session to do any of that.
+        //
+        // Gating it on sign-in was actively harmful: the detection selectors
+        // are unverified guesses too, so a consultant who WAS signed in got
+        // told their session had expired, and every item on that board stalled
+        // for five minutes waiting for a login that had already happened. An
+        // unproven check was blocking work that did not depend on it.
+        //
+        // Once a recipe is verified — which means its selectors have been seen
+        // matching a real page — the gate applies again, because from that
+        // point on the app really is typing into a form behind a login.
+        if (board.verified && !(await this.sessions.isSignedIn(board))) {
             stats.signInNeeded.push(board.name);
             if (!(await this.#waitForSignIn(board))) return 'stopped';
         }

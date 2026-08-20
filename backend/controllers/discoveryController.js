@@ -56,7 +56,6 @@ import {
     schedulerTimezone, isSchedulerAvailable, nextRunAfter, isDue,
     clampCycleHours, runsPerDay, MIN_CYCLE_HOURS, MAX_CYCLE_HOURS,
 } from '../config/discoverySchedule.js';
-import { countsAgainstCap } from '../config/queueStates.js';
 import { logAction } from './auditLogController.js';
 
 /**
@@ -234,8 +233,7 @@ const forgetFilter = async (orgId, q, window) => {
 const loadMatchableConsultants = async (orgId) => {
     const { rows } = await query(
         `SELECT u.id, u.name,
-                sc.current_version_id AS version_id,
-                p.daily_cap
+                sc.current_version_id AS version_id
            FROM users u
            JOIN search_criteria sc ON sc.consultant_id = u.id
            JOIN consultant_profiles p ON p.user_id = u.id
@@ -269,7 +267,6 @@ const loadMatchableConsultants = async (orgId) => {
             id: row.id,
             name: row.name,
             versionId: row.version_id,
-            dailyCap: row.daily_cap ?? 0,
             criteria: {
                 jobTitles: byKind('JOB_TITLE'),
                 keywordsInclude: byKind('KEYWORD_INCLUDE'),
@@ -406,20 +403,14 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
  * a daily cap.
  */
 export const promoteToReady = async (orgId) => {
-    const settings = await loadOrgSettings(orgId);
-    const tz = settings?.timezone || schedulerTimezone();
-
     const { rows: statuses } = await query('SELECT id, name FROM lkp_queue_statuses');
     const statusId = Object.fromEntries(statuses.map((r) => [r.name, r.id]));
-    const holdingIds = statuses
-        .filter((r) => countsAgainstCap(r.name))
-        .map((r) => r.id);
 
     // Only consultants who can actually receive work. A paused or terminated
     // person is skipped here as well as at matching, so an item can never
     // become ready for somebody who has left.
     const { rows: consultants } = await query(
-        `SELECT u.id, p.daily_cap
+        `SELECT u.id
            FROM users u
            JOIN consultant_profiles p ON p.user_id = u.id
           WHERE u.organization_id = $1
@@ -430,20 +421,12 @@ export const promoteToReady = async (orgId) => {
     );
 
     let promoted = 0;
-    let heldByCap = 0;
 
     for (const consultant of consultants) {
-        const { rows: usedRows } = await query(
-            `SELECT COUNT(*)::int AS used
-               FROM queue_items
-              WHERE consultant_id = $1
-                AND became_ready_at IS NOT NULL
-                AND (became_ready_at AT TIME ZONE $2)::date = (now() AT TIME ZONE $2)::date
-                AND status_id = ANY($3::int[])`,
-            [consultant.id, tz, holdingIds],
-        );
-        const remaining = Math.max(0, (consultant.daily_cap ?? 0) - usedRows[0].used);
-
+        // Everything waiting becomes ready. Highest-scoring first, so if a
+        // person works through the list from the top they meet the best
+        // matches first — the order is still meaningful even without a limit
+        // deciding where to stop.
         const { rows: waiting } = await query(
             `SELECT q.id
                FROM queue_items q
@@ -454,34 +437,30 @@ export const promoteToReady = async (orgId) => {
             [consultant.id, statusId.QUEUED],
         );
 
-        for (let i = 0; i < waiting.length; i += 1) {
-            if (i >= remaining) {
-                // Not discarded — it stays QUEUED and is reconsidered on the
-                // next pass, which is what "held by the cap" means now.
-                heldByCap += 1;
-                continue;
-            }
-
+        for (const row of waiting) {
             await withTransaction(async (client) => {
                 await client.query(
                     `UPDATE queue_items
                         SET status_id = $2, prepared_at = now(), became_ready_at = now()
                       WHERE id = $1 AND status_id = $3`,
-                    [waiting[i].id, statusId.READY, statusId.QUEUED],
+                    [row.id, statusId.READY, statusId.QUEUED],
                 );
                 await client.query(
                     `INSERT INTO queue_item_transitions
                         (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
                      VALUES ($1,$2,$3,$4,$5,$6)`,
-                    [uuidv4(), orgId, waiting[i].id, statusId.QUEUED, statusId.READY,
-                        'Prepared and within the daily cap'],
+                    [uuidv4(), orgId, row.id, statusId.QUEUED, statusId.READY,
+                        'Prepared and made ready'],
                 );
             });
             promoted += 1;
         }
     }
 
-    return { promoted, heldByCap };
+    // heldByCap is always 0 now. It is still returned because callers and the
+    // run record read it, and a field that exists and is always zero is easier
+    // to follow than one that vanishes from half the call sites.
+    return { promoted, heldByCap: 0 };
 };
 
 /* ── the run ──────────────────────────────────────────────────────────── */

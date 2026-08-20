@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
     ArrowLeft, CheckCircle2, AlertCircle, Clock, Mail, Phone,
-    MapPin, ShieldCheck, Linkedin, Gauge, Pause, UserCircle, Search, MessageSquare, ListChecks,
+    MapPin, ShieldCheck, Linkedin, Pause, UserCircle, Search, MessageSquare, ListChecks,
     FileCheck2,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
@@ -202,7 +202,6 @@ const ConsultantDetail = () => {
                                     : 'Not signed'}
                                 muted={!profile.consent_on_file}
                             />
-                            <Row icon={Gauge} label="Daily application cap" value={profile.daily_cap} />
                         </div>
                     </div>
 

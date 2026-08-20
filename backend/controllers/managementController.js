@@ -202,8 +202,8 @@ export const createUser = async (req, res, next) => {
             if (isConsultantRole) {
                 await client.query(
                     `INSERT INTO consultant_profiles
-                        (user_id, organization_id, phone, daily_cap, created_by)
-                     VALUES ($1,$2,$3,5,$4)`,
+                        (user_id, organization_id, phone, created_by)
+                     VALUES ($1,$2,$3,$4)`,
                     [id, orgId, phone || null, req.user.id],
                 );
             }

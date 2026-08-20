@@ -52,7 +52,8 @@ class BrowserSessions {
      * shape for a tool whose whole design point is that they stay in control.
      */
     async context(board) {
-        if (this.contexts.has(board)) return this.contexts.get(board);
+        const cached = this.contexts.get(board);
+        if (cached) return cached;
 
         const ctx = await this.chromium.launchPersistentContext(this.#profileDir(board), {
             headless: false,
@@ -61,14 +62,36 @@ class BrowserSessions {
             ...this.launchOptions,
         });
         ctx.setDefaultNavigationTimeout(NAV_TIMEOUT);
+
+        // A consultant closing the window is ORDINARY, not a fault: they signed
+        // in, they are done, they tidy up. Without this the map would keep
+        // handing back a dead context, and every later call would fail with
+        // "Target page, context or browser has been closed" until the app was
+        // restarted. Evicting on close means the next call simply relaunches —
+        // and the profile lives on disk, so the sign-in survives.
+        ctx.on('close', () => {
+            if (this.contexts.get(board) === ctx) this.contexts.delete(board);
+        });
+
         this.contexts.set(board, ctx);
         return ctx;
     }
 
     async page(board) {
         const ctx = await this.context(board);
-        const [existing] = ctx.pages();
-        return existing ?? ctx.newPage();
+        try {
+            const [existing] = ctx.pages();
+            return existing ?? await ctx.newPage();
+        } catch (err) {
+            // The window was closed between the cache check and this call — a
+            // race a person can win by clicking X at the wrong moment. Drop the
+            // dead context and try once with a fresh one.
+            if (!/closed/i.test(err.message)) throw err;
+            this.contexts.delete(board);
+            const fresh = await this.context(board);
+            const [existing] = fresh.pages();
+            return existing ?? await fresh.newPage();
+        }
     }
 
     /**

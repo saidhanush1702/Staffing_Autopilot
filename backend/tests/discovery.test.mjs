@@ -22,7 +22,7 @@ import { __test as serpTest, providerConfig } from '../connectors/serpapi.js';
 import {
     clampCycleHours, isDue, nextRunAfter, runsPerDay,
 } from '../config/discoverySchedule.js';
-import { checkTransition, countsAgainstCap } from '../config/queueStates.js';
+import { checkTransition } from '../config/queueStates.js';
 
 let pass = 0; let fail = 0;
 const check = (label, actual, expected) => {
@@ -388,19 +388,6 @@ check('PARKED_UNKNOWN → READY (the answer was approved)', move('PARKED_UNKNOWN
 check('PREPARING → QUEUED (preparation failed, retry)', move('PREPARING', 'QUEUED'), 'ok');
 // The HUMAN lane: nothing filled the form, the consultant applied themselves.
 check('READY → SUBMITTED (human lane)', move('READY', 'SUBMITTED'), 'ok');
-
-section('queue states — which states hold a daily cap slot');
-
-// A slot is spent on reaching READY, never at queue creation. Counting at
-// creation would let a failed preparation burn a consultant's whole day.
-check('QUEUED does not hold a slot', countsAgainstCap('QUEUED'), false);
-check('PREPARING does not hold a slot', countsAgainstCap('PREPARING'), false);
-check('READY holds a slot', countsAgainstCap('READY'), true);
-check('FILLING holds a slot', countsAgainstCap('FILLING'), true);
-check('AWAITING_REVIEW holds a slot', countsAgainstCap('AWAITING_REVIEW'), true);
-check('SUBMITTED holds a slot — it was genuinely spent', countsAgainstCap('SUBMITTED'), true);
-check('SKIPPED releases the slot', countsAgainstCap('SKIPPED'), false);
-check('CANCELLED releases the slot', countsAgainstCap('CANCELLED'), false);
 
 /* ── matching ─────────────────────────────────────────────────────────── */
 

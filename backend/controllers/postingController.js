@@ -171,31 +171,10 @@ export const listConsultantQueue = async (req, res, next) => {
             ),
         ]);
 
-        // The cap counts items that reached READY today, in the AGENCY's
-        // timezone, and only states that actually hold a slot. Counting
-        // `queued_at` would count work that is not yet available to apply to,
-        // and the server's date is the wrong day boundary for an offshore bench.
-        const { rows: capRows } = await query(
-            `SELECT p.daily_cap,
-                    (SELECT COUNT(*)::int
-                       FROM queue_items q
-                       JOIN lkp_queue_statuses st ON st.id = q.status_id
-                       JOIN organizations o ON o.id = q.organization_id
-                      WHERE q.consultant_id = $1
-                        AND q.became_ready_at IS NOT NULL
-                        AND (q.became_ready_at AT TIME ZONE COALESCE(o.timezone, $2))::date
-                          = (now() AT TIME ZONE COALESCE(o.timezone, $2))::date
-                        AND st.name IN ('READY','FILLING','PARKED_UNKNOWN',
-                                        'AWAITING_REVIEW','SUBMITTED')) AS used_today
-               FROM consultant_profiles p WHERE p.user_id = $1`,
-            [req.params.id, process.env.APP_TIMEZONE ?? 'UTC'],
-        );
-
         return res.json({
             queue: queue.rows,
             awaitingCap: held.rows,
             statusFilter: wantAll ? 'ALL' : (statuses ?? []).join(','),
-            cap: capRows[0] ?? { daily_cap: 0, used_today: 0 },
         });
     } catch (err) {
         return next(err);
