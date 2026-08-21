@@ -31,15 +31,24 @@ contextBridge.exposeInMainWorld('smartapply', {
     /** Hand a link to the real browser instead of opening it in the app. */
     openExternal: (url) => ipcRenderer.invoke('openExternal', url),
 
+    /** Everything this consultant has applied to, grouped by job board. */
+    applications: () => ipcRenderer.invoke('applications'),
+
     /** Bring a filled form back in front of the consultant to check. */
     openReview: (itemId) => ipcRenderer.invoke('openReview', itemId),
 
-    /**
-     * Record that the CONSULTANT submitted an application. Note what this is
-     * not: there is no `submit` channel, here or in the main process. The app
-     * cannot press submit, by construction (R-02).
-     */
+    /** Record that the consultant already submitted it themselves, in the browser. */
     markSubmitted: (itemId) => ipcRenderer.invoke('markSubmitted', itemId),
+
+    /**
+     * Submit from the app, on the consultant's instruction.
+     *
+     * The one channel that results in a portal's submit button being pressed.
+     * It exists because the owner asked for review-and-send in one place; the
+     * decision is still a person's, taken after reading every answer. Nothing
+     * in the work loop can reach it — it is invoked from the review screen only.
+     */
+    submitApplication: (itemId) => ipcRenderer.invoke('submitApplication', itemId),
 
     /** Throw away a filled form the consultant does not want to send. */
     discardReview: (itemId, reason) => ipcRenderer.invoke('discardReview', itemId, reason),

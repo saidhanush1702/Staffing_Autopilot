@@ -54,6 +54,10 @@ export const reportSchema = Joi.object({
         questionId: Joi.string().guid({ version: 'uuidv4' }).allow(null),
     })),
     submissionMethod: Joi.string().valid('DESKTOP_BOT', 'DESKTOP_ASSISTED'),
+    // What the board showed after submitting. Kept because "the click happened"
+    // and "the board confirmed it landed" are different claims, and the record
+    // should say which one it is.
+    notes: Joi.string().max(500).allow('', null),
 });
 
 export const boardStatusSchema = Joi.object({
@@ -513,15 +517,15 @@ export const reportSubmitted = async (req, res, next) => {
                 `INSERT INTO application_records
                     (id, organization_id, consultant_id, posting_id, queue_item_id,
                      status_id, submission_method_id, company, job_title, job_url,
-                     portal_label, device_id)
+                     portal_label, device_id, notes)
                  VALUES ($1,$2,$3,$4,$5,
                      (SELECT id FROM lkp_application_statuses WHERE name = 'SUBMITTED'),
                      (SELECT id FROM lkp_submission_methods WHERE name = $6),
-                     $7,$8,$9,$10,$11)`,
+                     $7,$8,$9,$10,$11,$12)`,
                 [applicationId, req.device.orgId, req.device.consultantId, item.posting_id,
                     item.id, req.body.submissionMethod || 'DESKTOP_BOT',
                     item.company, item.title, item.source_url,
-                    item.portal_label, req.device.id],
+                    item.portal_label, req.device.id, req.body.notes ?? null],
             );
 
             // The exact form, in order, as the employer worded it.
@@ -644,6 +648,55 @@ export const deviceResume = async (req, res, next) => {
         res.setHeader('Content-Disposition',
             `attachment; filename="${artifact.original_name.replace(/"/g, '')}"`);
         return fs.createReadStream(absolutePath).pipe(res);
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * GET /api/device/applications — what this consultant has already applied to.
+ *
+ * The desktop app holds a filled application only until it is submitted, then
+ * drops it. Without this the app could show "waiting on you" and nothing else:
+ * a consultant could not see, from the tool that did the work, what it had
+ * actually achieved for them.
+ *
+ * Grouped by board on the way out, because that is the question being asked —
+ * "what went to LinkedIn?" — rather than one flat list the app would have to
+ * regroup itself.
+ */
+export const deviceApplications = async (req, res, next) => {
+    try {
+        const { rows } = await query(
+            `SELECT a.id, a.company, a.job_title, a.job_url, a.portal_label,
+                    a.submitted_at,
+                    s.label AS status_label,
+                    m.name AS submitted_via,
+                    src.name AS board,
+                    (SELECT COUNT(*)::int FROM application_qa q
+                      WHERE q.application_id = a.id) AS answer_count
+               FROM application_records a
+               JOIN lkp_application_statuses s ON s.id = a.status_id
+               JOIN lkp_submission_methods m ON m.id = a.submission_method_id
+          LEFT JOIN job_postings p ON p.id = a.posting_id
+          LEFT JOIN lkp_job_sources src ON src.id = p.first_source_id
+              WHERE a.consultant_id = $1 AND a.organization_id = $2
+              ORDER BY a.submitted_at DESC
+              LIMIT 200`,
+            [req.device.consultantId, req.device.orgId],
+        );
+
+        const byBoard = {};
+        for (const r of rows) {
+            // `portal_label` is where the form lived; the board is where the
+            // job was found. For anything the app worked they are the same, and
+            // where the source is unknown the portal is the better answer than
+            // dropping the row into "OTHER".
+            const key = r.board ?? r.portal_label ?? 'OTHER';
+            (byBoard[key] ??= []).push(r);
+        }
+
+        return res.json({ applications: rows, byBoard });
     } catch (err) {
         return next(err);
     }

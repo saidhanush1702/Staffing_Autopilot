@@ -87,6 +87,7 @@ class HubClient {
 
     heartbeat() { return this.#call('get', '/device/heartbeat'); }
     queue() { return this.#call('get', '/device/queue'); }
+    applications() { return this.#call('get', '/device/applications'); }
 
     lease(id) { return this.#call('post', `/device/queue/${id}/lease`); }
     filled(id, body) { return this.#call('post', `/device/queue/${id}/filled`, body ?? {}); }

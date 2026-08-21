@@ -41,11 +41,15 @@
  * cannot type into a real employer's form.
  */
 const fs = require('node:fs');
-const { boardForPortal } = require('./browser/boards.js');
+const { BOARDS, boardForPortal } = require('./browser/boards.js');
 const { fillForm } = require('./browser/filler.js');
+const { runApplyFlow, pressSubmit } = require('./browser/applyFlow.js');
 const {
     POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS, SIGNIN_WAIT_MS, SIGNIN_POLL_MS,
 } = require('./config.js');
+
+/** The useful part of an error: Playwright appends a whole call log. */
+const firstLine = (message) => String(message ?? '').split(/\r?\n/)[0];
 
 /** A pause a person would take, not a fixed delay a log can spot. */
 const humanPause = (min, max) => new Promise((r) => {
@@ -79,6 +83,11 @@ const nextPollMs = (hadWork, rand = Math.random) => {
 class CycleEngine {
     constructor({
         hub, sessions, store, outbox, paths, log = () => {},
+        // Board-tagged progress. `log` is one flat stream for the whole app;
+        // this says WHICH board a line belongs to, so the screen can keep
+        // LinkedIn's story separate from Built In's instead of interleaving
+        // them into something nobody can follow.
+        activity = () => {},
         // Injectable so the suite can prove the sign-in gate without waiting
         // five real minutes for a fake browser to be signed into.
         signInWaitMs = SIGNIN_WAIT_MS,
@@ -90,6 +99,7 @@ class CycleEngine {
         this.outbox = outbox;
         this.paths = paths;
         this.log = log;
+        this.activity = activity;
         this.signInWaitMs = signInWaitMs;
         this.signInPollMs = signInPollMs;
         this.running = false;
@@ -176,6 +186,7 @@ class CycleEngine {
                     await humanPause(1500, 4000);
                 } catch (err) {
                     stats.errors.push(`${item.company} — ${err.message}`);
+                    this.activity(board.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
                     // R-26: a failure parks the item with a clear reason. It
                     // never leaves something half-done looking finished.
                     await this.#report(() => this.hub.skipped(item.id, {
@@ -217,6 +228,7 @@ class CycleEngine {
             await new Promise((r) => { setTimeout(r, this.signInPollMs); });
             if (await this.sessions.isSignedIn(board)) {
                 this.log(`${board.label}: signed in — carrying on`);
+                this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
                 await this.#report(() => this.hub.boardStatus({
                     board: board.name, state: 'OK', detail: 'Signed in',
                 }));
@@ -238,6 +250,7 @@ class CycleEngine {
         // temporary challenge becomes a blocked account (R-22).
         if (await this.sessions.isBotChecked(board)) {
             stats.botChecked.push(board.name);
+            this.activity(board.name, 'STOPPED', 'Stopped for today — this board showed a bot check');
             await this.#report(() => this.hub.boardStatus({
                 board: board.name,
                 state: 'BOT_CHECK',
@@ -266,17 +279,21 @@ class CycleEngine {
         // point on the app really is typing into a form behind a login.
         if (board.verified && !(await this.sessions.isSignedIn(board))) {
             stats.signInNeeded.push(board.name);
+            this.activity(board.name, 'SIGNED_OUT', 'Signed out — waiting for you to sign in');
             if (!(await this.#waitForSignIn(board))) return 'stopped';
         }
 
         // Lease before opening. The hub decides whether this device may have
         // the item, and the lease expires — so a crash here releases it rather
         // than locking it forever.
+        this.activity(board.name, 'CONNECTING', `Opening ${item.company} — ${item.title}`);
+
         await this.hub.lease(item.id);
         stats.leased += 1;
 
         await this.sessions.openJob(board.name, item.source_url);
         stats.opened += 1;
+        this.activity(board.name, 'WORKING', `Reading the page for ${item.company}`);
 
         // ── classify ──────────────────────────────────────────────────
         //
@@ -298,6 +315,7 @@ class CycleEngine {
                 : `${board.label} form filling is not verified yet`;
             await this.#report(() => this.hub.reclassify(item.id, { reason }));
             stats.handedToHuman += 1;
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
             return 'counted';
         }
 
@@ -305,12 +323,64 @@ class CycleEngine {
         //
         // The resume is fetched for THIS job and lands in `work`, which is
         // wiped at the end of the pass (spec §6, R-20).
+        this.activity(board.name, 'FILLING', `Filling the application for ${item.company}`);
         const resumePath = await this.hub.resume(item.id, this.paths.work);
-        const result = await fillForm(page, {
-            profile, approvedAnswers, resumePath,
-        });
+        const fillOptions = { profile, approvedAnswers, resumePath };
 
-        for (const r of result.refusals) this.log(`refused: ${r.label} — ${r.reason}`);
+        // ── ONE FORM, OR A WIZARD? ────────────────────────────────────
+        //
+        // A board that declares an `apply` recipe hides its application behind
+        // a button and pages through it — LinkedIn's Easy Apply. Everything
+        // else has the form on the job page and is filled in one pass.
+        //
+        // Either way the ending is the same: the form is complete, nothing has
+        // been sent, and it goes to the consultant to submit.
+        let result;
+        if (board.apply) {
+            const flow = await runApplyFlow(page, board, fillOptions, { log: this.log });
+            this.log(`${item.company}: ${flow.outcome} — ${flow.detail}`);
+
+            // Outcomes that are nobody's fault and nothing to fill.
+            this.activity(board.name, 'FILLING', `${item.company}: ${flow.detail}`);
+
+            if (flow.outcome === 'ALREADY_APPLIED') {
+                await this.#report(() => this.hub.skipped(item.id, {
+                    reason: 'The board says this consultant has already applied.',
+                }));
+                stats.skipped += 1;
+                return 'counted';
+            }
+            if (flow.outcome === 'NO_APPLY_FLOW' || flow.outcome === 'LEFT_THE_BOARD') {
+                await this.#report(() => this.hub.reclassify(item.id, { reason: flow.detail }));
+                stats.handedToHuman += 1;
+                return 'counted';
+            }
+
+            result = {
+                qa: flow.qa,
+                unknown: flow.unknown,
+                attachedResume: flow.attachedResume,
+                refusals: [],
+                readyToSubmit: flow.outcome === 'READY_TO_SUBMIT',
+                steps: flow.steps,
+            };
+
+            // The wizard stopped somewhere that is neither a review screen nor
+            // a known question. Hand it over rather than leaving a part-filled
+            // application nobody knows about (R-26).
+            if (flow.outcome === 'INCOMPLETE' && result.unknown.every((u) => !u.required)) {
+                await this.#report(() => this.hub.reclassify(item.id, {
+                    reason: `The application could not be completed: ${flow.detail}`,
+                }));
+                stats.handedToHuman += 1;
+                return 'counted';
+            }
+        } else {
+            result = await fillForm(page, fillOptions);
+            result.readyToSubmit = true;
+        }
+
+        for (const r of result.refusals ?? []) this.log(`refused: ${r.label} — ${r.reason}`);
 
         // A question nobody has approved an answer for stops this application.
         // Only a REQUIRED one, though: parking on an optional extra would stall
@@ -324,7 +394,34 @@ class CycleEngine {
                 })),
             }));
             stats.parked += 1;
+            this.activity(board.name, 'PARKED',
+                `${item.company}: parked on ${blocking.length} unanswered question(s)`);
             this.log(`parked ${item.company}: ${blocking.length} unanswered question(s)`);
+            return 'counted';
+        }
+
+        // ── "FILLED" HAS TO MEAN SOMETHING ────────────────────────────
+        //
+        // A job page with no application form on it produces an empty result:
+        // no answers, no resume, no unknowns worth parking on. Reporting that
+        // as AWAITING_REVIEW would put an application in front of the
+        // consultant that was never filled in — and mark it, at the hub, as
+        // work this device completed.
+        //
+        // This is not hypothetical. A LinkedIn posting without Easy Apply is
+        // exactly this shape: the apply button leaves for the employer's own
+        // site, and all that remains on the page is LinkedIn's own furniture —
+        // a search box and a language picker. The right answer there is the
+        // same as for any job we cannot fill: hand it to the consultant.
+        if (result.qa.length === 0) {
+            await this.#report(() => this.hub.reclassify(item.id, {
+                reason: 'No application form was found on the page — apply on the '
+                    + 'employer site instead',
+            }));
+            stats.handedToHuman += 1;
+            this.activity(board.name, 'HANDED_OVER',
+                `${item.company}: no application form on the page — apply on the employer site`);
+            this.log(`no form to fill on ${item.company} — handed to you`);
             return 'counted';
         }
 
@@ -332,6 +429,8 @@ class CycleEngine {
         await this.#report(() => this.hub.filled(item.id));
         this.#rememberForReview(item, board, result);
         stats.filled += 1;
+        this.activity(board.name, 'READY_TO_SUBMIT',
+            `${item.company}: filled ${result.qa.length} field(s) — waiting for you to submit`);
         this.log(`filled ${item.company} — ${item.title}, waiting for your review`);
         return 'counted';
     }
@@ -369,13 +468,16 @@ class CycleEngine {
      * The app never reaches this on its own — it is called from the review
      * screen, after a person has pressed submit on the portal.
      */
-    async reportSubmitted(itemId) {
+    async reportSubmitted(itemId, context = {}) {
         const waiting = this.store.get('awaitingReview') ?? [];
         const entry = waiting.find((w) => w.itemId === itemId);
         if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
 
         await this.hub.submitted(itemId, {
+            // DESKTOP_BOT is "filled by the app, submitted by the consultant" —
+            // true whether they pressed the button here or in the browser.
             submissionMethod: 'DESKTOP_BOT',
+            notes: context.detail ?? null,
             qa: entry.qa.map((q) => ({
                 questionText: q.questionText,
                 answerText: q.answerText,
@@ -386,6 +488,56 @@ class CycleEngine {
 
         this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
         return { ok: true };
+    }
+
+    /**
+     * Submit an application, because the consultant pressed Submit in the app.
+     *
+     * ── THIS IS THE ONE EXCEPTION, AND IT IS DELIBERATE ───────────────
+     *
+     * Everywhere else the app refuses to click a submit control. Here it does,
+     * and only here, on an explicit instruction from the person whose name is
+     * on the application, after they have read every answer in the review
+     * screen. The machine still decides nothing: it performs a click a human
+     * asked for, in the same way pressing the button in the browser would.
+     *
+     * The alternative was to require the consultant to find the browser window
+     * and click Submit there. That is still available and still works — this
+     * exists because reviewing the answers and sending the application in two
+     * different windows is how people submit the wrong one.
+     *
+     * It refuses if the board never got as far as offering a submit button.
+     */
+    async submitFromApp(itemId) {
+        const waiting = this.store.get('awaitingReview') ?? [];
+        const entry = waiting.find((w) => w.itemId === itemId);
+        if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
+
+        const board = BOARDS[entry.board];
+        if (!board?.apply?.submit) {
+            return {
+                ok: false,
+                error: 'This application has to be submitted in the browser window — '
+                    + 'this board has no submit button the app can press.',
+            };
+        }
+
+        const page = await this.sessions.page(entry.board);
+        this.activity(entry.board, 'SUBMITTING', `Submitting ${entry.company} — you asked for this`);
+        const pressed = await pressSubmit(page, board);
+        if (!pressed.ok) {
+            this.activity(entry.board, 'ERROR', `${entry.company}: ${pressed.error}`);
+            return pressed;
+        }
+        this.activity(entry.board, 'SUBMITTED', `${entry.company}: ${pressed.detail}`);
+
+        // Record it exactly as it happened, including whether the board
+        // actually confirmed. Then remove it from the review list.
+        const reported = await this.reportSubmitted(itemId, {
+            confirmed: pressed.confirmed,
+            detail: pressed.detail,
+        });
+        return { ...reported, ...pressed };
     }
 
     /** Drop a filled form the consultant decided not to send. */

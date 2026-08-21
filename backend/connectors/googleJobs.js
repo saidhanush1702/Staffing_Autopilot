@@ -161,6 +161,39 @@ export const detectSource = (result) => {
 };
 
 /**
+ * A URL that a browser can actually navigate to.
+ *
+ * ── WHY THIS IS NEEDED ────────────────────────────────────────────────
+ *
+ * Google builds a job URL's slug from the posting's title, and a title with a
+ * line break in it produces a slug containing a literal `%0A`. One arrived in
+ * production looking like this:
+ *
+ *   .../jobs/view/react-js-developer%0Ainformation-technology-at-vrsamadhan-4204753794
+ *
+ * Playwright refuses to navigate to it, so the item fails every time it is
+ * tried and the consultant never sees that job. `tidy()` cannot help — by the
+ * time we see it the whitespace is already percent-encoded, so it is no longer
+ * whitespace to any string function.
+ *
+ * Stripping the escapes is safe on every board we handle: the slug is
+ * decorative and the posting is identified by the numeric id at the end. A
+ * slightly odd-looking slug that loads beats a tidy one that 404s.
+ */
+const sanitiseUrl = (raw) => {
+    if (!raw) return null;
+    const cleaned = String(raw)
+        .replace(/%0A|%0D|%09/gi, '')      // encoded newline, return, tab
+        .replace(/\s+/g, '');             // and any that survived unencoded
+    try {
+        // A URL we cannot parse is one the browser cannot open either.
+        return new URL(cleaned).toString();
+    } catch {
+        return null;
+    }
+};
+
+/**
  * Which system the application is actually filled on.
  *
  * Falls back to COMPANY_SITE rather than OTHER: an apply link on a host that is
@@ -383,7 +416,8 @@ export const jobResultToPosting = (result, { now = new Date() } = {}) => {
 
     // `source_url` is NOT NULL, and a posting nobody can open is not a lead.
     const { source, applyUrl } = detectSource(result);
-    if (!applyUrl) return null;
+    const safeUrl = sanitiseUrl(applyUrl);
+    if (!safeUrl) return null;
 
     const locationText = tidy(result.location);
     const workFromHome = result.detected_extensions?.work_from_home === true;
@@ -391,7 +425,7 @@ export const jobResultToPosting = (result, { now = new Date() } = {}) => {
 
     return {
         source,
-        portalType: detectPortalType(applyUrl),
+        portalType: detectPortalType(safeUrl),
         posting: {
             company,
             title,
@@ -403,7 +437,7 @@ export const jobResultToPosting = (result, { now = new Date() } = {}) => {
             isRemote: workFromHome
                 || REMOTE_RE.test(`${locationText ?? ''} ${title}`),
             description: buildDescription(result),
-            sourceUrl: applyUrl,
+            sourceUrl: safeUrl,
             workType: readWorkType(result),
             payMin: pay?.min ?? null,
             payMax: pay?.max ?? null,

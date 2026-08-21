@@ -25,6 +25,7 @@ const { BOARDS, boardForPortal } = require('../src/main/browser/boards.js');
 const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
 const { buildAnswerBook, resolveAnswer, chooseOption } = require('../src/main/browser/answers.js');
 const { fillForm } = require('../src/main/browser/filler.js');
+const { runApplyFlow, pressSubmit, isSubmit } = require('../src/main/browser/applyFlow.js');
 const { resolveBrowser } = require('../src/main/browser/engine.js');
 const { record } = require('../src/main/diagnostics.js');
 const { POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS } = require('../src/main/config.js');
@@ -558,6 +559,34 @@ check('  the question is sent to the hub for approval',
 check('  and nothing is put in front of the consultant to submit',
     engine.store.get('awaitingReview').length, 0);
 
+// A page with no application form on it is not a filled application.
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item()],
+        profile: { name: 'Mary Jane Watson', email: 'mj@example.com' },
+        approvedAnswers: [],
+    }),
+    resume: () => Promise.resolve('/tmp/cv.pdf'),
+});
+engine = engineWith(hub, fakeSessions({
+    landsOn: 'https://wellfound.com/jobs/1',
+    // What a real LinkedIn posting without Easy Apply actually offers: the
+    // board's own furniture, and nothing to apply with.
+    fields: [
+        formField({ index: 0, label: 'Search' }),
+        formField({ index: 1, tag: 'select', type: 'select', label: 'Select language', options: ['English'] }),
+    ],
+}));
+r = await engine.run();
+
+check('a page with no application form is not "filled"', r.filled, 0);
+check('  it is handed to the consultant instead', r.handedToHuman, 1);
+check('  the hub is never told it awaits review',
+    hub.calls.some((c) => c.name === 'filled'), false);
+check('  and nothing is queued for the consultant to submit',
+    engine.store.get('awaitingReview').length, 0);
+
 /* ── review and submit ────────────────────────────────────────────────── */
 
 section('review — the app records a submission, it never makes one');
@@ -587,6 +616,139 @@ check('  reporting one that is gone is refused, not retried',
 BOARDS.WELLFOUND.verified = false;
 check('the board is left unverified again', BOARDS.WELLFOUND.verified, false);
 
+
+
+/* ── multi-step apply flows ───────────────────────────────────────────── */
+
+section('apply flow — the submit button is a wall, not a step');
+
+/**
+ * A page whose application lives behind a button, like LinkedIn Easy Apply.
+ * `steps` is a list of field-sets; the last one offers Submit instead of Next.
+ */
+const wizardPage = (steps, opts = {}) => {
+    const clicked = [];
+    let step = 0;
+    let opened = false;
+
+    const control = (kind) => ({
+        count: async () => {
+            if (kind === 'open') return opts.noOpen ? 0 : 1;
+            if (kind === 'already') return opts.alreadyApplied ? 1 : 0;
+            if (kind === 'submit') return opened && step >= steps.length - 1 ? 1 : 0;
+            if (kind === 'next') return opened && step < steps.length - 1 ? 1 : 0;
+            if (kind === 'dialog') return opened ? 1 : 0;
+            return 0;
+        },
+        isVisible: async () => (await control(kind).count()) > 0,
+        innerText: async () => ({ open: 'Easy Apply', next: 'Next', submit: 'Submit application', already: 'Applied' }[kind] ?? ''),
+        getAttribute: async () => null,
+        click: async () => {
+            clicked.push(kind);
+            if (kind === 'open') opened = true;
+            if (kind === 'next') step += 1;
+        },
+        // The filler's vocabulary for a text box. Recorded rather than acted on
+        // — what this fake is for is proving which BUTTONS get clicked.
+        fill: async () => {},
+        pressSequentially: async () => {},
+        selectOption: async () => {},
+        check: async () => {},
+        setInputFiles: async () => {},
+    });
+
+    const kindOf = (sel) => {
+        if (sel.includes('OPEN')) return 'open';
+        if (sel.includes('NEXT')) return 'next';
+        if (sel.includes('SUBMIT')) return 'submit';
+        if (sel.includes('APPLIED')) return 'already';
+        return 'dialog';
+    };
+
+    return {
+        clicked,
+        currentStep: () => step,
+        url: () => opts.landsOn ?? 'https://board.test/job/1',
+        locator: (sel) => {
+            const c = control(kindOf(sel));
+            return { ...c, first: () => c, nth: () => c };
+        },
+        waitForSelector: async () => null,
+        waitForTimeout: async () => null,
+        $$eval: async () => (opened ? (steps[step] ?? []) : []),
+    };
+};
+
+const wizardBoard = {
+    name: 'TESTBOARD',
+    label: 'Test Board',
+    apply: {
+        open: 'OPEN', dialog: 'DIALOG', next: 'NEXT',
+        submit: 'SUBMIT', alreadyApplied: 'APPLIED', maxSteps: 6,
+    },
+};
+
+const wField = (over = {}) => ({
+    index: 0, tag: 'input', type: 'text', name: '', label: '', groupLabel: '',
+    required: false, disabled: false, visible: true, options: [], ...over,
+});
+
+const wizProfile = { name: 'Mary Jane Watson', email: 'mj@example.com', phone: '+1 555 0100' };
+const NOPAUSE = { minMs: 0, maxMs: 0, betweenFieldsMs: [0, 0] };
+
+let wiz = wizardPage([
+    [wField({ index: 0, label: 'Email' })],
+    [wField({ index: 0, label: 'Phone number' })],
+    [wField({ index: 0, label: 'First name' })],
+]);
+let flow = await runApplyFlow(wiz, wizardBoard,
+    { profile: wizProfile, approvedAnswers: [], typing: NOPAUSE });
+
+check('the wizard is opened', wiz.clicked[0], 'open');
+check('it walks every step', wiz.currentStep(), 2);
+check('it stops ready to submit', flow.outcome, 'READY_TO_SUBMIT');
+// The assertion the whole design rests on.
+check('it never clicked submit', wiz.clicked.includes('submit'), false);
+check('answers from every step are collected', flow.qa.length, 3);
+
+// A board that says the consultant already applied.
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]], { alreadyApplied: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('an existing application is recognised', flow.outcome, 'ALREADY_APPLIED');
+check('  and nothing is clicked at all', wiz.clicked.length, 0);
+
+// No apply button: the job is applied for somewhere else.
+wiz = wizardPage([[]], { noOpen: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a page with no apply button is handed over', flow.outcome, 'NO_APPLY_FLOW');
+
+// A required question nobody has answered stops the wizard mid-way.
+wiz = wizardPage([
+    [wField({ index: 0, label: 'What is your expected rate?', required: true })],
+    [wField({ index: 0, label: 'Email' })],
+]);
+flow = await runApplyFlow(wiz, wizardBoard,
+    { profile: wizProfile, approvedAnswers: [], typing: NOPAUSE });
+check('an unanswered required question stops the wizard', flow.outcome, 'INCOMPLETE');
+check('  it did not press next past it', wiz.currentStep(), 0);
+
+section('apply flow — submitting is a separate, deliberate act');
+
+// The guard that does not depend on selectors being right.
+check('a control reading "Submit application" is refused',
+    await isSubmit({ innerText: async () => 'Submit application', getAttribute: async () => null }), true);
+check('a control reading "Next" is not',
+    await isSubmit({ innerText: async () => 'Next', getAttribute: async () => null }), false);
+check('an aria-label alone is enough to refuse',
+    await isSubmit({ innerText: async () => '', getAttribute: async () => 'Submit application' }), true);
+
+// pressSubmit is the one function that clicks it, and only when asked.
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]]);
+await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [], typing: NOPAUSE });
+check('after filling, submit still has not been clicked', wiz.clicked.includes('submit'), false);
+const pressed = await pressSubmit(wiz, wizardBoard);
+check('pressSubmit clicks it', pressed.ok, true);
+check('  and only then does the click appear', wiz.clicked.includes('submit'), true);
 
 /* ── packaging concerns ───────────────────────────────────────────────── */
 

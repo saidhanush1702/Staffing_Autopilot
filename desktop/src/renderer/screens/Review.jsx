@@ -7,13 +7,19 @@ import { useState } from 'react';
  * fills the form and stops. A person reads it and presses submit on the portal
  * themselves.
  *
- * ── WHY THE BUTTON SAYS "I SUBMITTED IT" ──────────────────────────────
+ * ── TWO SUBMIT BUTTONS, AND THEY DO DIFFERENT THINGS ──────────────────
  *
- * It is past tense on purpose. The button does not send the application — it
- * records that the consultant already did, so the hub's record matches what the
- * employer actually received. Naming it "Submit" would describe something this
- * app cannot do: there is no submit channel in the preload bridge or the main
- * process for it to call.
+ *   "I already submitted it"     records what the consultant did in the browser
+ *   "Submit this application"    presses the portal's submit button from here
+ *
+ * The second one exists because the owner asked for it, and it is the single
+ * exception to "the machine never clicks submit". The distinction that survives
+ * is the one that matters: no application is ever sent without a person reading
+ * the answers below and choosing to send it. The app never reaches either
+ * button on its own — the work loop stops at this screen and waits.
+ *
+ * Both are offered because reviewing the answers in one window and pressing
+ * submit in another is how people send the wrong application.
  *
  * ── WHY EVERY ANSWER IS SHOWN ─────────────────────────────────────────
  *
@@ -113,15 +119,34 @@ const Application = ({ entry, onRefresh }) => {
                 >
                     {busy === 'discard' ? 'Removing…' : 'Do not send this'}
                 </button>
-                <button
-                    type="button"
-                    className="primary"
-                    disabled={busy !== ''}
-                    onClick={() => act('submitted',
-                        () => window.smartapply.markSubmitted(entry.itemId))}
-                >
-                    {busy === 'submitted' ? 'Recording…' : 'I submitted it'}
-                </button>
+
+                <span style={{ display: 'flex', gap: 8 }}>
+                    {/* For the consultant who went to the browser and pressed
+                        submit there. It records; it does not send. */}
+                    <button
+                        type="button"
+                        className="secondary"
+                        disabled={busy !== ''}
+                        onClick={() => act('recorded',
+                            () => window.smartapply.markSubmitted(entry.itemId))}
+                    >
+                        {busy === 'recorded' ? 'Recording…' : 'I already submitted it'}
+                    </button>
+
+                    {/* And for the consultant who has read the answers above and
+                        wants it sent from here. This one really does press the
+                        portal's submit button — on their instruction, never on
+                        the app's own initiative. */}
+                    <button
+                        type="button"
+                        className="primary"
+                        disabled={busy !== ''}
+                        onClick={() => act('submitting',
+                            () => window.smartapply.submitApplication(entry.itemId))}
+                    >
+                        {busy === 'submitting' ? 'Submitting…' : 'Submit this application'}
+                    </button>
+                </span>
             </div>
         </div>
     );
@@ -134,9 +159,9 @@ const Review = ({ items, onRefresh }) => {
         <>
             <h2>Ready for you to submit ({items.length})</h2>
             <p className="muted" style={{ margin: '0 0 10px' }}>
-                Each of these is filled in and waiting on the portal. Open it, read it,
-                and press submit there yourself — then tell this app you did, so your
-                recruiter sees it.
+                Each of these is filled in and stopped at the portal&rsquo;s submit step.
+                Read what was filled in, then either press Submit here, or open the
+                browser window and press it there — nothing is sent until you do.
             </p>
             {items.map((entry) => (
                 <Application key={entry.itemId} entry={entry} onRefresh={onRefresh} />

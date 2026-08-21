@@ -39,7 +39,9 @@ const pause = (min, max) => new Promise((r) => { setTimeout(r, rand(min, max)); 
  * Runs in the browser, and deliberately returns plain data rather than handles,
  * so every decision happens in Node where it can be tested.
  */
-const describeFields = (page) => page.$$eval(FIELD_SELECTOR, (nodes) => {
+const describeFields = (page, root = null) => page.$$eval(
+    root ? `${root} ${FIELD_SELECTOR.split(', ').join(`, ${root} `)}` : FIELD_SELECTOR,
+    (nodes) => {
     const text = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
 
     const labelFor = (el) => {
@@ -95,14 +97,24 @@ const describeFields = (page) => page.$$eval(FIELD_SELECTOR, (nodes) => {
             required: el.required || el.getAttribute('aria-required') === 'true'
                 || /\*/.test(label),
             disabled: el.disabled || el.readOnly,
+            // Already answered by the portal itself. LinkedIn pre-fills name,
+            // phone and email from the signed-in account, and those values are
+            // the account holder's own — better than anything we would type.
+            hasValue: Boolean(
+                tag === 'select'
+                    ? (el.value && el.value !== '' && el.selectedIndex > -1
+                       && (el.options[el.selectedIndex]?.textContent || '').trim())
+                    : (el.value || '').trim(),
+            ),
             visible: style.display !== 'none' && style.visibility !== 'hidden'
                 && el.offsetParent !== null,
             options: tag === 'select'
                 ? Array.from(el.options).map((o) => (o.textContent || '').trim())
                 : [],
         };
-    });
-});
+        });
+    },
+);
 
 /** Controls that carry no question and must never be touched. */
 const IGNORED_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
@@ -112,10 +124,19 @@ const IGNORED_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
  *
  * @returns {{qa: Array, unknown: Array, attachedResume: boolean, refusals: Array}}
  */
-const fillForm = async (page, { profile, approvedAnswers, resumePath, typing = TYPING }) => {
+const fillForm = async (page, {
+    profile, approvedAnswers, resumePath, typing = TYPING, root = null,
+}) => {
     const book = buildAnswerBook({ profile, approvedAnswers });
-    const fields = await describeFields(page);
-    const locators = page.locator(FIELD_SELECTOR);
+    // `root` scopes everything to one container. It matters for any board that
+    // applies through a dialog: the page behind it still holds a search box and
+    // a language picker, and without scoping those are read as part of the
+    // application — which is exactly what a real LinkedIn job page offers.
+    const scoped = root
+        ? `${root} ${FIELD_SELECTOR.split(', ').join(`, ${root} `)}`
+        : FIELD_SELECTOR;
+    const fields = await describeFields(page, root);
+    const locators = page.locator(scoped);
 
     const qa = [];
     const unknown = [];
@@ -156,6 +177,30 @@ const fillForm = async (page, { profile, approvedAnswers, resumePath, typing = T
 
         const question = f.type === 'radio' ? (f.groupLabel || f.label) : f.label;
         if (!question) continue;
+
+        // ── LEAVE WHAT IS ALREADY THERE ───────────────────────────────
+        //
+        // A portal that has pre-filled a field knows something we do not: on
+        // LinkedIn the name, phone and email come from the signed-in account,
+        // and its "Email address" is a dropdown whose only option is that
+        // account's address. Typing over it is at best redundant and at worst
+        // impossible — the old behaviour matched our profile's email against
+        // that single option, failed, called it an unanswered REQUIRED
+        // question, and parked the application permanently.
+        //
+        // So a field that already has a value is recorded as answered and left
+        // alone. The consultant still sees it on the review screen, marked as
+        // the portal's own, and can change it in the browser.
+        if (f.hasValue) {
+            qa.push({
+                questionText: question,
+                answerText: '[already filled in by the portal]',
+                fieldType: f.type,
+                source: 'PORTAL',
+                questionId: null,
+            });
+            continue;
+        }
 
         if (f.type === 'radio') {
             if (answeredGroups.has(f.name)) continue;

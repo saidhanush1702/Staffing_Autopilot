@@ -24,6 +24,12 @@ const fs = require('node:fs');
 
 const NAV_TIMEOUT = 45_000;
 
+/** How long to let a client-side redirect finish before believing the URL. */
+const SETTLE_MS = 2_500;
+
+/** A path a board sends you to when it wants you to sign in. */
+const LOOKS_LIKE_LOGIN = /\/(login|signin|sign-in|sign_in|auth|authwall)(\/|$)/i;
+
 class BrowserSessions {
     /**
      * @param chromium injected rather than required at module load, so the
@@ -97,16 +103,36 @@ class BrowserSessions {
     /**
      * Is this board signed in?
      *
-     * Two-sided on purpose: something that only exists when signed IN, and
-     * something that only exists when signed OUT. A single positive check
-     * reports success on a cookie banner or an interstitial that happens to
-     * contain the selector.
+     * ── THE BOARD ITSELF IS THE BEST WITNESS ──────────────────────────
+     *
+     * This used to be selectors only, and every one of them was wrong. A
+     * consultant with three live sessions was told all three had expired,
+     * because `#global-nav`, `[data-test="AccountMenu"]` and
+     * `a[href*="/user/logout"]` were written from guesswork and never checked
+     * against a real page.
+     *
+     * So the primary signal is no longer a guess about markup. It is what the
+     * board DOES: ask for a page that needs a session, and see whether it
+     * bounces you to a login screen. That is behaviour every board implements,
+     * it needs no knowledge of anyone's HTML, and it does not rot when they
+     * redesign.
+     *
+     * Selectors remain as an optional second opinion for boards that serve
+     * their signed-out page without redirecting — BuiltIn does exactly that,
+     * which is why it still declares one.
      */
     async isSignedIn(boardDef) {
         const page = await this.page(boardDef.name);
-        const { present = [], absent = [] } = boardDef.signedIn ?? {};
-        if (present.length === 0 && absent.length === 0) return true;
+        const url = boardDef.sessionProbeUrl ?? boardDef.loginUrl;
 
+        await page.goto(url, { waitUntil: 'domcontentloaded' });
+        // Boards redirect from JavaScript as often as from the server, so the
+        // URL right after domcontentloaded is not yet the final answer.
+        await page.waitForTimeout(SETTLE_MS);
+
+        if (LOOKS_LIKE_LOGIN.test(new URL(page.url()).pathname)) return false;
+
+        const { present = [], absent = [] } = boardDef.signedIn ?? {};
         for (const sel of absent) {
             if (await page.locator(sel).count() > 0) return false;
         }
@@ -147,4 +173,4 @@ class BrowserSessions {
     }
 }
 
-module.exports = { BrowserSessions, NAV_TIMEOUT };
+module.exports = { BrowserSessions, NAV_TIMEOUT, LOOKS_LIKE_LOGIN, SETTLE_MS };

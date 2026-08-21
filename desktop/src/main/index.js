@@ -73,6 +73,53 @@ const setStatus = (state, detail = '') => {
     win?.webContents.send('status', { ...status, ...snapshot() });
 };
 
+/**
+ * ── ONE STORY PER BOARD ───────────────────────────────────────────────
+ *
+ * A single flat log interleaves three boards into something nobody can follow.
+ * These keep each board's own account of what happened: its current state, the
+ * job it is on, and the last few things it did.
+ *
+ * In memory rather than on disk: it is a running commentary, and a consultant
+ * who restarts the app wants to know what is happening NOW, not what happened
+ * before the restart. The durable record is the hub's.
+ */
+const BOARD_LOG_MAX = 40;
+const boardActivity = new Map();
+
+const recordActivity = (board, state, message) => {
+    const entry = boardActivity.get(board) ?? { board, state: 'IDLE', lines: [] };
+    entry.state = state;
+    entry.at = new Date().toISOString();
+    entry.lines = [...entry.lines, { at: entry.at, state, message }].slice(-BOARD_LOG_MAX);
+    boardActivity.set(board, entry);
+    win?.webContents.send('status', { ...status, ...snapshot() });
+};
+
+/** Every board we know about, whether or not it has done anything yet. */
+const boardsForDisplay = () => {
+    const { BOARDS } = require('./browser/boards.js');
+    const stalled = new Map((store?.get('pausedBoards') ?? []).map((b) => [b.board, b]));
+
+    return Object.values(BOARDS).map((b) => {
+        const seen = boardActivity.get(b.name);
+        const hold = stalled.get(b.name);
+        return {
+            board: b.name,
+            label: b.label,
+            // A hold reported by the hub outranks whatever we last did locally:
+            // it is the reason nothing is happening.
+            state: hold
+                ? (hold.state === 'BOT_CHECK' ? 'STOPPED' : 'SIGNED_OUT')
+                : (seen?.state ?? 'IDLE'),
+            canFill: Boolean(b.verified),
+            until: hold?.until ?? null,
+            at: seen?.at ?? null,
+            lines: seen?.lines ?? [],
+        };
+    });
+};
+
 const snapshot = () => ({
     consultant: store?.get('consultant') ?? null,
     paused: store?.get('paused') ?? false,
@@ -82,6 +129,7 @@ const snapshot = () => ({
     nextCycleAt: store?.get('nextCycleAt') ?? null,
     cycleLog: (store?.get('cycleLog') ?? []).slice(-10).reverse(),
     awaitingReview: store?.get('awaitingReview') ?? [],
+    boards: boardsForDisplay(),
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
 });
@@ -308,6 +356,17 @@ const registerIpc = () => {
 
     ipcMain.handle('openExternal', (_e, url) => { shell.openExternal(url); return { ok: true }; });
 
+    // What this consultant has already applied to, grouped by board. Fetched on
+    // demand rather than held in the snapshot: it is history, it does not change
+    // between pushes, and it can be long.
+    ipcMain.handle('applications', async () => {
+        try {
+            return { ok: true, ...(await hub.applications()) };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
     /* ── review and submit ─────────────────────────────────────────────
      *
      * R-02 lives at this boundary. There is a channel that OPENS a filled form
@@ -325,9 +384,24 @@ const registerIpc = () => {
         }
     });
 
+    // "I already submitted it myself, in the browser."
     ipcMain.handle('markSubmitted', async (_e, itemId) => {
         try {
             const res = await engine.reportSubmitted(itemId);
+            setStatus(status.state);
+            return res;
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    // "Submit it for me, now, from here." The consultant has read the answers
+    // on the review screen and pressed the button; this performs the click they
+    // asked for. It is the only path in the app that presses a portal's submit
+    // control (R-02 as amended by the owner).
+    ipcMain.handle('submitApplication', async (_e, itemId) => {
+        try {
+            const res = await engine.submitFromApp(itemId);
             setStatus(status.state);
             return res;
         } catch (err) {
@@ -385,6 +459,7 @@ app.whenReady().then(() => {
     engine = new CycleEngine({
         hub, sessions, store, outbox, paths,
         log: (m) => { win?.webContents.send('log', m); },
+        activity: recordActivity,
     });
 
     // A 1×1 transparent image: a real icon is a D7 asset, and an empty tray is

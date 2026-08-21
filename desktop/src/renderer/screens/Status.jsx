@@ -1,4 +1,6 @@
 import Review from './Review.jsx';
+import Boards from './Boards.jsx';
+import Applied from './Applied.jsx';
 
 const TONE = {
     IDLE: ['idle', 'Idle'],
@@ -83,6 +85,9 @@ const Status = ({ snap, log, onRefresh }) => {
             {/* The one thing on this screen that is actually waiting on a person. */}
             <Review items={snap.awaitingReview} onRefresh={onRefresh} />
 
+            {/* Then what the app is doing, board by board. */}
+            <Boards boards={snap.boards} />
+
             <h2>Today</h2>
             <div className="card grid">
                 <div>
@@ -136,6 +141,9 @@ const Status = ({ snap, log, onRefresh }) => {
                     ))}
                 </>
             )}
+
+            {/* And finally what has already gone out, per board. */}
+            <Applied />
 
             {log.length > 0 && (
                 <>

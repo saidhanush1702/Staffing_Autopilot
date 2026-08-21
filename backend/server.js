@@ -74,6 +74,7 @@ import {
     leaseItem, reportFilled, reportParked, reportSkipped, reclassify,
     reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
     listDevices, issueDevice, issueDeviceSchema, revokeDevice, deviceResume,
+    deviceApplications,
     revealActivationCode,
 } from './controllers/deviceController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
@@ -356,6 +357,9 @@ app.post('/api/device/activate', [validate(activateSchema)], activate);
 
 app.get('/api/device/heartbeat', [verifyDevice], heartbeat);
 app.get('/api/device/queue', [verifyDevice], deviceQueue);
+// What this consultant has already applied to, so the app can show its own
+// history rather than forgetting each application the moment it is submitted.
+app.get('/api/device/applications', [verifyDevice], deviceApplications);
 
 // Every state change goes through the shared queue state machine, so the app
 // cannot reach a state the portal would refuse.
