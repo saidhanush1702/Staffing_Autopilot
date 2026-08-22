@@ -102,7 +102,91 @@ const buildAnswerBook = ({ profile, approvedAnswers = [] } = {}) => {
         }
     }
 
-    return { profileByKey, answersByKey };
+    return { profileByKey, answersByKey, values };
+};
+
+/**
+ * ── WHEN AN EXACT PHRASE IS NOT ENOUGH ────────────────────────────────
+ *
+ * The phrase list above is a whitelist of complete labels, and real forms do
+ * not cooperate. A live LinkedIn application asked for "Mobile phone number"
+ * and "Enter city or location"; both are unmistakable to a person and neither
+ * was in the list, so a required field went unanswered and the application
+ * stalled. Adding those two strings would have fixed those two forms.
+ *
+ * So profile fields — and ONLY profile fields — also match on distinctive
+ * words, with explicit exclusions for the traps:
+ *
+ *   "Phone country code"  contains "phone", and is NOT a phone number. Typing
+ *                         one into it is the exact mistake loose matching is
+ *                         supposed to be too dangerous to risk.
+ *   "Name of your current employer"  contains "name", and is not the person's.
+ *
+ * Approved ANSWERS still match on the whole label and nothing else. The
+ * difference is what the two things are: a profile field is a fact about the
+ * person that is true whatever the question, while an approved answer was
+ * reviewed against one specific question and means nothing away from it.
+ */
+const PROFILE_RULES = [
+    { field: 'firstName', any: ['first name', 'given name', 'forename'], none: [] },
+    { field: 'lastName', any: ['last name', 'surname', 'family name'], none: [] },
+    {
+        field: 'email',
+        any: ['email', 'e mail'],
+        none: ['confirm', 'verify', 'alternate', 'secondary'],
+    },
+    {
+        field: 'phone',
+        any: ['phone', 'mobile', 'telephone', 'cell'],
+        // A country code, an extension and a "type" dropdown all contain the
+        // word phone and none of them takes a phone number.
+        none: ['country', 'code', 'extension', 'ext', 'type'],
+    },
+    {
+        field: 'city',
+        any: ['city', 'town', 'location'],
+        none: ['state', 'country', 'postcode', 'zip', 'relocat'],
+    },
+    { field: 'state', any: ['state', 'province', 'region'], none: ['city', 'united states'] },
+    { field: 'linkedin', any: ['linkedin'], none: [] },
+    {
+        field: 'workAuth',
+        any: ['work authorization', 'work authorisation', 'work status', 'visa status'],
+        none: [],
+    },
+    {
+        field: 'fullName',
+        any: ['name'],
+        // Only when nothing more specific has already claimed it, and never for
+        // somebody else's name.
+        none: ['first', 'last', 'sur', 'family', 'given', 'employer', 'company',
+            'school', 'university', 'reference', 'user', 'file'],
+    },
+];
+
+/** Every whole word in a normalised label. */
+const wordsOf = (key) => new Set(key.split(' '));
+
+/**
+ * Match a label to a profile field by its distinctive words.
+ *
+ * Word-boundary matched against the normalised label, so "code" excludes
+ * "Phone country code" without also excluding a label that merely contains
+ * those letters inside another word.
+ */
+const ruleMatch = (key, values) => {
+    const words = wordsOf(key);
+    const has = (phrase) => (phrase.includes(' ')
+        ? key.includes(phrase)
+        : words.has(phrase));
+
+    for (const rule of PROFILE_RULES) {
+        if (!values[rule.field]) continue;
+        if (!rule.any.some(has)) continue;
+        if (rule.none.some(has)) continue;
+        return values[rule.field];
+    }
+    return null;
 };
 
 /**
@@ -126,6 +210,11 @@ const resolveAnswer = (label, book) => {
 
     const fromProfile = book.profileByKey.get(key);
     if (fromProfile) return { value: fromProfile, source: 'PROFILE', questionId: null };
+
+    // Exact phrases first, distinctive words second — so a label the list
+    // already knows can never be re-decided by the looser pass.
+    const byRule = ruleMatch(key, book.values);
+    if (byRule) return { value: byRule, source: 'PROFILE', questionId: null };
 
     return null;
 };

@@ -60,6 +60,7 @@ import {
 } from './controllers/questionController.js';
 import {
     triggerRun, listRuns, listSources, getSchedule, updateSchedule, scheduleSchema,
+    previewQueries,
 } from './controllers/discoveryController.js';
 import {
     listPostings, getPosting, listConsultantQueue, updateSource, toggleSourceSchema,
@@ -305,6 +306,9 @@ app.patch('/api/management/questions/:id',
 // consultant's queue is empty should be able to see that a source is failing.
 
 app.post('/api/management/discovery/run', [verifyToken, isOrgAdmin], triggerRun);
+// What a run would ask the provider for, before spending anything on it.
+app.get('/api/management/discovery/preview',
+    [verifyToken, isOrgAdmin], previewQueries);
 app.get('/api/management/discovery/runs', [verifyToken, isManagement], listRuns);
 app.get('/api/management/discovery/sources', [verifyToken, isManagement], listSources);
 // Enabling a board is when this system starts reaching out to the open web,

@@ -22,16 +22,18 @@
  *
  * ── WHERE THE LIMITS LIVE ─────────────────────────────────────────────
  *
- * One application at a time (R-19), LinkedIn's own lower ceiling counted per
- * DAY and its full stop on any bot-check (R-22), and working files deleted at
- * both ends of every pass (R-20). All of it is here, in the engine, so that no
- * board recipe can forget one of them.
+ * One application at a time (R-19), a full stop on any board that shows a
+ * bot-check (R-22), and working files deleted at both ends of every pass
+ * (R-20). All of it is here, in the engine, so that no board recipe can forget
+ * one of them.
  *
- * There is no daily application cap. Every job that reaches the queue is worked
- * — filled here if the board is one we handle, handed to the consultant if not.
- * What remains is `is_paused`, which stops a consultant entirely, and the
- * per-board ceiling, which exists to protect the ACCOUNT rather than to ration
- * applications.
+ * ── NOTHING IS RATIONED ANY MORE ──────────────────────────────────────
+ *
+ * There is no daily application cap and no per-board ceiling. Every job that
+ * reaches the queue is worked — filled here if the board is one we handle,
+ * handed to the consultant if not. Two controls remain, and neither is a quota:
+ * `is_paused` stops a consultant entirely, and a bot-check stops one board for
+ * the day because the board has told us it noticed.
  *
  * ── AND WHAT THE ENGINE WILL NOT DO ───────────────────────────────────
  *
@@ -167,21 +169,11 @@ class CycleEngine {
                     continue;
                 }
 
-                // R-22, counted against the day rather than the pass.
-                const usedOnBoard = this.store.boardUsedToday(board.name);
-                if (board.maxPerDay && usedOnBoard >= board.maxPerDay) {
-                    this.log(`${board.label} has taken its ${board.maxPerDay} for today`);
-                    continue;
-                }
-
                 try {
                     const outcome = await this.#workOne(
                         item, board, stats, { approvedAnswers, profile },
                     );
-                    if (outcome === 'counted') {
-                        worked += 1;
-                        this.store.countBoardUse(board.name);
-                    }
+                    if (outcome === 'counted') worked += 1;
                     // R-19: never parallel, and a real gap between applications.
                     await humanPause(1500, 4000);
                 } catch (err) {

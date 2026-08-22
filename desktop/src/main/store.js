@@ -52,10 +52,6 @@ const EMPTY = {
     // submit themselves. Held locally because the Q&A list has to survive a
     // restart — it is what gets reported to the hub after they submit.
     awaitingReview: [],
-    // Per-board counts for TODAY, with the date they belong to. The date is
-    // stored alongside so a machine left running overnight rolls over on its
-    // own rather than carrying yesterday's totals forward.
-    boardDay: { date: null, counts: {} },
 };
 
 class Store {
@@ -76,30 +72,6 @@ class Store {
     appendCycle(entry) {
         const cycleLog = [...(this.data.cycleLog ?? []), entry].slice(-50);
         return this.set({ cycleLog });
-    }
-
-    /**
-     * Count one application against a board for today, rolling the day over
-     * when the date has changed.
-     *
-     * The app works continuously rather than in scheduled cycles, so a
-     * per-cycle ceiling would mean "per poll" and multiply without limit. A
-     * ceiling only means anything against a fixed window, and the window that
-     * matters to a job board is a day.
-     */
-    countBoardUse(board, today = new Date().toISOString().slice(0, 10)) {
-        const current = this.data.boardDay ?? { date: null, counts: {} };
-        const counts = current.date === today ? { ...current.counts } : {};
-        counts[board] = (counts[board] ?? 0) + 1;
-        this.set({ boardDay: { date: today, counts } });
-        return counts[board];
-    }
-
-    /** How many applications this board has taken today. */
-    boardUsedToday(board, today = new Date().toISOString().slice(0, 10)) {
-        const current = this.data.boardDay ?? { date: null, counts: {} };
-        if (current.date !== today) return 0;
-        return current.counts[board] ?? 0;
     }
 
     /**

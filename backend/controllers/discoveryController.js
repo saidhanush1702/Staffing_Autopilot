@@ -463,6 +463,83 @@ export const promoteToReady = async (orgId) => {
     return { promoted, heldByCap: 0 };
 };
 
+/**
+ * GET /api/management/discovery/preview — what a run would actually ask for.
+ *
+ * ── WHY THIS EXISTS ───────────────────────────────────────────────────
+ *
+ * Every discovery run spends real money, and until now the only way to know
+ * what it was about to search for was to read the source. An admin could see
+ * the cost ("up to 12 credits") without being able to see what those credits
+ * would buy — which titles, which location, which recency window.
+ *
+ * So this reports the exact request a run would build, from the same functions
+ * the run uses. It is not a description of the intent; it is the plan itself,
+ * so it cannot drift away from what really happens.
+ *
+ * It never calls the provider and never spends a credit.
+ */
+export const previewQueries = async (req, res, next) => {
+    try {
+        const orgId = req.user.orgId;
+        const settings = await loadOrgSettings(orgId);
+        const cfg = providerConfig();
+
+        const consultants = await loadMatchableConsultants(orgId);
+        const queries = buildQueries(consultants, cfg.maxQueries);
+        const dateWindow = settings?.discovery_date_posted ?? 'day';
+
+        // Where each search term came from — the question an admin asks next is
+        // always "why are we searching for that?"
+        const titleOwners = new Map();
+        for (const c of consultants) {
+            for (const t of c.criteria.jobTitles) {
+                const key = t.toLowerCase();
+                if (!titleOwners.has(key)) titleOwners.set(key, []);
+                titleOwners.get(key).push(c.name);
+            }
+        }
+
+        const everyTitle = [...titleOwners.keys()];
+        const chosen = new Set(queries.map((q) => q.q));
+
+        return res.json({
+            provider: { name: cfg.name, label: cfg.label, engine: 'google_jobs' },
+            // Exactly the parameters buildUrl() sets, minus the key, which
+            // never leaves the environment.
+            parameters: {
+                engine: 'google_jobs',
+                location: queries[0]?.l || '(none — a nationwide search)',
+                gl: cfg.gl,
+                hl: cfg.hl,
+                dateWindow,
+                pagesPerTerm: cfg.maxPages,
+                maxTerms: cfg.maxQueries,
+                maxCallsPerRun: cfg.maxCallsPerRun,
+                apiKey: '(held in the environment, never sent to this screen)',
+            },
+            queries: queries.map((q) => ({
+                q: q.q,
+                location: q.l || null,
+                wantedBy: titleOwners.get(q.q) ?? [],
+            })),
+            // The titles that did NOT make the cut, so a recruiter can see why a
+            // consultant's criteria produced nothing.
+            droppedTitles: everyTitle
+                .filter((t) => !chosen.has(t))
+                .map((t) => ({ title: t, wantedBy: titleOwners.get(t) ?? [] })),
+            consultants: consultants.map((c) => ({
+                name: c.name,
+                titles: c.criteria.jobTitles,
+                locations: c.criteria.locations,
+            })),
+            estimatedCredits: queries.length * cfg.maxPages,
+        });
+    } catch (err) {
+        return next(err);
+    }
+};
+
 /* ── the run ──────────────────────────────────────────────────────────── */
 
 /**

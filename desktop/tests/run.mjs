@@ -25,7 +25,10 @@ const { BOARDS, boardForPortal } = require('../src/main/browser/boards.js');
 const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
 const { buildAnswerBook, resolveAnswer, chooseOption } = require('../src/main/browser/answers.js');
 const { fillForm } = require('../src/main/browser/filler.js');
-const { runApplyFlow, pressSubmit, isSubmit } = require('../src/main/browser/applyFlow.js');
+const {
+    runApplyFlow, pressSubmit, isSubmit,
+    UPLOAD_WORDS: UPLOAD_PATTERN, RESUME_WORDS: RESUME_PATTERN,
+} = require('../src/main/browser/applyFlow.js');
 const { resolveBrowser } = require('../src/main/browser/engine.js');
 const { record } = require('../src/main/diagnostics.js');
 const { POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS } = require('../src/main/config.js');
@@ -75,8 +78,17 @@ const fakeSessions = (opts = {}) => {
         page: () => Promise.resolve({
             url: () => opts.landsOn ?? 'https://wellfound.com/jobs/1',
             bringToFront: () => Promise.resolve(),
+            waitForSelector: async () => null,
+            waitForTimeout: async () => null,
             $$eval: async () => opts.fields ?? [],
             locator: () => ({
+                // An apply flow asks these before anything else. Answering
+                // "nothing here" makes a board with a recipe behave like one
+                // whose application lives elsewhere, which is what these
+                // cycle-level tests are about.
+                count: async () => 0,
+                first() { return this; },
+                isVisible: async () => false,
                 nth: () => ({
                     click: async () => {},
                     fill: async () => {},
@@ -115,13 +127,35 @@ const engineWith = (hub, sessions, over = {}) => {
 section('board registry');
 check('four boards known', Object.keys(BOARDS).sort(),
     ['BUILTIN', 'CRUNCHBOARD', 'LINKEDIN', 'WELLFOUND']);
-// Load-bearing: an unverified recipe must never fill a real form.
-check('every recipe is still unverified',
-    Object.values(BOARDS).every((b) => b.verified === false), true);
-check('LinkedIn has its own lower ceiling, per DAY (R-22)', BOARDS.LINKEDIN.maxPerDay, 5);
-check('  and no board still carries a per-pass ceiling',
-    Object.values(BOARDS).some((b) => 'maxPerCycle' in b), false);
+// Load-bearing: an unverified recipe must never fill a real form. LinkedIn was
+// switched on by the owner on partial evidence; the rest stay off until someone
+// has watched them fill a real application.
+check('only LinkedIn is switched on',
+    Object.values(BOARDS).filter((b) => b.verified).map((b) => b.name), ['LINKEDIN']);
+check('  and it is the only board with an apply recipe',
+    Object.values(BOARDS).filter((b) => b.apply).map((b) => b.name), ['LINKEDIN']);
+// Volume limits are gone by decision: no board rations applications any more.
+check('no board carries a volume ceiling',
+    Object.values(BOARDS).some((b) => 'maxPerDay' in b || 'maxPerCycle' in b), false);
+// The reactive half of R-22 stays — a board that challenges us is not a quota.
+check('LinkedIn still stops on a bot-check',
+    BOARDS.LINKEDIN.botCheck.length > 0, true);
 check('an ATS portal maps to no board', boardForPortal('GREENHOUSE'), null);
+
+// These are the values read off a live Easy Apply flow. Pinning them catches
+// the failure that actually happened: a second `apply:` key was left in the
+// object literal by an interrupted edit, JavaScript kept the LAST one, and the
+// engine silently ran the old guessed selectors while the file appeared to
+// contain the corrected ones.
+check('LinkedIn opens Easy Apply by aria-label, never by class',
+    BOARDS.LINKEDIN.apply.open, 'button[aria-label*="Easy Apply" i]');
+check('  and scopes to the sdui screen, not a dialog',
+    BOARDS.LINKEDIN.apply.dialog, '[data-sdui-screen*="jobs.easy"]');
+check('  no LinkedIn selector keys off a hashed class',
+    Object.values(BOARDS.LINKEDIN.apply)
+        .filter((v) => typeof v === 'string')
+        .some((v) => /\.[a-z]+-|class=/.test(v) && !v.includes('aria-label')),
+    false);
 check('a board portal maps to its board', boardForPortal('BUILTIN').label, 'Built In');
 
 /* ── polling, not scheduling ──────────────────────────────────────────── */
@@ -168,24 +202,20 @@ r = await engineWith(fakeHub({
 }), fakeSessions()).run();
 check('a heartbeat without cap fields works normally', r.opened, 1);
 
-section('cycle — LinkedIn is capped tighter than the rest (R-22)');
+section('cycle — LinkedIn is not rationed either');
 
+// This section used to assert a ceiling of five a day. The owner removed all
+// volume limits: every LinkedIn job in the queue is worked, on every pass.
 hub = fakeHub({
-    heartbeat: () => Promise.resolve({ dailyCap: 10, usedToday: 0, paused: false, pausedBoards: [] }),
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
     queue: () => Promise.resolve({
         items: Array.from({ length: 6 }, (_, i) => item({ id: `l${i}`, portal: 'LINKEDIN' })),
     }),
 });
-const linkedInEngine = engineWith(hub,
-    fakeSessions({ landsOn: 'https://www.linkedin.com/jobs/view/1' }));
-r = await linkedInEngine.run();
-check('cap of 10 but LinkedIn allows 5 a day', r.leased, 5);
-
-// The ceiling is per DAY, and the app polls continuously — so the thing that
-// actually matters is that a SECOND pass on the same day adds nothing. A
-// per-pass ceiling would quietly allow five more every ninety seconds.
-r = await linkedInEngine.run();
-check('  and a second pass the same day takes none', r.leased, 0);
+r = await engineWith(hub,
+    fakeSessions({ landsOn: 'https://www.linkedin.com/jobs/view/1' })).run();
+check('all six LinkedIn jobs are worked', r.leased, 6);
+check('  and none is held back for tomorrow', r.pulled, 6);
 
 section('cycle — a bot-check stops that board immediately (R-22)');
 
@@ -352,6 +382,22 @@ check('an unmatched question resolves to nothing',
 // The whole argument for tight matching: near-misses must NOT match.
 check('a similar-but-different question does not match',
     resolveAnswer('Are you willing to travel?', book), null);
+
+// Labels taken verbatim from a live LinkedIn Easy Apply form. Both used to
+// resolve to nothing, and the required one stalled the whole application.
+check('"Mobile phone number*" is a phone number',
+    resolveAnswer('Mobile phone number*', book).value, '+1 555 0100');
+check('"Enter city or location" is a city',
+    resolveAnswer('Enter city or location', book).value, 'Austin');
+
+// And the trap that makes loose matching dangerous: this one contains the word
+// "phone" and must NOT receive a phone number.
+check('"Phone country code" is refused', resolveAnswer('Phone country code*', book), null);
+check('an employer name is not the candidate name',
+    resolveAnswer('Name of your current employer', book), null);
+check('a confirm-email field is not filled',
+    resolveAnswer('Confirm email address', book), null);
+check('"Full name" still resolves', resolveAnswer('Full name', book).value, 'Mary Jane Watson');
 
 check('an option is chosen by exact text', chooseOption(['Yes', 'No'], 'Yes'), 'Yes');
 check('  and by a unique prefix',
@@ -648,6 +694,9 @@ const wizardPage = (steps, opts = {}) => {
             if (kind === 'open') opened = true;
             if (kind === 'next') step += 1;
         },
+        // clickSteadily settles the element before pressing it.
+        scrollIntoViewIfNeeded: async () => {},
+        page: () => ({ waitForTimeout: async () => {} }),
         // The filler's vocabulary for a text box. Recorded rather than acted on
         // — what this fake is for is proving which BUTTONS get clicked.
         fill: async () => {},
@@ -673,7 +722,14 @@ const wizardPage = (steps, opts = {}) => {
             const c = control(kindOf(sel));
             return { ...c, first: () => c, nth: () => c };
         },
-        waitForSelector: async () => null,
+        // Must answer honestly: the flow now WAITS for the apply button, so a
+        // fake that always resolves would report a button that is not there.
+        waitForSelector: async (sel) => {
+            if (await control(kindOf(sel)).count() === 0) {
+                throw new Error(`Timeout waiting for ${sel}`);
+            }
+            return null;
+        },
         waitForTimeout: async () => null,
         $$eval: async () => (opened ? (steps[step] ?? []) : []),
     };
@@ -731,6 +787,43 @@ flow = await runApplyFlow(wiz, wizardBoard,
     { profile: wizProfile, approvedAnswers: [], typing: NOPAUSE });
 check('an unanswered required question stops the wizard', flow.outcome, 'INCOMPLETE');
 check('  it did not press next past it', wiz.currentStep(), 0);
+
+// Resume steps are found by what they SAY, not by a selector, because the
+// wording differs per employer — "Upload resume", "Attach CV", "Add resume".
+const resumeWizard = (label) => {
+    const page = wizardPage([[], [wField({ index: 0, label: 'Email' })]]);
+    page.locator = (sel) => {
+        const kind = sel.includes('OPEN') ? 'open'
+            : sel.includes('NEXT') ? 'next'
+                : sel.includes('SUBMIT') ? 'submit'
+                    : sel.includes('APPLIED') ? 'already' : 'dialog';
+        const base = {
+            count: async () => (kind === 'dialog' || kind === 'open' ? 1 : 0),
+            first() { return this; },
+            nth() { return this; },
+            isVisible: async () => kind === 'open',
+            innerText: async () => (kind === 'dialog' ? label : ''),
+            getAttribute: async () => null,
+            click: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            page: () => ({ waitForTimeout: async () => {} }),
+        };
+        return base;
+    };
+    return page;
+};
+
+check('a step saying "Upload resume" is recognised as needing one',
+    RESUME_PATTERN.test('2/5 pages Resume* Upload resume'), true);
+check('  so is one saying "Attach your CV"',
+    RESUME_PATTERN.test('Attach your CV to continue'), true);
+check('  and an ordinary question step is not',
+    RESUME_PATTERN.test('How many years of React experience?'), false);
+
+check('an upload control is found by its wording, not a class',
+    ['Upload resume', 'Attach CV', 'Add a resume', 'Choose file']
+        .every((t) => UPLOAD_PATTERN.test(t)), true);
+check('  and Next is not mistaken for one', UPLOAD_PATTERN.test('Next'), false);
 
 section('apply flow — submitting is a separate, deliberate act');
 

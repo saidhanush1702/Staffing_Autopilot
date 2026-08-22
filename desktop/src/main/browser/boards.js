@@ -85,48 +85,71 @@ const BOARDS = {
         // Nothing in the work loop clicks it — only the consultant, from the
         // app, after reading what was filled in.
         //
-        // These selectors have NOT been checked against a live Easy Apply
-        // dialog. That is exactly what `verified` guards, and why it is still
-        // false: the last set of selectors written this way was wrong on all
-        // three boards.
+        // ── MEASURED AGAINST A LIVE EASY APPLY, NOT GUESSED ──────────
+        //
+        // The first version of this was written from public knowledge and was
+        // wrong in every particular. What is here now was read off a real
+        // application flow:
+        //
+        //   · Easy Apply does NOT open a dialog. It replaces the page with a
+        //     five-step flow ("1/5 pages", starting at Contact info). Every
+        //     modal selector — [role="dialog"], .artdeco-modal,
+        //     .jobs-easy-apply-modal — matched nothing.
+        //   · LinkedIn's class names are build-hashed and change between page
+        //     loads: the same button was `.jobs-apply-button` on one load and
+        //     `.b0d4b002._98bfa880…` on the next. NOTHING here may key off a
+        //     class. aria-label, visible text and data- attributes only.
+        //   · `data-sdui-screen` is the container, and it holds exactly the
+        //     application's own fields — the page's search box and language
+        //     picker stay outside it. That is what makes scoping possible at
+        //     all, since the flow has no <form> element.
+        //   · The Next button carries no aria-label. Its text is all there is.
+        //
+        // `submit` is still unproven: reaching page 5 to see it means walking a
+        // real application to its end. It is written to be RECOGNISED so the
+        // flow stops there, and `isSubmit` in applyFlow.js catches it by text
+        // regardless of whether this selector is right.
         apply: {
-            open: 'button.jobs-apply-button, button[aria-label*="Easy Apply" i]',
-            dialog: '[role="dialog"]',
-            next: 'button[aria-label="Continue to next step"], '
-                + 'button[aria-label="Review your application"]',
-            submit: 'button[aria-label="Submit application"]',
-            alreadyApplied: '.jobs-s-apply--applied',
+            open: 'button[aria-label*="Easy Apply" i]',
+            dialog: '[data-sdui-screen*="jobs.easy"]',
+            next: 'button:has-text("Next"), button:has-text("Review"), '
+                + 'button:has-text("Continue")',
+            submit: 'button:has-text("Submit application"), '
+                + 'button[aria-label*="Submit application" i]',
+            // No `resumeUpload` selector on purpose. One flow's step said
+            // "Upload resume" and had no file input at all — only a button
+            // opening the OS chooser — but the wording differs per employer,
+            // so applyFlow finds the control by what it SAYS. Set this only if
+            // some board turns out to need naming explicitly.
+            alreadyApplied: 'button:has-text("Continue applying")',
             maxSteps: 8,
         },
-        // ── EASY APPLY ───────────────────────────────────────────────
+        // ── NO PER-BOARD VOLUME LIMIT ────────────────────────────────
         //
-        // The application is not on the job page. It opens in a dialog and
-        // pages through contact details, resume, screening questions and a
-        // review before offering Submit.
+        // LinkedIn used to carry a ceiling of five applications a day, from
+        // R-22's "lowest volume". The owner removed it: every job that reaches
+        // the queue is applied to, on every board.
         //
-        // `submit` is here so the flow can RECOGNISE it and stop. Nothing in
-        // the work loop clicks it — only the consultant, from the app.
-        //
-        // These selectors have NOT been checked against a live Easy Apply
-        // dialog. That is what `verified` guards, and why it stays false.
-        apply: {
-            open: 'button.jobs-apply-button, button[aria-label*="Easy Apply" i]',
-            dialog: '[role="dialog"]',
-            next: 'button[aria-label="Continue to next step"], '
-                + 'button[aria-label="Review your application"]',
-            submit: 'button[aria-label="Submit application"]',
-            submitted: '[role="dialog"] :text("Your application was sent")',
-            alreadyApplied: '.jobs-s-apply--applied, :text("Applied")',
-            maxSteps: 8,
-        },
-        // R-22: any of these stops LinkedIn for the rest of the day.
+        // What remains is the half that reacts rather than rations — a bot
+        // check below stops this board for the rest of the day. That is not a
+        // quota, it is the board saying it has noticed, and ignoring that is
+        // how a temporary challenge becomes a blocked account.
         botCheck: ['#captcha-internal'],
-        verified: false,
-        // R-22's "lowest volume". Counted per DAY, not per pass: the app works
-        // continuously whenever the queue has something in it, so a per-pass
-        // ceiling would simply repeat every poll. The engine applies this
-        // inside the consultant's overall daily cap, never alongside it.
-        maxPerDay: 5,
+        // ── SWITCHED ON BY THE OWNER, ON PARTIAL EVIDENCE ────────────
+        //
+        // The session selectors here were measured against a live account. The
+        // apply flow was measured against ONE job, and reached page 1 of 5
+        // before a required screening question stopped it. Nothing has yet
+        // watched this fill a LinkedIn application to the end.
+        //
+        // So this is on because the owner asked for it, not because the recipe
+        // has been proven. What that costs if a selector is wrong is bounded:
+        // the filler types only into fields it can name, leaves anything
+        // pre-filled alone, and refuses to press submit — a bad guess produces
+        // a parked or handed-over item, not a wrong application.
+        //
+        // Set back to false to stop it typing on LinkedIn entirely.
+        verified: true,
     },
 };
 

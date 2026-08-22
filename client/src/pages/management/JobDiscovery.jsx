@@ -9,6 +9,7 @@ import TableShell from '../../components/TableShell.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import SchedulePanel from '../../components/discovery/SchedulePanel.jsx';
+import SearchPlanPanel from '../../components/discovery/SearchPlanPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
     card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT,
@@ -159,6 +160,13 @@ const JobDiscovery = () => {
             </p>
 
             <SchedulePanel canEdit={isAdmin} onCycleFired={load} />
+
+            {/* ORG_ADMIN only: it exposes what the organization spends credits on. */}
+            {isAdmin && (
+                <div className="mt-4">
+                    <SearchPlanPanel />
+                </div>
+            )}
 
             {banner && (
                 <div className={`mt-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT[banner.tone]}`}>
