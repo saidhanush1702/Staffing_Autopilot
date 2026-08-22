@@ -19,7 +19,7 @@ import Review from './Review.jsx';
  */
 const when = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '—');
 
-const Work = ({ snap, onRefresh }) => {
+const Work = ({ snap, onRefresh, onOpenBoard }) => {
     const [checking, setChecking] = useState(false);
     const [checked, setChecked] = useState(null);
 
@@ -46,8 +46,10 @@ const Work = ({ snap, onRefresh }) => {
                     <div>
                         <h2>Sign in needed</h2>
                         <p className="muted">
-                            Jobs on these boards are on hold until you sign in. A window opens
-                            for you — this app never sees your password.
+                            Jobs on these boards are on hold until you sign in. A proper
+                            browser window opens for you — this app never sees your
+                            password, and the sign-in carries straight over to the
+                            automation.
                         </p>
                     </div>
                     {signedOut.map((b) => (
@@ -56,7 +58,14 @@ const Work = ({ snap, onRefresh }) => {
                             <button
                                 type="button"
                                 className="primary"
-                                onClick={() => window.smartapply.signIn(b.board)}
+                                onClick={() => {
+                                    // Show the board first. The login page opens
+                                    // in that board's own view, and starting the
+                                    // sign-in while it is off screen looks like
+                                    // the button did nothing at all.
+                                    onOpenBoard?.(b.board);
+                                    window.smartapply.signIn(b.board);
+                                }}
                             >
                                 Sign in
                             </button>

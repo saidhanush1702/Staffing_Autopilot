@@ -42,7 +42,12 @@ if (!app.requestSingleInstanceLock()) app.quit();
 // consultant's signed-in job boards.
 if (config.EMBED_BROWSER) {
     app.commandLine.appendSwitch('remote-debugging-port', String(config.CDP_PORT));
-    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+    // Chromium 111+ refuses a DevTools websocket whose Origin it does not
+    // recognise, and Playwright's connection is exactly that. Without this the
+    // port listens, answers /json/version, and then never completes the
+    // handshake — which surfaces as a flat 30-second connect timeout with
+    // nothing to say why.
+    app.commandLine.appendSwitch('remote-allow-origins', '*');
 }
 
 let tray = null;
@@ -391,6 +396,11 @@ const registerIpc = () => {
         try {
             await sessions.promptSignIn(def);
 
+            // The login now opens in its own window, so there is no need to
+            // drag the consultant to the Boards tab — but selecting that board
+            // means the automation's page is what they come back to.
+            win?.webContents.send('showBoard', def.name);
+
             // Opening the window is not the end of it. The board is on hold at
             // the hub until something says otherwise, and the only thing that
             // used to say otherwise was a work pass — so a board with no
@@ -401,7 +411,8 @@ const registerIpc = () => {
             const deadline = Date.now() + config.SIGNIN_WAIT_MS;
             while (Date.now() < deadline) {
                 await new Promise((r) => { setTimeout(r, config.SIGNIN_POLL_MS); });
-                if (await sessions.isSignedIn(def)) {
+                if (await sessions.isSignedInNow(def)) {
+                    await sessions.finishSignIn?.(def.name);
                     await hub.boardStatus({
                         board: def.name, state: 'OK', detail: 'Signed in',
                     }).catch(() => {});

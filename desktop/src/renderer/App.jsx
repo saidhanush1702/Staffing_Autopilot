@@ -40,6 +40,9 @@ const App = () => {
     const [snap, setSnap] = useState(null);
     const [log, setLog] = useState([]);
     const [tab, setTab] = useState('work');
+    // Set when something asks for a board to be shown — a sign-in prompt, or
+    // the Work tab handing over. Boards opens that card and clears it.
+    const [showBoard, setShowBoard] = useState(null);
 
     const refresh = useCallback(async () => {
         setSnap(await window.smartapply.snapshot());
@@ -51,7 +54,11 @@ const App = () => {
         const offLog = window.smartapply.onLog(
             (line) => setLog((prev) => [...prev.slice(-200), { at: new Date(), line }]),
         );
-        return () => { offStatus(); offLog(); };
+        const offShow = window.smartapply.onShowBoard((board) => {
+            setTab('boards');
+            setShowBoard(board);
+        });
+        return () => { offStatus(); offLog(); offShow(); };
     }, [refresh]);
 
     if (!snap) {
@@ -127,10 +134,25 @@ const App = () => {
                 ))}
             </nav>
 
-            <main className="screen">
-                <div className="screen-inner">
-                    {tab === 'work' && <Work snap={snap} onRefresh={refresh} />}
-                    {tab === 'boards' && <Boards boards={snap.boards} />}
+            {/* Boards is a live browser page; it gets the whole window. The
+                reading tabs stay in a capped column. */}
+            <main className={`screen${tab === 'boards' ? ' flush' : ''}`}>
+                <div className={`screen-inner${tab === 'boards' ? ' wide' : ''}`}>
+                    {tab === 'work' && (
+                        <Work
+                            snap={snap}
+                            onRefresh={refresh}
+                            onOpenBoard={(board) => { setTab('boards'); setShowBoard(board); }}
+                        />
+                    )}
+                    {tab === 'boards' && (
+                        <Boards
+                            boards={snap.boards}
+                            snap={snap}
+                            showBoard={showBoard}
+                            onShown={() => setShowBoard(null)}
+                        />
+                    )}
                     {tab === 'applied' && <Applied />}
                     {tab === 'activity' && <Activity log={log} snap={snap} />}
                 </div>

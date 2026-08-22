@@ -69,15 +69,31 @@ const AUTO_SUBMIT = process.env.SMARTAPPLY_AUTO_SUBMIT !== 'false';
 /**
  * ── WHERE THE BROWSER APPEARS ─────────────────────────────────────────
  *
- * `embedded` puts each board's page in a view inside the app's own window, on
- * the Boards tab. `window` launches a separate Chrome, which is how this
- * worked first and is kept as a fallback: driving Electron's own pages needs a
- * debugging port, and if that cannot be opened there has to be somewhere to
- * land.
+ * ── AND WHY IT IS NOT EMBEDDED TODAY ──────────────────────────────────
  *
- * Set SMARTAPPLY_BROWSER=window to go back to a separate browser.
+ * `embedded` puts each board's page in a view inside our own window. It is
+ * built (browser/embedded.js) and it does not work, for one reason that no
+ * amount of finishing will fix:
+ *
+ *     PLAYWRIGHT CANNOT ATTACH TO ELECTRON OVER CDP.
+ *
+ * Measured, not assumed. Electron opens the debugging port, answers
+ * /json/version, publishes a browser-level webSocketDebuggerUrl and lists each
+ * WebContentsView as a page — and `connectOverCDP` still times out, given
+ * either the HTTP endpoint or the websocket URL directly. Electron's browser
+ * target does not implement the auto-attach behaviour Playwright expects.
+ *
+ * Driving embedded views therefore means not using Playwright for them:
+ * Electron's own `webContents.debugger` speaks CDP, but every locator call in
+ * filler.js and applyFlow.js would need an adapter behind it. That is a real
+ * piece of work, not a switch.
+ *
+ * So the default is a separate browser window, which works. The embedded code
+ * is left in place, wired and reachable, for when that adapter exists.
+ *
+ * Set SMARTAPPLY_BROWSER=embedded to use it anyway.
  */
-const EMBED_BROWSER = process.env.SMARTAPPLY_BROWSER !== 'window';
+const EMBED_BROWSER = process.env.SMARTAPPLY_BROWSER === 'embedded';
 
 /** The port Electron opens so Playwright can drive its own views. */
 const CDP_PORT = Number(process.env.SMARTAPPLY_CDP_PORT ?? 9223);

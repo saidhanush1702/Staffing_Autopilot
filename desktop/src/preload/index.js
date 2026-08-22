@@ -85,6 +85,15 @@ contextBridge.exposeInMainWorld('smartapply', {
         ipcRenderer.on('status', handler);
         return () => ipcRenderer.removeListener('status', handler);
     },
+    /**
+     * The main process asking the UI to bring a board into view — sent when a
+     * sign-in is needed, because a login page nobody can see explains nothing.
+     */
+    onShowBoard: (fn) => {
+        const handler = (_e, board) => fn(board);
+        ipcRenderer.on('showBoard', handler);
+        return () => ipcRenderer.removeListener('showBoard', handler);
+    },
     onLog: (fn) => {
         const handler = (_e, line) => fn(line);
         ipcRenderer.on('log', handler);

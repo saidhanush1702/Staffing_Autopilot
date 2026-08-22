@@ -75,6 +75,10 @@ const fakeSessions = (opts = {}) => {
         calls,
         isBotChecked: () => Promise.resolve(opts.botChecked ?? false),
         isSignedIn: () => Promise.resolve(opts.signedIn ?? true),
+        // The wait loop polls this one, because it does NOT navigate — polling
+        // with a navigation reloaded the login form the consultant was typing
+        // into. The fake follows the same split.
+        isSignedInNow: () => Promise.resolve(opts.signedIn ?? true),
         promptSignIn: () => { calls.push('promptSignIn'); return Promise.resolve({ awaitingHuman: true }); },
         openJob: () => { calls.push('openJob'); return Promise.resolve(); },
         page: () => Promise.resolve({
@@ -539,12 +543,17 @@ BOARDS.WELLFOUND.verified = true;
 // Signed out at first, signed in by the time we look again: the item must be
 // worked in the SAME pass, not left until the next poll.
 let looks = 0;
+// Signed out at first, signed in by the time the wait loop looks again.
 hub = fakeHub({
     heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
     queue: () => Promise.resolve({ items: [item()] }),
 });
 let sessions = fakeSessions();
-sessions.isSignedIn = () => {
+// The gate says signed out. The wait loop then polls the non-navigating check,
+// which reports success once the consultant has had a moment — the sequence a
+// real sign-in follows.
+sessions.isSignedIn = () => Promise.resolve(false);
+sessions.isSignedInNow = () => {
     looks += 1;
     return Promise.resolve(looks > 1);
 };

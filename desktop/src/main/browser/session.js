@@ -142,6 +142,43 @@ class BrowserSessions {
         return true;
     }
 
+    /**
+     * Is this board signed in, judged from the page ALREADY on screen?
+     *
+     * ── WHY THIS EXISTS SEPARATELY FROM isSignedIn ────────────────────
+     *
+     * `isSignedIn` navigates: it asks for a page that needs a session and sees
+     * whether the board bounces it to a login screen. That is the right test
+     * when nobody is looking at the window.
+     *
+     * It is exactly the wrong test while somebody is signing in. The wait loop
+     * polls every few seconds, so navigating would reload the login form —
+     * clearing half-typed credentials and any code the consultant had just been
+     * sent — over and over until they gave up. Which is what it did.
+     *
+     * This one only looks at what is there.
+     */
+    async isSignedInNow(boardDef) {
+        const page = await this.page(boardDef.name);
+        let here;
+        try {
+            here = new URL(page.url());
+        } catch {
+            return false;                       // about:blank, or nothing loaded
+        }
+        if (LOOKS_LIKE_LOGIN.test(here.pathname)) return false;
+
+        const { present = [], absent = [] } = boardDef.signedIn ?? {};
+        for (const sel of absent) {
+            if (await page.locator(sel).count() > 0) return false;
+        }
+        for (const sel of present) {
+            if (await page.locator(sel).count() === 0) return false;
+        }
+        // Nothing says signed out, and we are not on a login page.
+        return true;
+    }
+
     /** Has the board challenged us? R-22 turns a true here into a full stop. */
     async isBotChecked(boardDef) {
         const page = await this.page(boardDef.name);

@@ -296,7 +296,13 @@ class CycleEngine {
         const deadline = Date.now() + this.signInWaitMs;
         while (Date.now() < deadline) {
             await new Promise((r) => { setTimeout(r, this.signInPollMs); });
-            if (await this.sessions.isSignedIn(board)) {
+            // Looks at the page in front of the consultant rather than
+            // navigating it — polling with a navigation would reload the login
+            // form they are typing into, every few seconds.
+            if (await this.sessions.isSignedInNow(board)) {
+                // Close the sign-in window and reload the automation's own page,
+                // which is still showing what it loaded while signed out.
+                await this.sessions.finishSignIn?.(board.name);
                 this.log(`${board.label}: signed in — carrying on`);
                 this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
                 await this.#report(() => this.hub.boardStatus({
