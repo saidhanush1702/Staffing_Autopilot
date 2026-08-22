@@ -24,13 +24,18 @@
  * a page that re-renders halfway through would otherwise be described half in
  * its old shape and half in its new one.
  */
-const { buildAnswerBook, resolveAnswer, isAffirmative, chooseOption } = require('./answers.js');
+const {
+    buildAnswerBook, resolveAnswer, isAffirmative, chooseOption, chooseSuggestion,
+} = require('./answers.js');
 const { TYPING } = require('../config.js');
 
 /** Every control we consider. Order here defines the index we act on. */
 const FIELD_SELECTOR = 'input, textarea, select';
 
 const rand = (min, max) => min + Math.random() * (max - min);
+
+/** Escape an id for use in a selector, without needing the browser's CSS API. */
+const CSS_ESCAPE = (id) => String(id).replace(/([^\w-])/g, '\$1');
 const pause = (min, max) => new Promise((r) => { setTimeout(r, rand(min, max)); });
 
 /**
@@ -115,6 +120,69 @@ const describeFields = (page, root = null) => page.$$eval(
         });
     },
 );
+
+/** How long to give a typeahead to fetch and render its suggestions. */
+const SUGGESTION_WAIT_MS = 2_500;
+
+/**
+ * Finish a typeahead by choosing one of its suggestions.
+ *
+ * ── WHY TYPING THE RIGHT TEXT IS NOT ENOUGH ───────────────────────────
+ *
+ * LinkedIn's location field is a combobox. Typing "dallas" puts the word in the
+ * box and opens a list; the form does not hold a location until an option from
+ * that list is picked. Leaving it as typed text looks correct on screen and the
+ * step then refuses to advance, with nothing saying why — which is exactly
+ * where the run stopped.
+ *
+ * The list is chosen from rather than blindly accepted: an exact match wins, a
+ * unique prefix match is taken, and anything ambiguous is left alone. A wrong
+ * city on an application is worse than no city.
+ *
+ * Fields that are not comboboxes are untouched — nothing here fires unless the
+ * page itself says a listbox opened, so no other board changes behaviour.
+ *
+ * @returns the option text chosen, or null when nothing was
+ */
+const pickSuggestion = async (page, el, typed, hint = null) => {
+    // A control that cannot even be asked about its attributes is not a
+    // combobox — and this must never be the thing that breaks a plain form.
+    if (typeof el.getAttribute !== 'function' || typeof page.locator !== 'function') return null;
+
+    const controls = await el.getAttribute('aria-controls').catch(() => null);
+    const role = await el.getAttribute('role').catch(() => null);
+    const auto = await el.getAttribute('aria-autocomplete').catch(() => null);
+    if (!controls && role !== 'combobox' && !auto) return null;
+
+    const list = controls
+        ? page.locator(`#${CSS_ESCAPE(controls)} [role="option"], #${CSS_ESCAPE(controls)} li`)
+        : page.locator('[role="listbox"] [role="option"]');
+
+    // The suggestions arrive from a request, so they are not there the instant
+    // typing stops.
+    const deadline = Date.now() + SUGGESTION_WAIT_MS;
+    let count = 0;
+    while (Date.now() < deadline) {
+        count = await list.count().catch(() => 0);
+        if (count > 0) break;
+        await page.waitForTimeout(200);
+    }
+    if (count === 0) return null;
+
+    const texts = [];
+    for (let i = 0; i < Math.min(count, 10); i += 1) {
+        texts.push(((await list.nth(i).innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim());
+    }
+
+    // Typeahead suggestions are ranked and plural by design, so they get their
+    // own rule rather than the strict one used for screening questions.
+    const match = chooseSuggestion(texts, typed, hint);
+    if (!match) return null;
+
+    await list.nth(texts.indexOf(match)).click().catch(() => {});
+    await page.waitForTimeout(600);
+    return match;
+};
 
 /** Controls that carry no question and must never be touched. */
 const IGNORED_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
@@ -266,9 +334,16 @@ const fillForm = async (page, {
             await el.pressSequentially(String(found.value), {
                 delay: Math.round(rand(typing.minMs, typing.maxMs)),
             });
+
+            // A typeahead is not finished when the text is right — it is
+            // finished when an option has been CHOSEN. See pickSuggestion.
+            const chosen = await pickSuggestion(
+                page, el, String(found.value), book.values.state,
+            );
+
             qa.push({
                 questionText: question,
-                answerText: String(found.value),
+                answerText: chosen ?? String(found.value),
                 fieldType: f.type,
                 source: found.source,
                 questionId: found.questionId,

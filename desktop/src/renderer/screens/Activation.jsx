@@ -10,8 +10,8 @@ import { useState } from 'react';
  * password, and the cleanest way to honour that is for no such input to exist
  * anywhere in the codebase.
  *
- * The one-time code identifies the person AND binds to this machine, so it takes
- * the place of a login entirely.
+ * The one-time code identifies the person AND binds to this machine, so it
+ * takes the place of a login entirely.
  */
 const Activation = ({ onActivated }) => {
     const [code, setCode] = useState('');
@@ -29,45 +29,53 @@ const Activation = ({ onActivated }) => {
     };
 
     return (
-        <div className="wrap">
-            <h1>Set up SmartApply</h1>
-            <p className="sub">
-                Enter the activation code your administrator gave you. You only do this once.
-            </p>
-
-            <form className="card" onSubmit={submit}>
-                <label className="label" htmlFor="code">Activation code</label>
-                <div style={{ marginTop: 6 }}>
-                    <input
-                        id="code"
-                        value={code}
-                        onChange={(ev) => setCode(ev.target.value)}
-                        placeholder="XXXX-XXXX-XXXX"
-                        autoFocus
-                        spellCheck={false}
-                    />
+        <div className="centred">
+            <div className="centred-inner">
+                <div style={{ textAlign: 'center', marginBottom: 20 }}>
+                    <h1>SmartApply</h1>
+                    <p className="sub">
+                        Enter the activation code your administrator gave you.
+                        You only do this once.
+                    </p>
                 </div>
 
-                {error && <p className="note stop" style={{ marginTop: 12 }}>{error}</p>}
+                <form className="card stack" onSubmit={submit}>
+                    <div>
+                        <label className="label" htmlFor="code">Activation code</label>
+                        <input
+                            id="code"
+                            value={code}
+                            onChange={(ev) => setCode(ev.target.value)}
+                            placeholder="XXXX-XXXX-XXXX"
+                            autoFocus
+                            spellCheck={false}
+                            style={{ marginTop: 6 }}
+                        />
+                    </div>
 
-                <div style={{ marginTop: 14 }}>
-                    <button type="submit" className="primary" disabled={busy || code.trim().length < 4}>
+                    {error && <p className="note stop">{error}</p>}
+
+                    <button
+                        type="submit"
+                        className="primary big"
+                        disabled={busy || code.trim().length < 4}
+                    >
                         {busy ? 'Activating…' : 'Activate'}
                     </button>
+                </form>
+
+                <div className="note" style={{ marginTop: 14 }}>
+                    <strong>This app never asks for a job-board password.</strong> When a
+                    job needs you signed in somewhere, it opens a normal browser window and
+                    steps aside so you can sign in yourself — including any code sent to
+                    your phone. Your sign-ins stay on this machine.
                 </div>
-            </form>
 
-            <div className="note" style={{ marginTop: 16 }}>
-                <strong>This app never asks for a job-board password.</strong> When a job
-                needs you signed in somewhere, it opens a normal browser window and
-                steps aside so you can sign in yourself — including any code sent to
-                your phone. Your sign-ins stay on this machine.
+                <p className="muted" style={{ marginTop: 12, textAlign: 'center' }}>
+                    The code works on this computer only, and expires. If it does not work,
+                    ask your administrator for a new one.
+                </p>
             </div>
-
-            <p className="muted" style={{ marginTop: 12 }}>
-                The code works on this computer only, and expires. If it does not work,
-                ask your administrator to issue a new one.
-            </p>
         </div>
     );
 };

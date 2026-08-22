@@ -43,6 +43,45 @@ const IDLE_POLL_MS = 5 * 60_000;
 const SIGNIN_WAIT_MS = 5 * 60_000;
 const SIGNIN_POLL_MS = 3_000;
 
+/**
+ * ── SUBMITTING WITHOUT A HUMAN ────────────────────────────────────────
+ *
+ * The system was built so the machine fills and a person presses submit. The
+ * owner has changed that: the app now completes the application itself.
+ *
+ * The reason was practical as well as preferential. The app drives ONE browser
+ * page per board, so as soon as it moved on to the next job the previous
+ * application's form was gone from the screen — and the review screen's Submit
+ * button had nothing left to press. Review-then-submit only works if the app
+ * stops after every single job and waits, which is not what anyone wants from
+ * a tool that works a queue.
+ *
+ * What this costs is real and worth stating where the switch lives: an answer
+ * the app got wrong now reaches an employer under the consultant's name with
+ * nobody having read it first. The protections that remain are the ones that
+ * refuse rather than guess — a required question with no approved answer still
+ * parks the application instead of inventing one.
+ *
+ * Set SMARTAPPLY_AUTO_SUBMIT=false to go back to stopping for review.
+ */
+const AUTO_SUBMIT = process.env.SMARTAPPLY_AUTO_SUBMIT !== 'false';
+
+/**
+ * ── WHERE THE BROWSER APPEARS ─────────────────────────────────────────
+ *
+ * `embedded` puts each board's page in a view inside the app's own window, on
+ * the Boards tab. `window` launches a separate Chrome, which is how this
+ * worked first and is kept as a fallback: driving Electron's own pages needs a
+ * debugging port, and if that cannot be opened there has to be somewhere to
+ * land.
+ *
+ * Set SMARTAPPLY_BROWSER=window to go back to a separate browser.
+ */
+const EMBED_BROWSER = process.env.SMARTAPPLY_BROWSER !== 'window';
+
+/** The port Electron opens so Playwright can drive its own views. */
+const CDP_PORT = Number(process.env.SMARTAPPLY_CDP_PORT ?? 9223);
+
 /** Human-paced typing (R-19). Per character, with jitter on top. */
 const TYPING = { minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400] };
 
@@ -54,6 +93,9 @@ module.exports = {
     IDLE_POLL_MS,
     SIGNIN_WAIT_MS,
     SIGNIN_POLL_MS,
+    AUTO_SUBMIT,
+    EMBED_BROWSER,
+    CDP_PORT,
     TYPING,
     APP_VERSION: require('../../package.json').version,
     // Resolved lazily: app.getPath('userData') is unavailable until Electron is

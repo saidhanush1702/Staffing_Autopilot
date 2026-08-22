@@ -3,36 +3,29 @@ import { useState } from 'react';
 /**
  * ── THE REVIEW STEP ───────────────────────────────────────────────────
  *
- * Spec §5.3 step 4, and the decision the whole system is built around: the app
- * fills the form and stops. A person reads it and presses submit on the portal
- * themselves.
+ * Applications that are filled in and stopped at the portal's submit step.
  *
  * ── TWO SUBMIT BUTTONS, AND THEY DO DIFFERENT THINGS ──────────────────
  *
- *   "I already submitted it"     records what the consultant did in the browser
- *   "Submit this application"    presses the portal's submit button from here
+ *   "Submit"              presses the portal's submit button from here
+ *   "I sent it myself"    records what the consultant did in the browser
  *
- * The second one exists because the owner asked for it, and it is the single
- * exception to "the machine never clicks submit". The distinction that survives
- * is the one that matters: no application is ever sent without a person reading
- * the answers below and choosing to send it. The app never reaches either
- * button on its own — the work loop stops at this screen and waits.
- *
- * Both are offered because reviewing the answers in one window and pressing
- * submit in another is how people send the wrong application.
+ * The distinction that matters survives either way: no application is sent
+ * without a person reading the answers and choosing to send it. The app never
+ * reaches either button on its own — the work loop stops here and waits.
  *
  * ── WHY EVERY ANSWER IS SHOWN ─────────────────────────────────────────
  *
- * The answers are listed exactly as they were typed, in the order the form
- * asked. Reviewing means reading what is about to go out under your own name;
- * a summary saying "12 fields filled" would be asking the consultant to take
- * the machine's word for it.
+ * Listed exactly as typed, in the order the form asked. Reviewing means
+ * reading what is about to go out under your own name; "12 fields filled"
+ * would be asking someone to take the machine's word for it.
  */
-const when = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+const when = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '—');
 
-const SOURCE_NOTE = {
-    ANSWER: 'from your approved answers',
+const SOURCE = {
+    ANSWER: 'your approved answer',
     PROFILE: 'from your profile',
+    PORTAL: 'the portal already had this',
     RESUME: 'your resume file',
 };
 
@@ -50,101 +43,90 @@ const Application = ({ entry, onRefresh }) => {
         else setError(res?.error ?? 'That did not work.');
     };
 
+    const optional = entry.optionalUnanswered ?? [];
+
     return (
-        <div className="card">
+        <div className="card stack">
             <div className="row">
                 <div>
-                    <strong>{entry.company}</strong>
-                    <p className="muted" style={{ margin: '2px 0 0' }}>
+                    <h2>{entry.company}</h2>
+                    <p className="muted" style={{ marginTop: 2 }}>
                         {entry.title} · {entry.boardLabel} · filled {when(entry.filledAt)}
                     </p>
                 </div>
-                <button
-                    type="button"
-                    className="primary"
-                    disabled={busy !== ''}
-                    onClick={() => act('open', () => window.smartapply.openReview(entry.itemId))}
-                >
-                    {busy === 'open' ? 'Opening…' : 'Open and check'}
-                </button>
+                <span className="pill warn">Waiting on you</span>
             </div>
 
             {!entry.attachedResume && (
-                <p className="note warn" style={{ marginTop: 10 }}>
+                <p className="note warn">
                     No resume was attached — the form had nowhere to put one, or you have
-                    none on file. Check before you submit.
+                    none on file. Check before submitting.
                 </p>
             )}
 
-            {(entry.optionalUnanswered ?? []).length > 0 && (
-                <p className="note" style={{ marginTop: 10 }}>
-                    {entry.optionalUnanswered.length} optional question(s) were left blank
-                    because nobody has approved an answer for them. You can fill them in
-                    yourself in the browser window.
+            {optional.length > 0 && (
+                <p className="note">
+                    {optional.length} optional question{optional.length === 1 ? '' : 's'} left
+                    blank because nobody has approved an answer. You can fill them in in the
+                    browser.
                 </p>
             )}
 
-            <p style={{ margin: '10px 0 0' }}>
-                <button type="button" className="secondary" onClick={() => setOpen(!open)}>
-                    {open ? 'Hide' : `Show what was filled in (${entry.qa.length})`}
+            <div>
+                <button type="button" className="quiet" onClick={() => setOpen(!open)}>
+                    {open ? 'Hide answers' : `Show the ${entry.qa.length} answers filled in`}
                 </button>
-            </p>
+                {open && (
+                    <div style={{ marginTop: 6 }}>
+                        {entry.qa.map((q, i) => (
+                            <div className="qa" key={i}>
+                                <p className="qa-q">{q.questionText}</p>
+                                <p className="qa-a">{q.answerText}</p>
+                                {SOURCE[q.source] && <p className="muted">{SOURCE[q.source]}</p>}
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
 
-            {open && (
-                <div style={{ marginTop: 10 }}>
-                    {entry.qa.map((q, i) => (
-                        <div key={i} style={{ padding: '6px 0', borderTop: '1px solid #e2e8f0' }}>
-                            <p className="label" style={{ margin: 0 }}>{q.questionText}</p>
-                            <p style={{ margin: '2px 0 0' }}>{q.answerText}</p>
-                            {SOURCE_NOTE[q.source] && (
-                                <p className="muted" style={{ margin: '2px 0 0', fontSize: 12 }}>
-                                    {SOURCE_NOTE[q.source]}
-                                </p>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            )}
+            {error && <p className="note stop">{error}</p>}
 
-            {error && <p className="note stop" style={{ marginTop: 10 }}>{error}</p>}
-
-            <div className="row" style={{ marginTop: 12 }}>
+            <div className="row">
                 <button
                     type="button"
-                    className="secondary"
+                    className="quiet"
                     disabled={busy !== ''}
-                    onClick={() => act('discard',
-                        () => window.smartapply.discardReview(entry.itemId,
-                            'The consultant chose not to submit this one.'))}
+                    onClick={() => act('open', () => window.smartapply.openReview(entry.itemId))}
                 >
-                    {busy === 'discard' ? 'Removing…' : 'Do not send this'}
+                    {busy === 'open' ? 'Opening…' : 'Open in browser'}
                 </button>
 
                 <span style={{ display: 'flex', gap: 8 }}>
-                    {/* For the consultant who went to the browser and pressed
-                        submit there. It records; it does not send. */}
+                    <button
+                        type="button"
+                        className="danger"
+                        disabled={busy !== ''}
+                        onClick={() => act('discard', () => window.smartapply.discardReview(
+                            entry.itemId, 'The consultant chose not to submit this one.',
+                        ))}
+                    >
+                        {busy === 'discard' ? 'Removing…' : 'Do not send'}
+                    </button>
                     <button
                         type="button"
                         className="secondary"
                         disabled={busy !== ''}
-                        onClick={() => act('recorded',
-                            () => window.smartapply.markSubmitted(entry.itemId))}
+                        onClick={() => act('recorded', () => window.smartapply.markSubmitted(entry.itemId))}
                     >
-                        {busy === 'recorded' ? 'Recording…' : 'I already submitted it'}
+                        {busy === 'recorded' ? 'Recording…' : 'I sent it myself'}
                     </button>
-
-                    {/* And for the consultant who has read the answers above and
-                        wants it sent from here. This one really does press the
-                        portal's submit button — on their instruction, never on
-                        the app's own initiative. */}
                     <button
                         type="button"
                         className="primary"
                         disabled={busy !== ''}
-                        onClick={() => act('submitting',
-                            () => window.smartapply.submitApplication(entry.itemId))}
+                        onClick={() => act('submitting', () => window.smartapply.submitApplication(entry.itemId))}
                     >
-                        {busy === 'submitting' ? 'Submitting…' : 'Submit this application'}
+                        {busy === 'submitting' ? 'Submitting…' : 'Submit'}
                     </button>
                 </span>
             </div>
@@ -152,22 +134,19 @@ const Application = ({ entry, onRefresh }) => {
     );
 };
 
-const Review = ({ items, onRefresh }) => {
-    if (!items || items.length === 0) return null;
-
-    return (
-        <>
-            <h2>Ready for you to submit ({items.length})</h2>
-            <p className="muted" style={{ margin: '0 0 10px' }}>
-                Each of these is filled in and stopped at the portal&rsquo;s submit step.
-                Read what was filled in, then either press Submit here, or open the
-                browser window and press it there — nothing is sent until you do.
-            </p>
-            {items.map((entry) => (
-                <Application key={entry.itemId} entry={entry} onRefresh={onRefresh} />
-            ))}
-        </>
-    );
-};
+const Review = ({ items, onRefresh }) => (
+    <>
+        <div className="row">
+            <h2>Ready to submit ({items.length})</h2>
+        </div>
+        <p className="muted" style={{ marginTop: -4 }}>
+            Each is filled in and stopped at the portal&rsquo;s submit step. Nothing is
+            sent until you say so.
+        </p>
+        {items.map((entry) => (
+            <Application key={entry.itemId} entry={entry} onRefresh={onRefresh} />
+        ))}
+    </>
+);
 
 export default Review;

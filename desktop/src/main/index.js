@@ -24,6 +24,7 @@ const { Secrets } = require('./secrets.js');
 const { fingerprint } = require('./fingerprint.js');
 const { HubClient } = require('./hubClient.js');
 const { BrowserSessions } = require('./browser/session.js');
+const { EmbeddedSessions } = require('./browser/embedded.js');
 const { resolveBrowser } = require('./browser/engine.js');
 const { CycleEngine, nextPollMs } = require('./cycle.js');
 const { startDiagnostics } = require('./diagnostics.js');
@@ -33,6 +34,16 @@ const { startUpdater } = require('./updater.js');
 // person's name. The OS-level lock is the only thing that reliably prevents a
 // second launch.
 if (!app.requestSingleInstanceLock()) app.quit();
+
+// Opened BEFORE the app is ready, because that is the only time it can be.
+// Playwright connects to this to drive the board views inside our own window —
+// see browser/embedded.js. Bound to loopback: it is a debugging port, and one
+// listening on anything else would let any machine on the network drive this
+// consultant's signed-in job boards.
+if (config.EMBED_BROWSER) {
+    app.commandLine.appendSwitch('remote-debugging-port', String(config.CDP_PORT));
+    app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+}
 
 let tray = null;
 let win = null;
@@ -55,6 +66,7 @@ const RENDERER_DEV = 'http://localhost:5273';
 
 const TRAY_TEXT = {
     STARTING: 'Starting…',
+    STOPPED: 'Stopped',
     NEEDS_ACTIVATION: 'Not activated',
     IDLE: 'Idle',
     WORKING: 'Working',
@@ -125,10 +137,13 @@ const snapshot = () => ({
     paused: store?.get('paused') ?? false,
     pausedBoards: store?.get('pausedBoards') ?? [],
     queue: store?.get('queue') ?? [],
+    lastCheckedAt: store?.get('lastCheckedAt') ?? null,
     lastCycleAt: store?.get('lastCycleAt') ?? null,
     nextCycleAt: store?.get('nextCycleAt') ?? null,
     cycleLog: (store?.get('cycleLog') ?? []).slice(-10).reverse(),
     awaitingReview: store?.get('awaitingReview') ?? [],
+    automationOn: store?.get('automationOn') ?? false,
+    autoSubmit: store?.get('autoSubmit') ?? false,
     boards: boardsForDisplay(),
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
@@ -141,9 +156,9 @@ const buildTrayMenu = () => {
         { type: 'separator' },
         { label: 'Open', click: showWindow },
         {
-            label: 'Check for work now',
+            label: 'Check for new jobs',
             enabled: status.state !== 'REVOKED' && Boolean(store?.get('activatedAt')),
-            click: () => { runCycle('manual'); },
+            click: () => { engine?.refresh().catch(() => {}); },
         },
         { type: 'separator' },
         { label: 'Quit', click: () => { app.quit(); } },
@@ -248,6 +263,8 @@ const heartbeat = async () => {
  */
 const scheduleCycle = (hadWork = false) => {
     clearTimeout(cycleTimer);
+    // A pass that finishes after Stop was pressed must not book the next one.
+    if (!store.get('automationOn')) return;
     const wait = nextPollMs(hadWork);
     store.set({ nextCycleAt: new Date(Date.now() + wait).toISOString() });
     cycleTimer = setTimeout(() => { runCycle('scheduled'); }, wait);
@@ -255,6 +272,10 @@ const scheduleCycle = (hadWork = false) => {
 
 const runCycle = async (trigger) => {
     if (!secrets.read()) { setStatus('NEEDS_ACTIVATION'); return; }
+    // Nothing works until somebody presses Start. An app that begins applying
+    // to jobs the moment it launches is one that applies while its owner is
+    // asleep, having never chosen to.
+    if (!store.get('automationOn')) { setStatus('STOPPED'); return; }
     setStatus('WORKING', trigger === 'manual' ? 'checking now' : '');
     let hadWork = false;
     try {
@@ -307,15 +328,57 @@ const registerIpc = () => {
         }
     });
 
-    ipcMain.handle('runNow', () => {
-        // A pass already under way silently swallowed this, so the button
-        // looked broken during exactly the minutes it was busiest. Say so.
-        if (engine.running) {
-            win?.webContents.send('log', 'already checking — this run is still going');
-            return { ok: true, alreadyRunning: true };
-        }
+    /* ── starting and stopping ─────────────────────────────────────────
+     *
+     * `autoSubmit` is decided here, on the way in, and nowhere else. Changing
+     * it mid-run would mean some applications in one pass were left for review
+     * and others were sent, with nothing on screen saying which was which.
+     */
+    ipcMain.handle('startAutomation', (_e, options = {}) => {
+        store.set({
+            automationOn: true,
+            autoSubmit: Boolean(options.autoSubmit),
+        });
+        engine.allowStart();
+        win?.webContents.send('log',
+            options.autoSubmit
+                ? 'started — applications will be submitted automatically'
+                : 'started — applications will stop for you to review');
         runCycle('manual');
         return { ok: true };
+    });
+
+    ipcMain.handle('stopAutomation', () => {
+        store.set({ automationOn: false });
+        clearTimeout(cycleTimer);
+        // Clearing the timer only prevents the NEXT pass. This reaches the one
+        // already running, which is what makes the button appear to work.
+        engine.requestStop();
+        win?.webContents.send('log', 'stopped — no more jobs will be worked');
+        setStatus('STOPPED');
+        return { ok: true, stoppingAfterCurrent: engine.running };
+    });
+
+    /**
+     * Look for new jobs. Reads only — it never applies to anything.
+     *
+     * Available whether or not automation is running, because it commits the
+     * consultant to nothing. Starting work is a separate, deliberate button.
+     */
+    ipcMain.handle('checkForJobs', async () => {
+        if (!secrets.read()) return { ok: false, error: 'This device is not activated.' };
+        try {
+            const res = await engine.refresh();
+            win?.webContents.send('log',
+                res.waiting === 0
+                    ? 'checked — no jobs waiting'
+                    : `checked — ${res.waiting} job(s) waiting`);
+            setStatus(status.state);
+            return res;
+        } catch (err) {
+            if (err.name !== 'Revoked') setStatus('OFFLINE', err.message);
+            return { ok: false, error: err.message };
+        }
     });
 
     // Opening a board's login window is the consultant's action, so it is a
@@ -355,6 +418,36 @@ const registerIpc = () => {
     });
 
     ipcMain.handle('openExternal', (_e, url) => { shell.openExternal(url); return { ok: true }; });
+
+    /* ── showing a board's page inside the window ──────────────────────
+     *
+     * The renderer cannot draw the page itself — a WebContentsView is a native
+     * layer sitting ON TOP of the HTML, not inside it. So the card measures the
+     * empty space it left for the view and reports those coordinates, and the
+     * main process moves the view there. Collapse the card and it is moved off
+     * screen again rather than destroyed, so a half-filled application is still
+     * there when it is reopened.
+     */
+    ipcMain.handle('showBoardView', (_e, board, bounds) => {
+        if (typeof sessions?.show !== 'function') {
+            return { ok: false, error: 'This build opens boards in a separate window.' };
+        }
+        try {
+            sessions.show(board, bounds);
+            return { ok: true };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('hideBoardView', (_e, board) => {
+        if (typeof sessions?.hide !== 'function') return { ok: true };
+        if (board) sessions.hide(board); else sessions.hideAll();
+        return { ok: true };
+    });
+
+    /** Does this build show boards inside the window? The UI adapts either way. */
+    ipcMain.handle('browserIsEmbedded', () => ({ embedded: Boolean(config.EMBED_BROWSER) }));
 
     // What this consultant has already applied to, grouped by board. Fetched on
     // demand rather than held in the snapshot: it is history, it does not change
@@ -454,7 +547,23 @@ app.whenReady().then(() => {
     // testable without any browser installed at all.
     const { chromium, launchOptions, source } = resolveBrowser();
     diagnostics.record('browser', `driving ${source}`);
-    sessions = new BrowserSessions({ chromium, profilesDir: paths.profiles, launchOptions });
+
+    if (config.EMBED_BROWSER) {
+        // Each board's page lives in a view inside our own window, shown on the
+        // Boards tab. Nothing else changes: the engine, the filler and the
+        // apply flow are handed a Playwright page either way and never learn
+        // which kind it is.
+        sessions = new EmbeddedSessions({
+            chromium,
+            cdpEndpoint: `http://127.0.0.1:${config.CDP_PORT}`,
+            getWindow: () => win,
+            log: (m) => { win?.webContents.send('log', m); },
+        });
+    } else {
+        // The original path, kept because driving Electron's own pages depends
+        // on a debugging port that a locked-down machine may refuse to open.
+        sessions = new BrowserSessions({ chromium, profilesDir: paths.profiles, launchOptions });
+    }
 
     engine = new CycleEngine({
         hub, sessions, store, outbox, paths,
@@ -472,9 +581,12 @@ app.whenReady().then(() => {
     showWindow();
 
     if (store.get('activatedAt')) {
-        setStatus('IDLE');
+        // Activated is not the same as running. The heartbeat still goes out —
+        // the hub needs to know this device is alive and revocable — but no job
+        // is touched until Start.
+        setStatus(store.get('automationOn') ? 'IDLE' : 'STOPPED');
         heartbeat();
-        scheduleCycle();
+        if (store.get('automationOn')) scheduleCycle();
     } else {
         setStatus('NEEDS_ACTIVATION');
     }

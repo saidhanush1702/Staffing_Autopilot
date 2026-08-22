@@ -22,14 +22,37 @@ contextBridge.exposeInMainWorld('smartapply', {
     /** Trade the one-time code from the administrator for a bound device. */
     activate: (activationCode) => ipcRenderer.invoke('activate', activationCode),
 
-    /** Check for work now, rather than waiting for the next cycle. */
-    runNow: () => ipcRenderer.invoke('runNow'),
+    /**
+     * Begin working the queue, with the consultant's choice about submitting.
+     *
+     * `autoSubmit` is passed in once, here, because it is a decision taken
+     * before starting rather than a switch to flip while jobs are in flight.
+     */
+    startAutomation: (options) => ipcRenderer.invoke('startAutomation', options),
+
+    /** Stop working. Anything already in progress finishes; nothing new starts. */
+    stopAutomation: () => ipcRenderer.invoke('stopAutomation'),
+
+    /**
+     * Look for new jobs. This READS — it never applies to anything, which is
+     * why it is offered whether or not automation is running.
+     */
+    checkForJobs: () => ipcRenderer.invoke('checkForJobs'),
 
     /** Open a board's login page so the consultant can sign in themselves. */
     signIn: (board) => ipcRenderer.invoke('signIn', board),
 
     /** Hand a link to the real browser instead of opening it in the app. */
     openExternal: (url) => ipcRenderer.invoke('openExternal', url),
+
+    /**
+     * Show a board's live page at these coordinates inside the window, or move
+     * it out of sight again. The page itself is a native view above the HTML,
+     * so the card reserves the space and reports where it ended up.
+     */
+    showBoardView: (board, bounds) => ipcRenderer.invoke('showBoardView', board, bounds),
+    hideBoardView: (board) => ipcRenderer.invoke('hideBoardView', board),
+    browserIsEmbedded: () => ipcRenderer.invoke('browserIsEmbedded'),
 
     /** Everything this consultant has applied to, grouped by job board. */
     applications: () => ipcRenderer.invoke('applications'),

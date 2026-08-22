@@ -105,6 +105,50 @@ class CycleEngine {
         this.signInWaitMs = signInWaitMs;
         this.signInPollMs = signInPollMs;
         this.running = false;
+        this.stopRequested = false;
+    }
+
+    /**
+     * Ask the pass in progress to stop.
+     *
+     * ── WHY A FLAG AND NOT A KILL ─────────────────────────────────────
+     *
+     * Stop used to clear the next timer and nothing else, so a pass already
+     * under way carried on through every remaining job — pressing Stop appeared
+     * to do nothing at all, because the visible effect only arrived once the
+     * queue ran out.
+     *
+     * It stops BETWEEN jobs rather than mid-application. Abandoning a
+     * half-filled form would leave the board holding an application nobody
+     * finished and nothing in our record saying so; one more job is a far
+     * smaller cost than that.
+     */
+    requestStop() {
+        this.stopRequested = true;
+    }
+
+    /**
+     * Undo a stop, so work can begin again.
+     *
+     * Separate from `run()` on purpose. If a pass cleared the flag on its way
+     * in, a stop asked for while the app happened to be idle would be forgotten
+     * by the next scheduled pass — stopped has to mean stopped until somebody
+     * presses Start.
+     */
+    allowStart() {
+        this.stopRequested = false;
+    }
+
+    /**
+     * Has stopping been asked for?
+     *
+     * Only the engine's own flag. Whether automation is switched on at all is
+     * the main process's business, checked before a pass is ever started —
+     * consulting it here as well made the engine refuse to work whenever that
+     * setting had not been written yet.
+     */
+    #shouldStop() {
+        return this.stopRequested;
     }
 
     /**
@@ -153,6 +197,13 @@ class CycleEngine {
             let worked = 0;
 
             for (const item of items) {
+                // Checked before every job, so Stop takes effect within one
+                // application rather than at the end of the queue.
+                if (this.#shouldStop()) {
+                    this.log('stopping — no more jobs will be started');
+                    return { ...stats, stopped: true };
+                }
+
                 const board = boardForPortal(item.portal);
                 if (!board) {
                     // The hub thought this was ours; we have no recipe for it.
@@ -196,6 +247,33 @@ class CycleEngine {
             this.store.appendCycle({ at: new Date().toISOString(), ...stats });
             this.running = false;
         }
+    }
+
+    /**
+     * Fetch the current state of things without working any of it.
+     *
+     * ── WHY THIS IS NOT A SHORT CYCLE ─────────────────────────────────
+     *
+     * "Check now" used to start a work pass, which meant it could only be
+     * offered while automation was running — and pressing it did something
+     * consequential: it applied to jobs. Two different actions were wearing one
+     * button.
+     *
+     * This one only ever reads. It refreshes the queue, the pause state and the
+     * board holds, so a consultant can see what has arrived without committing
+     * to anything. That is why it can be available at all times, including
+     * while stopped.
+     */
+    async refresh() {
+        const beat = await this.hub.heartbeat();
+        this.store.set({
+            paused: beat.paused,
+            pausedBoards: beat.pausedBoards ?? [],
+        });
+
+        const { items } = await this.hub.queue();
+        this.store.set({ queue: items, lastCheckedAt: new Date().toISOString() });
+        return { ok: true, waiting: items.length, paused: Boolean(beat.paused) };
     }
 
     /**
@@ -417,10 +495,45 @@ class CycleEngine {
             return 'counted';
         }
 
-        // Filled, and stopped. The consultant reviews and submits (R-02).
+        // ── FINISH IT, OR HAND IT OVER ────────────────────────────────
+        //
+        // The application is complete and sitting on its submit step. Which of
+        // those two happens next is the consultant's own choice, made before
+        // they pressed Start and held in `autoSubmit`.
+        //
+        // When it does submit, it submits HERE — not from the review screen.
+        // The app drives one browser page per board, so moving to the next job
+        // navigates this form away; this is the only moment it is still on
+        // screen. That is also the bug the review screen kept hitting.
         await this.#report(() => this.hub.filled(item.id));
-        this.#rememberForReview(item, board, result);
+        this.#rememberForReview(item, board, result, { profile, approvedAnswers, resumePath });
         stats.filled += 1;
+
+        if (this.store.get('autoSubmit') && result.readyToSubmit) {
+            this.activity(board.name, 'SUBMITTING',
+                `${item.company}: submitting ${result.qa.length} answer(s)`);
+
+            const pressed = await pressSubmit(page, board);
+            if (pressed.ok) {
+                await this.reportSubmitted(item.id, {
+                    confirmed: pressed.confirmed,
+                    detail: pressed.detail,
+                });
+                stats.submitted = (stats.submitted ?? 0) + 1;
+                this.activity(board.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
+                this.log(`submitted ${item.company} — ${item.title}`);
+                return 'counted';
+            }
+
+            // It stays in the review list rather than being recorded as sent.
+            // A record claiming an employer received something they did not is
+            // worse than having no record at all.
+            this.activity(board.name, 'READY_TO_SUBMIT',
+                `${item.company}: could not submit — ${pressed.error}`);
+            this.log(`could not submit ${item.company}: ${pressed.error}`);
+            return 'counted';
+        }
+
         this.activity(board.name, 'READY_TO_SUBMIT',
             `${item.company}: filled ${result.qa.length} field(s) — waiting for you to submit`);
         this.log(`filled ${item.company} — ${item.title}, waiting for your review`);
@@ -434,7 +547,7 @@ class CycleEngine {
      * what gets reported after the consultant submits, and it must survive a
      * restart between filling and submitting.
      */
-    #rememberForReview(item, board, result) {
+    #rememberForReview(item, board, result, context = {}) {
         const waiting = (this.store.get('awaitingReview') ?? [])
             .filter((w) => w.itemId !== item.id);
 
@@ -449,6 +562,11 @@ class CycleEngine {
             attachedResume: result.attachedResume,
             optionalUnanswered: result.unknown.filter((u) => !u.required),
             qa: result.qa,
+            // Kept so the application can be rebuilt if the browser has moved
+            // on by the time somebody presses Submit on the review screen.
+            profile: context.profile ?? null,
+            approvedAnswers: context.approvedAnswers ?? [],
+            resumePath: context.resumePath ?? null,
         });
 
         this.store.set({ awaitingReview: waiting });
@@ -514,7 +632,21 @@ class CycleEngine {
             };
         }
 
+        // ── THE FORM IS PROBABLY GONE ─────────────────────────────────
+        //
+        // One browser page is driven per board, so every job worked after this
+        // one navigated that page away. By the time somebody reads the review
+        // screen and presses Submit, the application they are looking at is
+        // usually no longer displayed — which is what produced "the submit
+        // button is no longer on screen" for anything but the most recent job.
+        //
+        // So it is rebuilt: reopen the job and walk the apply flow back to its
+        // submit step, rather than pressing whatever submit button happens to
+        // be on screen — which would belong to a different application.
         const page = await this.sessions.page(entry.board);
+        const ready = await this.#reachSubmitStep(page, board, entry);
+        if (!ready.ok) return ready;
+
         this.activity(entry.board, 'SUBMITTING', `Submitting ${entry.company} — you asked for this`);
         const pressed = await pressSubmit(page, board);
         if (!pressed.ok) {
@@ -530,6 +662,41 @@ class CycleEngine {
             detail: pressed.detail,
         });
         return { ...reported, ...pressed };
+    }
+
+    /**
+     * Put the application in `entry` back on screen, at its submit step.
+     *
+     * Reopening rather than trusting whatever the page currently shows: the
+     * alternative is pressing a submit button that belongs to another job.
+     */
+    async #reachSubmitStep(page, board, entry) {
+        const recipe = board.apply;
+        if (!recipe) return { ok: true };
+
+        const sameJob = page.url().includes(new URL(entry.url).pathname);
+        if (sameJob && await page.locator(recipe.submit).first().count() > 0) {
+            return { ok: true };
+        }
+
+        this.activity(entry.board, 'WORKING', `Reopening ${entry.company} to submit it`);
+        await this.sessions.openJob(entry.board, entry.url);
+
+        const flow = await runApplyFlow(page, board, {
+            profile: entry.profile ?? {},
+            approvedAnswers: entry.approvedAnswers ?? [],
+            resumePath: entry.resumePath ?? null,
+        }, { log: this.log });
+
+        if (flow.outcome === 'READY_TO_SUBMIT') return { ok: true };
+        if (flow.outcome === 'ALREADY_APPLIED') {
+            return { ok: false, error: 'The board says this application was already sent.' };
+        }
+        return {
+            ok: false,
+            error: `Could not get back to the submit step: ${flow.detail}. `
+                + 'Open it and finish it in the browser.',
+        };
     }
 
     /** Drop a filled form the consultant decided not to send. */

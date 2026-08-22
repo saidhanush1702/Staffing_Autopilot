@@ -245,12 +245,79 @@ const chooseOption = (optionLabels, answer) => {
     return null;
 };
 
+/** US state abbreviations, so "tx" can recognise "Texas" in a suggestion. */
+const STATE_NAMES = {
+    al: 'alabama', ak: 'alaska', az: 'arizona', ar: 'arkansas', ca: 'california',
+    co: 'colorado', ct: 'connecticut', de: 'delaware', fl: 'florida', ga: 'georgia',
+    hi: 'hawaii', id: 'idaho', il: 'illinois', in: 'indiana', ia: 'iowa',
+    ks: 'kansas', ky: 'kentucky', la: 'louisiana', me: 'maine', md: 'maryland',
+    ma: 'massachusetts', mi: 'michigan', mn: 'minnesota', ms: 'mississippi',
+    mo: 'missouri', mt: 'montana', ne: 'nebraska', nv: 'nevada', nh: 'new hampshire',
+    nj: 'new jersey', nm: 'new mexico', ny: 'new york', nc: 'north carolina',
+    nd: 'north dakota', oh: 'ohio', ok: 'oklahoma', or: 'oregon', pa: 'pennsylvania',
+    ri: 'rhode island', sc: 'south carolina', sd: 'south dakota', tn: 'tennessee',
+    tx: 'texas', ut: 'utah', vt: 'vermont', va: 'virginia', wa: 'washington',
+    wv: 'west virginia', wi: 'wisconsin', wy: 'wyoming', dc: 'district of columbia',
+};
+
+/**
+ * Choose one entry from a typeahead's suggestions.
+ *
+ * ── WHY THIS IS NOT `chooseOption` ────────────────────────────────────
+ *
+ * `chooseOption` refuses when several options could fit, which is correct for a
+ * screening question — two plausible answers is exactly when a machine should
+ * not be choosing. A location typeahead is the opposite case: typing "dallas"
+ * returns eight entries by design, and refusing them all leaves the field
+ * holding text the form will not accept, so the application simply stops.
+ *
+ *   Dallas, Texas, United States      ← what the consultant means
+ *   Dallas-Fort Worth Metroplex
+ *   Dallas County, Texas, United States
+ *   Dallas, Georgia, United States    ← a different place entirely
+ *
+ * So it disambiguates with something it actually knows: the consultant's state.
+ * "tx" recognises "Texas" and picks that entry over the Georgia one. Only when
+ * the state cannot separate them does it fall back to the list's own first
+ * entry, which is the board's best match and what a person clicks.
+ *
+ * @param hint the consultant's state, if known
+ */
+const chooseSuggestion = (options, typed, hint = null) => {
+    const want = normaliseQuestion(typed);
+    if (!want || options.length === 0) return null;
+
+    const rows = options
+        .map((text) => ({ text, key: normaliseQuestion(text) }))
+        .filter((o) => o.key);
+
+    const exact = rows.find((o) => o.key === want);
+    if (exact) return exact.text;
+
+    const starts = rows.filter((o) => o.key === want || o.key.startsWith(`${want} `));
+    if (starts.length === 0) return null;
+    if (starts.length === 1) return starts[0].text;
+
+    // Several fit. Prefer the one that also matches where the consultant is.
+    const state = normaliseQuestion(hint);
+    const expanded = STATE_NAMES[state] ?? state;
+    if (expanded) {
+        const byState = starts.filter((o) => o.key.includes(expanded));
+        if (byState.length >= 1) return byState[0].text;
+    }
+
+    // Otherwise take the board's own top-ranked suggestion.
+    return starts[0].text;
+};
+
 module.exports = {
     normaliseQuestion,
     buildAnswerBook,
     resolveAnswer,
     isAffirmative,
     chooseOption,
+    chooseSuggestion,
+    STATE_NAMES,
     splitName,
     PROFILE_KEYS,
 };

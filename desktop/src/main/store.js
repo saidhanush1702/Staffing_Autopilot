@@ -39,10 +39,25 @@ const EMPTY = {
     consultant: null,
     machineFingerprint: null,
     activatedAt: null,
+    // ── HOW THE CONSULTANT LEFT IT ────────────────────────────────────
+    //
+    // The app no longer starts working the moment it opens. Somebody presses
+    // Start, and these remember what they chose — including across a restart,
+    // so a machine that reboots overnight does not quietly resume applying to
+    // jobs on its own.
+    //
+    // `autoSubmit` may only be changed while stopped. Flipping it mid-run would
+    // mean some applications in the same pass were reviewed and others were
+    // sent, with nothing on screen saying which.
+    automationOn: false,
+    autoSubmit: false,
     // Last known settings from the hub.
     paused: false,
     pausedBoards: [],
     // The cycle's own bookkeeping.
+    // When the queue was last READ, as opposed to last worked. They are
+    // different questions and a consultant asks the first one far more often.
+    lastCheckedAt: null,
     lastCycleAt: null,
     nextCycleAt: null,
     cycleLog: [],

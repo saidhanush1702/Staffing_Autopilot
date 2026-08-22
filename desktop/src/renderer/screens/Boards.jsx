@@ -1,31 +1,36 @@
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /**
  * ── ONE CARD PER JOB BOARD ────────────────────────────────────────────
  *
- * What the app is doing, board by board, in the board's own words: connecting,
- * reading a page, filling, waiting for you, stopped.
+ * Collapsed, a card answers "is this board working?" in one line. Expanded, it
+ * shows the board's live page — the actual automation, happening — with its
+ * activity beside it.
  *
- * ── WHY IT IS SPLIT BY BOARD RATHER THAN BEING ONE LOG ────────────────
+ * ── WHY THE PAGE IS A HOLE IN THE CARD ────────────────────────────────
  *
- * A single stream interleaves three boards, and the question a consultant
- * actually has is never "what happened at 14:32" — it is "is LinkedIn working?"
- * Answering that from a merged log means reading past everything else. Split by
- * board, it is the first line of the right card.
+ * The live page is an Electron view: a native layer painted ON TOP of this
+ * HTML, not an element inside it. React cannot draw it and cannot clip it.
  *
- * Every board is listed even when it has done nothing. A board that is absent
- * because nothing has happened looks identical to a board that is broken.
+ * So the card leaves a gap of exactly the right size, measures where that gap
+ * ended up on screen, and asks the main process to move the view there. When
+ * the card collapses, or the tab changes, or the window is resized, the view is
+ * moved away or repositioned to match. Everything here is bookkeeping for that
+ * one illusion.
+ *
+ * Only one board's page is on screen at a time — they would otherwise stack on
+ * top of each other, since none of them is clipped by anything.
  */
 const TONE = {
     IDLE: ['idle', 'Idle'],
-    CONNECTING: ['ok', 'Connecting'],
-    WORKING: ['ok', 'Working'],
-    FILLING: ['ok', 'Filling'],
-    SUBMITTING: ['ok', 'Submitting'],
+    CONNECTING: ['brand', 'Opening'],
+    WORKING: ['brand', 'Working'],
+    FILLING: ['brand', 'Filling'],
+    SUBMITTING: ['brand', 'Submitting'],
     SUBMITTED: ['ok', 'Submitted'],
     READY_TO_SUBMIT: ['warn', 'Waiting on you'],
     PARKED: ['warn', 'Parked'],
-    HANDED_OVER: ['idle', 'Handed to you'],
+    HANDED_OVER: ['idle', 'Passed to you'],
     SIGNED_IN: ['ok', 'Signed in'],
     SIGNED_OUT: ['warn', 'Signed out'],
     STOPPED: ['stop', 'Stopped'],
@@ -34,62 +39,131 @@ const TONE = {
 
 const time = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '');
 
-const Board = ({ board }) => {
-    const [open, setOpen] = useState(false);
+const Board = ({ board, embedded, openBoard, setOpenBoard }) => {
+    const slot = useRef(null);
+    const open = openBoard === board.board;
+
     const [tone, label] = TONE[board.state] ?? ['idle', board.state];
     const lines = board.lines ?? [];
     const latest = lines[lines.length - 1];
+    const live = ['CONNECTING', 'WORKING', 'FILLING', 'SUBMITTING'].includes(board.state);
+
+    // Keep the native view sitting exactly over the gap this card left for it.
+    useLayoutEffect(() => {
+        if (!open || !embedded) return undefined;
+
+        const place = () => {
+            const box = slot.current?.getBoundingClientRect();
+            if (!box || box.width < 2) return;
+            window.smartapply.showBoardView(board.board, {
+                x: box.left, y: box.top, width: box.width, height: box.height,
+            });
+        };
+
+        place();
+        // The gap moves whenever anything above it does.
+        const onScroll = () => place();
+        const observer = new ResizeObserver(place);
+        if (slot.current) observer.observe(slot.current);
+        window.addEventListener('resize', onScroll, true);
+        document.querySelector('.screen')?.addEventListener('scroll', onScroll, true);
+
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', onScroll, true);
+            document.querySelector('.screen')?.removeEventListener('scroll', onScroll, true);
+            window.smartapply.hideBoardView(board.board);
+        };
+    }, [open, embedded, board.board]);
 
     return (
-        <div className="card">
+        <div className="card stack">
             <div className="row">
-                <div>
-                    <strong>{board.label}</strong>
-                    <p className="muted" style={{ margin: '2px 0 0' }}>
-                        {latest ? latest.message : 'Nothing yet'}
-                        {latest ? ` · ${time(latest.at)}` : ''}
-                    </p>
-                    {!board.canFill && (
-                        <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>
-                            Form filling is not switched on for this board yet — jobs here are
-                            opened and passed to you.
+                <button
+                    type="button"
+                    className="quiet disclosure"
+                    aria-expanded={open}
+                    onClick={() => setOpenBoard(open ? null : board.board)}
+                >
+                    <span className={`chevron${open ? ' open' : ''}`} aria-hidden="true" />
+                    <span>
+                        <strong>{board.label}</strong>
+                        <p className="muted" style={{ marginTop: 2 }}>
+                            {latest ? `${latest.message} · ${time(latest.at)}` : 'Nothing yet'}
                         </p>
-                    )}
-                </div>
-                <span className={`pill ${tone}`}>{label}</span>
+                    </span>
+                </button>
+
+                <span className={`pill ${tone}`}>
+                    <span className={`dot${live ? ' live' : ''}`} />
+                    {label}
+                </span>
             </div>
 
+            {!board.canFill && (
+                <p className="muted">
+                    Form filling is not switched on for this board — its jobs are opened
+                    and passed to you.
+                </p>
+            )}
+
             {board.state === 'SIGNED_OUT' && (
-                <div className="row" style={{ marginTop: 10 }}>
+                <div className="row">
                     <span className="muted">
                         {board.until
                             ? `On hold until ${new Date(board.until).toLocaleString()}`
-                            : 'Sign in and this board carries on by itself.'}
+                            : embedded
+                                ? 'Open this board and sign in below.'
+                                : 'Sign in and this board carries on by itself.'}
                     </span>
                     <button
                         type="button"
                         className="primary"
-                        onClick={() => window.smartapply.signIn(board.board)}
+                        onClick={() => {
+                            setOpenBoard(board.board);
+                            window.smartapply.signIn(board.board);
+                        }}
                     >
                         Sign in
                     </button>
                 </div>
             )}
 
-            {lines.length > 0 && (
+            {open && (
                 <>
-                    <p style={{ margin: '10px 0 0' }}>
-                        <button type="button" className="secondary" onClick={() => setOpen(!open)}>
-                            {open ? 'Hide activity' : `Activity (${lines.length})`}
-                        </button>
-                    </p>
-                    {open && (
-                        <div className="card log" style={{ marginTop: 8 }}>
-                            {lines.map((l, i) => (
-                                <div key={i}>{`${time(l.at)}  ${l.message}`}</div>
-                            ))}
+                    {embedded ? (
+                        <div>
+                            <p className="label" style={{ marginBottom: 6 }}>Live page</p>
+                            {/* The gap the native view is moved over. */}
+                            <div ref={slot} className="board-view" />
+                            <p className="muted" style={{ marginTop: 6 }}>
+                                This is the real page the app is working in. You can use it —
+                                signing in here is how the board remembers you.
+                            </p>
                         </div>
+                    ) : (
+                        <p className="note">
+                            This build opens boards in a separate browser window.
+                        </p>
                     )}
+
+                    <div>
+                        <p className="label" style={{ marginBottom: 6 }}>
+                            Activity {lines.length > 0 ? `(${lines.length})` : ''}
+                        </p>
+                        {lines.length === 0 ? (
+                            <p className="muted">Nothing yet.</p>
+                        ) : (
+                            <div className="log">
+                                {[...lines].reverse().map((l, i) => (
+                                    <div className="log-line" key={i}>
+                                        <span className="log-time">{time(l.at)}</span>
+                                        <span>{l.message}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
                 </>
             )}
         </div>
@@ -97,13 +171,34 @@ const Board = ({ board }) => {
 };
 
 const Boards = ({ boards }) => {
-    if (!boards || boards.length === 0) return null;
-    return (
-        <>
-            <h2>Job boards</h2>
-            {boards.map((b) => <Board key={b.board} board={b} />)}
-        </>
-    );
+    const [embedded, setEmbedded] = useState(false);
+    const [openBoard, setOpenBoard] = useState(null);
+
+    useEffect(() => {
+        window.smartapply.browserIsEmbedded().then((r) => setEmbedded(Boolean(r.embedded)));
+        // Leaving this tab must take the view with it — it floats above the
+        // whole window and would otherwise cover whatever came next.
+        return () => { window.smartapply.hideBoardView(null); };
+    }, []);
+
+    if (!boards || boards.length === 0) {
+        return (
+            <div className="card empty">
+                <p className="value">No job boards yet</p>
+                <p>They appear once the app knows which boards your jobs come from.</p>
+            </div>
+        );
+    }
+
+    return boards.map((b) => (
+        <Board
+            key={b.board}
+            board={b}
+            embedded={embedded}
+            openBoard={openBoard}
+            setOpenBoard={setOpenBoard}
+        />
+    ));
 };
 
 export default Boards;

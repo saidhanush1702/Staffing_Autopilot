@@ -23,7 +23,9 @@ const { Outbox } = require('../src/main/outbox.js');
 const { fingerprint } = require('../src/main/fingerprint.js');
 const { BOARDS, boardForPortal } = require('../src/main/browser/boards.js');
 const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
-const { buildAnswerBook, resolveAnswer, chooseOption } = require('../src/main/browser/answers.js');
+const {
+    buildAnswerBook, resolveAnswer, chooseOption, chooseSuggestion,
+} = require('../src/main/browser/answers.js');
 const { fillForm } = require('../src/main/browser/filler.js');
 const {
     runApplyFlow, pressSubmit, isSubmit,
@@ -398,6 +400,37 @@ check('an employer name is not the candidate name',
 check('a confirm-email field is not filled',
     resolveAnswer('Confirm email address', book), null);
 check('"Full name" still resolves', resolveAnswer('Full name', book).value, 'Mary Jane Watson');
+
+// A typeahead is only finished when an option has been CHOSEN. These are the
+// exact suggestions LinkedIn returned for "dallas" on a live application.
+const DALLAS = [
+    'Dallas, Texas, United States',
+    'Dallas-Fort Worth Metroplex',
+    'Dallas County, Texas, United States',
+    'Dallas, Georgia, United States',
+    'Dallas, Oregon, United States',
+];
+check("the consultant state picks the right Dallas",
+    chooseSuggestion(DALLAS, 'dallas', 'tx'), 'Dallas, Texas, United States');
+check('  a different state picks a different one',
+    chooseSuggestion(DALLAS, 'dallas', 'ga'), 'Dallas, Georgia, United States');
+check("  with no state, the top-ranked suggestion is taken",
+    chooseSuggestion(DALLAS, 'dallas', null), 'Dallas, Texas, United States');
+check('  and a place that is not in the list is refused',
+    chooseSuggestion(DALLAS, 'mumbai', 'tx'), null);
+// The regression: the strict rule called all eight ambiguous, chose nothing,
+// and the application stopped on a field that looked correctly filled in.
+check('  the strict rule would have refused all of them',
+    chooseOption(DALLAS, 'dallas'), null);
+check('a typeahead suggestion is matched exactly',
+    chooseOption(['Dallas, Texas, United States', 'Dallas, Georgia, United States'], 'Dallas, Texas, United States'),
+    'Dallas, Texas, United States');
+check('  a unique prefix is taken',
+    chooseOption(['Dallas, Texas, United States', 'Houston, Texas'], 'Dallas'),
+    'Dallas, Texas, United States');
+check('  but two plausible cities are left alone',
+    chooseOption(['Dallas, Texas, United States', 'Dallas, Georgia, United States'], 'Dallas'),
+    null);
 
 check('an option is chosen by exact text', chooseOption(['Yes', 'No'], 'Yes'), 'Yes');
 check('  and by a unique prefix',
@@ -842,6 +875,147 @@ check('after filling, submit still has not been clicked', wiz.clicked.includes('
 const pressed = await pressSubmit(wiz, wizardBoard);
 check('pressSubmit clicks it', pressed.ok, true);
 check('  and only then does the click appear', wiz.clicked.includes('submit'), true);
+
+
+/* ── start, stop, and auto-submit ─────────────────────────────────────── */
+
+section('nothing is submitted unless the consultant chose it');
+
+BOARDS.WELLFOUND.verified = true;
+BOARDS.WELLFOUND.apply = {
+    open: 'OPEN', dialog: 'DIALOG', next: 'NEXT', submit: 'SUBMIT',
+    alreadyApplied: 'APPLIED', maxSteps: 4,
+};
+
+const applyHub = () => fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item()],
+        profile: { name: 'Mary Jane Watson', email: 'mj@example.com' },
+        approvedAnswers: [],
+    }),
+    resume: () => Promise.resolve('/tmp/cv.pdf'),
+});
+
+/** A board page whose apply flow reaches submit on the first step. */
+const readyPage = () => {
+    const clicked = [];
+    const ctrl = (kind) => ({
+        count: async () => (kind === 'next' ? 0 : 1),
+        first() { return this; },
+        nth() { return this; },
+        isVisible: async () => kind !== 'next' && kind !== 'already',
+        innerText: async () => ({ open: 'Apply', submit: 'Submit application' }[kind] ?? ''),
+        getAttribute: async () => null,
+        click: async () => clicked.push(kind),
+        scrollIntoViewIfNeeded: async () => {},
+        setInputFiles: async () => {},
+        fill: async () => {}, pressSequentially: async () => {}, check: async () => {},
+        selectOption: async () => {},
+        page: () => ({ waitForTimeout: async () => {} }),
+    });
+    const kindOf = (sel) => (sel.includes('OPEN') ? 'open'
+        : sel.includes('NEXT') ? 'next'
+            : sel.includes('SUBMIT') ? 'submit'
+                : sel.includes('APPLIED') ? 'already' : 'dialog');
+    return {
+        clicked,
+        url: () => 'https://wellfound.com/jobs/1',
+        bringToFront: async () => {},
+        waitForSelector: async () => null,
+        waitForTimeout: async () => null,
+        // One answerable field, so the flow has something real to fill and the
+        // result is a genuine application rather than an empty one.
+        $$eval: async () => [{
+            index: 0, tag: 'input', type: 'email', name: '', label: 'Email',
+            groupLabel: '', required: true, disabled: false, visible: true,
+            hasValue: false, options: [],
+        }],
+        locator: (sel) => ctrl(kindOf(sel)),
+    };
+};
+
+// Auto-submit OFF: filled, held, and nothing sent.
+let sess = fakeSessions();
+let rp = readyPage();
+sess.page = async () => rp;
+hub = applyHub();
+engine = engineWith(hub, sess);
+engine.store.set({ automationOn: true, autoSubmit: false });
+r = await engine.run();
+check('with auto-submit off the application is filled', r.filled, 1);
+check('  nothing is submitted', rp.clicked.includes('submit'), false);
+check('  the hub is not told it was sent', hub.calls.some((c) => c.name === 'submitted'), false);
+check('  and it waits on the review screen', engine.store.get('awaitingReview').length, 1);
+
+// Auto-submit ON: the same run sends it.
+sess = fakeSessions();
+rp = readyPage();
+sess.page = async () => rp;
+hub = applyHub();
+engine = engineWith(hub, sess);
+engine.store.set({ automationOn: true, autoSubmit: true });
+r = await engine.run();
+check('with auto-submit on the application is submitted', rp.clicked.includes('submit'), true);
+check('  and reported to the hub', hub.calls.some((c) => c.name === 'submitted'), true);
+check('  with the answers that were filled',
+    Array.isArray(hub.calls.find((c) => c.name === 'submitted').args[1].qa), true);
+check('  and it does not linger on the review screen',
+    engine.store.get('awaitingReview').length, 0);
+
+BOARDS.WELLFOUND.verified = false;
+delete BOARDS.WELLFOUND.apply;
+check('the test board is left as it was found',
+    [BOARDS.WELLFOUND.verified, 'apply' in BOARDS.WELLFOUND], [false, false]);
+
+
+section('stop reaches the pass that is already running');
+
+// The bug: Stop cleared the next timer and nothing else, so a pass under way
+// worked every remaining job. Pressing Stop looked like it did nothing.
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: Array.from({ length: 8 }, (_, i) => item({ id: `s${i}` })),
+    }),
+});
+const stoppable = engineWith(hub, fakeSessions());
+stoppable.requestStop();
+r = await stoppable.run();
+check('a stop asked for before the pass leaves every job alone', r.leased, 0);
+check('  and the pass reports that it stopped', r.stopped, true);
+check('  the queue was still pulled, so nothing is lost', r.pulled, 8);
+
+// Stopped stays stopped until Start — a scheduled pass must not undo it.
+r = await stoppable.run();
+check('a later pass is still stopped', r.stopped, true);
+
+stoppable.allowStart();
+r = await stoppable.run();
+check('the next pass runs normally', r.leased, 8);
+check('  and is not marked stopped', r.stopped, undefined);
+
+
+section('checking for jobs only reads');
+
+// "Check now" used to start a work pass, which is why it could only be offered
+// while automation was running — pressing it applied to jobs. Now it reads.
+hub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: Array.from({ length: 4 }, (_, i) => item({ id: `c${i}` })),
+    }),
+});
+const reader = engineWith(hub, fakeSessions());
+const seen = await reader.refresh();
+
+check('it reports what is waiting', seen.waiting, 4);
+check('  and stores it for the screen', reader.store.get('queue').length, 4);
+check('  nothing was leased', hub.calls.some((c) => c.name === 'lease'), false);
+check('  nothing was opened, filled or submitted',
+    hub.calls.some((c) => ['filled', 'parked', 'submitted', 'reclassify'].includes(c.name)),
+    false);
+check('  and it works while the app is stopped', seen.ok, true);
 
 /* ── packaging concerns ───────────────────────────────────────────────── */
 

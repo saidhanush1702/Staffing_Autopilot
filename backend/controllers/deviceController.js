@@ -25,6 +25,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { checkTransition } from '../config/queueStates.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
+import { findOrCreateQuestion } from './questionController.js';
 import { hashToken, newToken, newActivationCode } from '../middleware/verifyDevice.js';
 import { logAction } from './auditLogController.js';
 import { resolveStoredPath } from '../utils/upload.js';
@@ -394,19 +395,60 @@ export const reportParked = async (req, res, next) => {
             return res.status(422).json({ error: 'Parking an item requires at least one unknown question.' });
         }
 
-        // Match to the bank by normalised text so the same question asked by
-        // two employers resolves to one entry, then park on it.
-        const first = unknowns[0].questionText;
-        const { rows: existing } = await query(
-            `SELECT id FROM questions
-              WHERE organization_id = $1 AND normalised_key = $2
-              LIMIT 1`,
-            [req.device.orgId, normaliseQuestion(first)],
-        );
+        // Which job asked, so the consultant knows why a question appeared.
+        const item = await loadOwnedItem(req.device, req.params.id);
+        if (!item) return res.status(404).json({ error: 'Queue item not found.' });
+
+        // ── EVERY UNKNOWN GOES INTO THE BANK ──────────────────────────
+        //
+        // This used to look the first question up and discard the rest. Nothing
+        // was ever created, so a form asking six things produced no entry
+        // anywhere, "My Answers" stayed empty, and the parked item could never
+        // be released — the application was stuck permanently with no way for
+        // anyone to unstick it.
+        //
+        // Now each one is added to the bank if it is new, matched to the
+        // existing entry if it is not, and raised against THIS consultant so it
+        // appears on their screen. Categorisation is the same classifier the
+        // rest of the system uses, so a question about pay still lands in the
+        // owner-approval queue rather than a recruiter's (R-07).
+        const asked = [];
+        for (const u of unknowns.slice(0, 20)) {
+            const text = String(u.questionText ?? '').trim();
+            if (!text) continue;
+
+            const { question } = await findOrCreateQuestion(
+                req.device.orgId, req.device.consultantId,
+                { questionText: text, appliesToAll: false },
+            );
+
+            await query(
+                `INSERT INTO consultant_questions
+                    (id, organization_id, consultant_id, question_id, source, source_note, created_by)
+                 VALUES ($1,$2,$3,$4,'FORM',$5,$6)
+                 ON CONFLICT (consultant_id, question_id) DO NOTHING`,
+                [uuidv4(), req.device.orgId, req.device.consultantId, question.id,
+                    `Asked by ${item?.company ?? 'an application form'}`.slice(0, 255),
+                    req.device.consultantId],
+            );
+            asked.push(question);
+        }
+
+        if (asked.length === 0) {
+            return res.status(422).json({ error: 'None of those questions had any text.' });
+        }
+
+        // The item is parked on the FIRST one, because releasing needs a single
+        // question to watch. The rest are on the consultant's list either way,
+        // and answering them all is what actually gets this application sent.
+        const summary = unknowns.length === 1
+            ? `Form asked: ${unknowns[0].questionText.slice(0, 380)}`
+            : `Form asked ${unknowns.length} questions, starting with: `
+              + `${unknowns[0].questionText.slice(0, 340)}`;
 
         return await moveItem(req, res, 'PARKED_UNKNOWN', {
-            reason: `Form asked: ${first.slice(0, 400)}`,
-            extra: { parkedQuestionId: existing[0]?.id ?? null, leasedBy: null, leasedUntil: null },
+            reason: summary,
+            extra: { parkedQuestionId: asked[0].id, leasedBy: null, leasedUntil: null },
         });
     } catch (err) {
         return next(err);

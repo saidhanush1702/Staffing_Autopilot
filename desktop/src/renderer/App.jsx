@@ -1,18 +1,45 @@
 import { useCallback, useEffect, useState } from 'react';
 import Activation from './screens/Activation.jsx';
-import Status from './screens/Status.jsx';
+import Work from './screens/Work.jsx';
+import Boards from './screens/Boards.jsx';
+import Applied from './screens/Applied.jsx';
+import Activity from './screens/Activity.jsx';
+import StatusPill from './screens/StatusPill.jsx';
 
 /**
- * The whole app is two screens: activate, or show what is happening.
+ * ── THE SHELL ─────────────────────────────────────────────────────────
  *
- * All state arrives from the main process — this component never fetches
- * anything, because the renderer has no network access at all. It subscribes to
- * pushes and asks for a snapshot on mount, and that is the entirety of its
- * relationship with the outside world.
+ * Four tabs, one job each:
+ *
+ *   Work      what is happening now, and anything waiting on you
+ *   Boards    each job board's own state and story
+ *   Applied   what has actually gone out
+ *   Activity  the raw log, for when something looks wrong
+ *
+ * ── WHY TABS RATHER THAN ONE PAGE ─────────────────────────────────────
+ *
+ * Everything used to live on a single scrolling screen: controls, review
+ * queue, board cards, counters, history and log, in that order. Each part was
+ * fine and the whole was unreadable — the one thing a consultant opens the app
+ * to see, "is anything waiting on me?", was several screens down.
+ *
+ * The split follows how often each is needed. Work is where the app opens and
+ * where most people never leave; Activity exists for the day something breaks.
+ *
+ * All state still arrives from the main process. This component fetches
+ * nothing, because the renderer has no network access at all.
  */
+const TABS = [
+    { id: 'work', label: 'Work' },
+    { id: 'boards', label: 'Boards' },
+    { id: 'applied', label: 'Applied' },
+    { id: 'activity', label: 'Activity' },
+];
+
 const App = () => {
     const [snap, setSnap] = useState(null);
     const [log, setLog] = useState([]);
+    const [tab, setTab] = useState('work');
 
     const refresh = useCallback(async () => {
         setSnap(await window.smartapply.snapshot());
@@ -22,34 +49,94 @@ const App = () => {
         refresh();
         const offStatus = window.smartapply.onStatus(setSnap);
         const offLog = window.smartapply.onLog(
-            (line) => setLog((prev) => [...prev.slice(-80), line]),
+            (line) => setLog((prev) => [...prev.slice(-200), { at: new Date(), line }]),
         );
         return () => { offStatus(); offLog(); };
     }, [refresh]);
 
     if (!snap) {
-        return <div className="wrap"><p className="sub">Starting…</p></div>;
-    }
-
-    // Revocation is terminal and gets the whole screen. Anything less would let
-    // a consultant keep clicking at an app that has already wiped itself.
-    if (snap.state === 'REVOKED') {
         return (
-            <div className="wrap">
-                <h1>Access removed</h1>
-                <p className="sub">{snap.detail || 'An administrator revoked this device.'}</p>
-                <div className="note stop">
-                    Everything this app held on your machine has been deleted, including
-                    saved sign-ins. Ask your administrator for a new activation code if
-                    you should still have access.
+            <div className="centred">
+                <div className="centred-inner empty">
+                    <p className="value">Starting…</p>
                 </div>
             </div>
         );
     }
 
-    return snap.activated
-        ? <Status snap={snap} log={log} onRefresh={refresh} />
-        : <Activation onActivated={refresh} />;
+    // Revocation is terminal and takes the whole window. Anything less would
+    // leave someone clicking at an app that has already wiped itself.
+    if (snap.state === 'REVOKED') {
+        return (
+            <div className="centred">
+                <div className="centred-inner">
+                    <h1>Access removed</h1>
+                    <p className="sub">
+                        {snap.detail || 'An administrator revoked this device.'}
+                    </p>
+                    <div className="note stop" style={{ marginTop: 16 }}>
+                        Everything this app held on your machine has been deleted, including
+                        saved sign-ins. Ask your administrator for a new activation code if
+                        you should still have access.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (!snap.activated) return <Activation onActivated={refresh} />;
+
+    const waiting = snap.awaitingReview?.length ?? 0;
+    const needsSignIn = (snap.boards ?? []).filter((b) => b.state === 'SIGNED_OUT').length;
+
+    const counts = {
+        work: waiting,
+        boards: needsSignIn,
+        applied: 0,
+        activity: 0,
+    };
+
+    return (
+        <div className="app">
+            <header className="topbar">
+                <div>
+                    <div className="brand">SmartApply</div>
+                    <div className="brand-sub">{snap.consultant?.name ?? 'Consultant'}</div>
+                </div>
+                <div className="topbar-spacer" />
+                <StatusPill snap={snap} />
+            </header>
+
+            <nav className="tabs" role="tablist">
+                {TABS.map((t) => (
+                    <button
+                        key={t.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === t.id}
+                        className="tab"
+                        onClick={() => setTab(t.id)}
+                    >
+                        {t.label}
+                        {counts[t.id] > 0 && (
+                            <span className={`tab-count${t.id === 'work' ? ' alert' : ''}`}>
+                                {counts[t.id]}
+                            </span>
+                        )}
+                    </button>
+                ))}
+            </nav>
+
+            <main className="screen">
+                <div className="screen-inner">
+                    {tab === 'work' && <Work snap={snap} onRefresh={refresh} />}
+                    {tab === 'boards' && <Boards boards={snap.boards} />}
+                    {tab === 'applied' && <Applied />}
+                    {tab === 'activity' && <Activity log={log} snap={snap} />}
+                </div>
+            </main>
+        </div>
+    );
 };
 
 export default App;

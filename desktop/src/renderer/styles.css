@@ -1,47 +1,271 @@
-/* Kept deliberately small and local. The app has four screens and no design
-   system of its own — it borrows the portal's palette so the two read as one
-   product, without pulling a build dependency across for it. */
+/* ── SMARTAPPLY DESKTOP ───────────────────────────────────────────────────
+ *
+ * A small design system for a small app. Deliberately hand-written and local:
+ * the whole interface is five screens, and a build-time CSS framework would be
+ * more machinery than the thing it dresses.
+ *
+ * The rules it follows, so later edits stay consistent:
+ *
+ *   · one accent colour, used only for the primary action on a screen
+ *   · state colours (ok / warn / stop) never used decoratively
+ *   · 4px spacing scale, nothing between the steps
+ *   · borders rather than shadows, except where something genuinely floats
+ *   · text sizes stop at three: 13px body, 12px secondary, 11px labels
+ */
+
 :root {
-  --paper: #ffffff;
-  --ground: #f8fafc;
-  --ink: #0f172a;
-  --muted: #64748b;
-  --line: #e2e8f0;
-  --brand: #4f46e5;
-  --ok: #16a34a;
-  --warn: #ca8a04;
-  --stop: #dc2626;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --paper: #ffffff;
+    --ground: #f6f7f9;
+    --raised: #fbfcfd;
+
+    --ink: #111827;
+    --ink-soft: #4b5563;
+    --muted: #9099a8;
+
+    --line: #e5e7eb;
+    --line-soft: #f0f2f5;
+
+    --brand: #4f46e5;
+    --brand-soft: #eef2ff;
+    --brand-ink: #3730a3;
+
+    --ok: #15803d;
+    --ok-soft: #dcfce7;
+    --warn: #a16207;
+    --warn-soft: #fef9c3;
+    --stop: #b91c1c;
+    --stop-soft: #fee2e2;
+
+    --r-sm: 6px;
+    --r: 10px;
+    --r-lg: 14px;
+
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    color-scheme: light;
 }
+
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--ground); color: var(--ink); font-size: 14px; }
-.wrap { max-width: 840px; margin: 0 auto; padding: 28px 20px 60px; }
-h1 { font-size: 1.4rem; margin: 0 0 4px; }
-h2 { font-size: 1rem; margin: 24px 0 8px; }
-.sub { color: var(--muted); margin: 0 0 20px; }
-.card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-.card + .card { margin-top: 12px; }
+
+body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ── shell ──────────────────────────────────────────────────────────── */
+
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+}
+
+.brand { font-weight: 650; letter-spacing: -0.01em; }
+.brand-sub { color: var(--muted); font-size: 12px; }
+
+.topbar-spacer { flex: 1; }
+
+.tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 12px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+}
+
+.tab {
+    appearance: none;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 12px;
+    font: inherit;
+    color: var(--ink-soft);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { color: var(--brand); border-bottom-color: var(--brand); font-weight: 600; }
+
+.tab-count {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--line-soft);
+    color: var(--ink-soft);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+}
+.tab[aria-selected="true"] .tab-count { background: var(--brand-soft); color: var(--brand-ink); }
+.tab-count.alert { background: var(--warn-soft); color: var(--warn); }
+
+.screen { flex: 1; overflow-y: auto; padding: 20px; }
+.screen-inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+/* Centred single-purpose screens: activation, revoked, loading. */
+.centred {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+.centred-inner { width: 100%; max-width: 420px; }
+
+/* ── type ───────────────────────────────────────────────────────────── */
+
+h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 13px; margin: 0; font-weight: 650; }
+p { margin: 0; }
+
+.sub { color: var(--ink-soft); margin-top: 6px; line-height: 1.5; }
+.muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+.value { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+/* ── surfaces ───────────────────────────────────────────────────────── */
+
+.card { background: var(--paper); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }
+.card.flush { padding: 0; overflow: hidden; }
+.card.accent { border-color: #d9d7fb; background: linear-gradient(180deg, #fbfbff, var(--paper)); }
+
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
-        border-radius: 999px; font-size: 12px; font-weight: 600; }
-.pill.ok { background: #dcfce7; color: #14532d; }
-.pill.warn { background: #fef9c3; color: #713f12; }
-.pill.stop { background: #fee2e2; color: #7f1d1d; }
-.pill.idle { background: #f1f5f9; color: #334155; }
-button { font: inherit; border-radius: 8px; padding: 9px 14px; cursor: pointer;
-         border: 1px solid transparent; }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.divide > * + * { border-top: 1px solid var(--line-soft); }
+.pad { padding: 12px 16px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 1px; background: var(--line-soft); }
+.grid > div { background: var(--paper); padding: 12px 14px; }
+
+/* ── controls ───────────────────────────────────────────────────────── */
+
+button {
+    font: inherit;
+    border-radius: var(--r-sm);
+    padding: 8px 14px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-weight: 550;
+    white-space: nowrap;
+}
 button.primary { background: var(--brand); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 button.secondary { background: var(--paper); border-color: var(--line); color: var(--ink); }
-button:disabled { opacity: .55; cursor: not-allowed; }
-input { font: inherit; width: 100%; padding: 11px 12px; border: 1px solid var(--line);
-        border-radius: 8px; letter-spacing: .12em; text-transform: uppercase; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
-.label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-.value { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.note { background: #eef2ff; border-left: 3px solid var(--brand); padding: 10px 12px;
-        border-radius: 0 8px 8px 0; color: #312e81; font-size: 13px; }
-.note.warn { background: #fefce8; border-color: var(--warn); color: #713f12; }
-.note.stop { background: #fef2f2; border-color: var(--stop); color: #7f1d1d; }
-.log { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted);
-       max-height: 160px; overflow: auto; white-space: pre-wrap; }
-.muted { color: var(--muted); font-size: 12px; }
+button.secondary:hover:not(:disabled) { background: var(--raised); }
+button.danger { background: var(--paper); border-color: #f3c9c9; color: var(--stop); }
+button.quiet { background: none; color: var(--ink-soft); padding: 6px 8px; }
+button.quiet:hover:not(:disabled) { color: var(--ink); }
+button.big { padding: 10px 20px; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+input[type="text"], input:not([type]) {
+    font: inherit;
+    width: 100%;
+    padding: 11px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    text-align: center;
+}
+input:focus-visible, button:focus-visible, .tab:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 1px;
+}
+
+/* A switch that reads as a switch, not a tickbox on a form. */
+.switch { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.switch input { appearance: none; margin: 0; flex: 0 0 auto; width: 34px; height: 20px;
+    border-radius: 999px; background: #d5d9e0; position: relative; cursor: pointer;
+    transition: background 0.15s; }
+.switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: transform 0.15s; }
+.switch input:checked { background: var(--brand); }
+.switch input:checked::after { transform: translateX(14px); }
+
+/* ── status ─────────────────────────────────────────────────────────── */
+
+.pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 650;
+}
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.stop { background: var(--stop-soft); color: var(--stop); }
+.pill.idle { background: var(--line-soft); color: var(--ink-soft); }
+.pill.brand { background: var(--brand-soft); color: var(--brand-ink); }
+
+.dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.dot.live { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.note { border-radius: var(--r-sm); padding: 9px 11px; font-size: 12px; line-height: 1.5; background: var(--brand-soft); color: var(--brand-ink); }
+.note.warn { background: var(--warn-soft); color: var(--warn); }
+.note.stop { background: var(--stop-soft); color: var(--stop); }
+
+.empty { text-align: center; padding: 32px 16px; color: var(--muted); }
+.empty .value { color: var(--ink-soft); font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+
+.log {
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--ink-soft);
+    max-height: 240px;
+    overflow: auto;
+    line-height: 1.7;
+}
+.log-line { display: flex; gap: 10px; }
+.log-time { color: var(--muted); flex: 0 0 auto; }
+
+.qa { padding: 8px 0; }
+.qa + .qa { border-top: 1px solid var(--line-soft); }
+.qa-q { color: var(--ink-soft); font-size: 12px; }
+.qa-a { margin-top: 2px; font-weight: 550; }
+
+/* ── the disclosure arrow and the live page ─────────────────────────── */
+
+.disclosure {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    text-align: left;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+}
+
+.chevron {
+    flex: 0 0 auto;
+    width: 0; height: 0;
+    margin-top: 5px;
+    border-left: 5px solid currentColor;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    transition: transform 0.15s ease;
+    color: var(--muted);
+}
+.chevron.open { transform: rotate(90deg) translateX(-1px); }
+
+/* The gap a board's live page is moved over. It stays empty by design — the
+   page is a native layer above this HTML, so anything drawn here would be
+   hidden underneath it. The border and background are what the consultant sees
+   for the moment before the view arrives. */
+.board-view {
+    height: 460px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--raised);
+}
