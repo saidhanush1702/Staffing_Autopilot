@@ -122,8 +122,15 @@ const engineWith = (hub, sessions, over = {}) => {
         hub, sessions, store, outbox: new Outbox(path.join(tmp, `ob-${Math.random()}.json`)), paths,
         // The gate is proven, not waited out: a fake browser will never become
         // signed in, so the real five-minute window would just stall the suite.
-        signInWaitMs: 30,
-        signInPollMs: 5,
+        //
+        // Small, but not as small as it can possibly be. At 30ms and a 5ms poll
+        // this failed intermittently — the whole window could elapse before the
+        // first poll got a turn on a loaded machine, and the test then reported
+        // that signing in had not been noticed when the only thing that had
+        // happened was a slow tick. Two seconds is still instant next to the
+        // suite's own runtime and leaves no room for that.
+        signInWaitMs: 2_000,
+        signInPollMs: 20,
         ...over,
     });
 };
@@ -160,7 +167,7 @@ check('  and scopes to the sdui screen, not a dialog',
 check('  no LinkedIn selector keys off a hashed class',
     Object.values(BOARDS.LINKEDIN.apply)
         .filter((v) => typeof v === 'string')
-        .some((v) => /\.[a-z]+-|class=/.test(v) && !v.includes('aria-label')),
+        .some((v) => /\.[a-z]+-|\bclass=/.test(v) && !v.includes('aria-label')),
     false);
 check('a board portal maps to its board', boardForPortal('BUILTIN').label, 'Built In');
 
@@ -719,7 +726,13 @@ section('every pass writes down what it did, and why');
 const closedPage = () => ({
     url: () => 'https://wellfound.com/jobs/1',
     bringToFront: async () => {},
-    waitForSelector: async () => { throw new Error('Timeout'); },
+    // Honest, because the flow now races the three verdicts against each other
+    // and a fake that resolves — or throws — for all of them proves nothing.
+    // This page shows the closed notice and nothing else.
+    waitForSelector: async (sel) => {
+        if (sel.startsWith('text=/')) return null;
+        throw new Error(`Timeout waiting for ${sel}`);
+    },
     waitForTimeout: async () => null,
     $$eval: async () => [],
     locator: (sel) => {
@@ -760,14 +773,14 @@ let stats = await ledgerEngine.run();
 check('a closed posting is skipped, not handed to the consultant', stats.skipped, 1);
 check('  and nobody is asked to apply to it', stats.handedToHuman, 0);
 check('  it is counted as closed in its own right', stats.closed, 1);
-check('  the hub is told why',
+check('  the hub is told why, in the word the consultant will look for',
     ledgerHub.calls.find((c) => c.name === 'skipped')?.args[1].reason,
-    'This posting is no longer accepting applications.');
+    'This job is expired — the posting is no longer accepting applications.');
 
 check('the pass names the job it decided about',
     stats.outcomes.map((o) => [o.company, o.result]), [['VRSamadhan', 'CLOSED']]);
 check('  with the reason attached',
-    /no longer accepting/.test(stats.outcomes[0].reason), true);
+    /expired/.test(stats.outcomes[0].reason), true);
 check('  and the ledger survives into the run history',
     (ledgerEngine.store.get('cycleLog').at(-1).outcomes ?? []).length, 1);
 
@@ -924,7 +937,7 @@ check('a page with no apply button is handed over', flow.outcome, 'NO_APPLY_FLOW
 wiz = wizardPage([[]], { noOpen: true, closed: true });
 flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
 check('a posting that says applications are closed is recognised', flow.outcome, 'CLOSED');
-check('  and it says so plainly', /no longer accepting/.test(flow.detail), true);
+check('  and it says so plainly', /expired/.test(flow.detail), true);
 check('  without waiting for an apply button that will never come',
     wiz.clicked.length, 0);
 
@@ -1031,7 +1044,10 @@ const applyHub = () => fakeHub({
 const readyPage = () => {
     const clicked = [];
     const ctrl = (kind) => ({
-        count: async () => (kind === 'next' || kind === 'closed' ? 0 : 1),
+        // Nothing on this page but the opener and, later, Submit. `already`
+        // counted 1 while reporting itself invisible, which the old glance
+        // tolerated and the verdict race does not.
+        count: async () => (['next', 'closed', 'already'].includes(kind) ? 0 : 1),
         first() { return this; },
         nth() { return this; },
         isVisible: async () => !['next', 'already', 'closed'].includes(kind),
@@ -1055,7 +1071,14 @@ const readyPage = () => {
         clicked,
         url: () => 'https://wellfound.com/jobs/1',
         bringToFront: async () => {},
-        waitForSelector: async () => null,
+        // Only the opener is on this page. Resolving for everything made the
+        // verdict race a coin toss between "open" and "already applied".
+        waitForSelector: async (sel) => {
+            if ((await ctrl(kindOf(sel)).count()) === 0) {
+                throw new Error(`Timeout waiting for ${sel}`);
+            }
+            return null;
+        },
         waitForTimeout: async () => null,
         // One answerable field, so the flow has something real to fill and the
         // result is a genuine application rather than an empty one.

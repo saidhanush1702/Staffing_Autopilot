@@ -245,6 +245,89 @@ const attachResume = async (page, recipe, resumePath, log = () => {}) => {
     return true;
 };
 
+/**
+ * Close the "Resume uploaded successfully" bar.
+ *
+ * ── WHY THIS IS WORTH THE RISK ────────────────────────────────────────
+ *
+ * LinkedIn raises a confirmation bar after an upload. In a small window it
+ * lands over Next and Review, and the run stopped there until somebody closed
+ * it by hand. Pressing the button with the keyboard gets past it, but the bar
+ * stays up over the rest of the flow, and the consultant watching the browser
+ * sees an application that looks stuck.
+ *
+ * ── AND WHY IT CANNOT CLOSE THE APPLICATION ───────────────────────────
+ *
+ * There is a second X a few pixels away that abandons the whole Easy Apply
+ * flow, and an earlier coordinate-clicking fallback hit it twice. So the
+ * container this will click inside has to pass all three:
+ *
+ *   1. it announces itself as a message — role="status" or role="alert" — or
+ *      says an upload succeeded in its own text
+ *   2. it holds a control whose name is only ever a dismissal
+ *   3. it holds NO Next, Review, Submit or Back — which is what rules out the
+ *      step itself, the dialog, and anything containing them
+ *
+ * Three is the load-bearing one. The application's own Dismiss lives in a
+ * container that also holds the flow's buttons, so it can never be reached
+ * from here however the page is laid out.
+ *
+ * Failure is silent on purpose: a toast that will not close is a cosmetic
+ * problem, and `clickSteadily` presses through it anyway.
+ */
+const TOAST_ROLES = '[role="status"], [role="alert"]';
+const UPLOADED_WORDS = /\b(uploaded|upload (was )?successful|added)\b/i;
+const DISMISS_WORDS = /^(dismiss|close|ok|okay|got it|x|✕|×)$/i;
+const FLOW_WORDS = /\b(next|review|submit|back|continue)\b/i;
+
+const dismissUploadToast = async (page, log = () => {}) => {
+    if (typeof page.evaluate !== 'function') return false;
+
+    const found = await page.evaluate(({ roles, uploaded, dismiss, flow }) => {
+        const UPLOADED = new RegExp(uploaded.source, uploaded.flags);
+        const DISMISS = new RegExp(dismiss.source, dismiss.flags);
+        const FLOW = new RegExp(flow.source, flow.flags);
+        const nameOf = (el) => (
+            (el.getAttribute('aria-label') || el.innerText || '').replace(/\s+/g, ' ').trim()
+        );
+
+        const candidates = new Set(document.querySelectorAll(roles));
+        // A toast that forgot its role is still a toast if it says so.
+        for (const el of document.querySelectorAll('div, section, aside')) {
+            if (UPLOADED.test((el.innerText || '').slice(0, 200))) candidates.add(el);
+        }
+
+        for (const box of candidates) {
+            const buttons = [...box.querySelectorAll('button, [role="button"]')];
+            // Guard 3, first and hardest: anything holding the flow's own
+            // controls is the flow, not a message about it.
+            if (buttons.some((b) => FLOW.test(nameOf(b)))) continue;
+            if (!UPLOADED.test(box.innerText || '')) continue;
+
+            const closer = buttons.find((b) => DISMISS.test(nameOf(b)));
+            if (!closer) continue;
+
+            closer.setAttribute('data-smartapply-dismiss', '1');
+            return (box.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        }
+        return null;
+    }, {
+        roles: TOAST_ROLES,
+        uploaded: { source: UPLOADED_WORDS.source, flags: UPLOADED_WORDS.flags },
+        dismiss: { source: DISMISS_WORDS.source, flags: DISMISS_WORDS.flags },
+        flow: { source: FLOW_WORDS.source, flags: FLOW_WORDS.flags },
+    }).catch(() => null);
+
+    if (!found) return false;
+
+    // Clicked through a locator, so it is the marked element or nothing.
+    const closer = page.locator('[data-smartapply-dismiss="1"]').first();
+    await closer.click({ timeout: 4_000 }).catch(() => {});
+    await page.waitForTimeout(600);
+    log(`closed the "${found}" message`);
+    return true;
+};
+
 /** Would clicking this send the application? */
 const isSubmit = async (locator) => SUBMIT_WORDS.test(await textOf(locator));
 
@@ -304,6 +387,38 @@ const stepWantsResume = async (page, root) => {
     return RESUME_WORDS.test(text);
 };
 
+/**
+ * Which of these appears first?
+ *
+ * ── WHY A RACE AND NOT THREE CHECKS IN A ROW ──────────────────────────
+ *
+ * Three sequential waits would take three times as long on the common case and
+ * still get the answer wrong: the first wait would time out on a page whose
+ * real answer was the second selector, having spent its whole budget deciding
+ * that the wrong question had no answer.
+ *
+ * `Promise.any` is what makes it cheap. It settles on the first selector that
+ * appears, and — the part that matters for the test suite — rejects as soon as
+ * ALL of them have failed, rather than sitting out the full timeout.
+ *
+ * @param candidates {name: selector}, in no particular order; the PAGE decides
+ * @returns the name that appeared, or null when none did
+ */
+const whichAppears = async (page, candidates, timeout) => {
+    const entries = Object.entries(candidates).filter(([, sel]) => sel);
+    if (entries.length === 0) return null;
+
+    try {
+        return await Promise.any(entries.map(async ([name, selector]) => {
+            await page.waitForSelector(selector, { state: 'visible', timeout });
+            return name;
+        }));
+    } catch {
+        // AggregateError: the page showed none of them in time.
+        return null;
+    }
+};
+
 const visible = async (page, selector) => {
     if (!selector) return false;
     const l = page.locator(selector).first();
@@ -326,49 +441,50 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
 
     const empty = { qa: [], unknown: [], attachedResume: false, steps: 0 };
 
+    // ── WAIT FOR AN ANSWER, DO NOT GLANCE FOR ONE ─────────────────────
+    //
+    // LinkedIn draws its job page in stages: the description arrives first and
+    // everything that decides this job's fate — the apply button, the "already
+    // applied" note, the red "No longer accepting applications" — a few seconds
+    // later. Asking the moment the page loads is asking before the answer
+    // exists, and it always answers no.
+    //
+    // That is not hypothetical, and it was wrong TWICE. First it declared "no
+    // apply button on this page" one second after opening jobs that plainly had
+    // Easy Apply. Then, once the opener was given a proper wait, the two checks
+    // in front of it were left as glances — so an expired posting failed the
+    // closed check (nothing rendered yet), waited fifteen seconds for a button
+    // that was never coming, and was reported as "no apply button" instead of
+    // "expired".
+    //
+    // So all three are raced against each other on one clock. Whichever the
+    // page shows first is the answer, and none of them can be missed for
+    // arriving late.
+    const verdict = await whichAppears(page, {
+        applied: recipe.alreadyApplied,
+        closed: recipe.closed ?? CLOSED_SELECTOR,
+        open: recipe.open,
+    }, OPENER_TIMEOUT_MS);
+
     // Applying twice under someone's name is worse than not applying. If the
     // board says it already has an application from this person, believe it.
-    if (await visible(page, recipe.alreadyApplied)) {
+    if (verdict === 'applied') {
         return { ...empty, outcome: 'ALREADY_APPLIED', detail: 'the board says you already applied' };
     }
 
-    // Checked BEFORE the apply button, and deliberately so: a closed posting
-    // has no button to wait for, and waiting fifteen seconds to discover that
-    // is fifteen seconds spent per dead job.
-    if (await visible(page, recipe.closed ?? CLOSED_SELECTOR)) {
+    if (verdict === 'closed') {
         return {
             ...empty,
             outcome: 'CLOSED',
-            detail: 'this posting is no longer accepting applications',
+            detail: 'this job is expired — the posting is no longer accepting applications',
         };
     }
 
-    // ── WAIT FOR THE BUTTON, DO NOT GLANCE FOR IT ─────────────────────
-    //
-    // LinkedIn draws its job page in stages: the description arrives first and
-    // the apply button a few seconds later. Asking `count()` the moment the
-    // page loads is asking before the answer exists, and it always answers
-    // zero.
-    //
-    // That is not hypothetical — it declared "no apply button on this page" on
-    // a run of real jobs, one second after opening each of them, including
-    // several that plainly had Easy Apply. Every hand-run probe that saw the
-    // button had waited five seconds or more first.
-    //
-    // So this waits for the control to appear and only calls it absent when it
-    // has not shown up in time. A job that really has no apply button costs
-    // this wait once; a job that has one no longer gets skipped for being slow.
-    const opener = page.locator(recipe.open).first();
-    const appeared = await page
-        .waitForSelector(recipe.open, { state: 'visible', timeout: OPENER_TIMEOUT_MS })
-        .then(() => true)
-        .catch(() => false);
-
-    if (!appeared) {
-        // The board's own flow is not on offer. Is there an apply button that
-        // simply leads somewhere else? Saying so is worth the extra look: the
-        // consultant then knows this is a job to do by hand rather than one
-        // the app failed at.
+    if (verdict !== 'open') {
+        // Nothing the board offers, and no notice explaining why. Is there an
+        // apply button that simply leads somewhere else? Saying which of the
+        // two it is matters: one is a job for a person, the other is a page we
+        // could not read.
         const away = page.locator(recipe.externalApply ?? EXTERNAL_SELECTOR).first();
         if (await away.count() > 0 && await away.isVisible().catch(() => false)) {
             return {
@@ -380,9 +496,11 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
         return {
             ...empty,
             outcome: 'NO_APPLY_FLOW',
-            detail: 'no apply button appeared on this page — applying happens elsewhere',
+            detail: 'no apply button on this page',
         };
     }
+
+    const opener = page.locator(recipe.open).first();
 
     // Refuse even here. A board that labels its opener "Apply now" and submits
     // immediately would otherwise be a one-click disaster.
@@ -422,6 +540,13 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
         const filled = await fillForm(page, { ...fillOptions, root: recipe.dialog });
         qa.push(...filled.qa);
         unknown.push(...filled.unknown);
+
+        // An upload raises a confirmation bar. Close it as soon as it can
+        // exist, whichever of the two upload paths put the file there — this
+        // one is the plain `input[type=file]` inside the form.
+        if (filled.attachedResume && !attachedResume) {
+            await dismissUploadToast(page, log);
+        }
         attachedResume = attachedResume || filled.attachedResume;
 
         // A step that asks for a resume and offers no file input to put it in.
@@ -438,6 +563,9 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
                     questionId: null,
                 });
                 await page.waitForTimeout(STEP_SETTLE_MS);
+                // …and this one is the file chooser, which is the path
+                // LinkedIn actually takes.
+                await dismissUploadToast(page, log);
             } else {
                 // Required, and we have nothing to give it.
                 return {
@@ -597,6 +725,8 @@ const pressSubmit = async (page, board) => {
 module.exports = {
     runApplyFlow, pressSubmit, isSubmit, attachResume,
     SUBMIT_WORDS, UPLOAD_WORDS, RESUME_WORDS, MAX_STEPS, STEP_SETTLE_MS,
+    dismissUploadToast,
+    whichAppears,
     clickSteadily, describeObstruction,
     CLOSED_SELECTOR, EXTERNAL_SELECTOR,
 };

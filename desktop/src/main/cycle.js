@@ -464,12 +464,13 @@ class CycleEngine {
             // on this one, so it is skipped with the reason the board gave.
             if (flow.outcome === 'CLOSED') {
                 await this.#report(() => this.hub.skipped(item.id, {
-                    reason: 'This posting is no longer accepting applications.',
+                    reason: 'This job is expired — the posting is no longer accepting '
+                        + 'applications.',
                 }));
                 stats.skipped += 1;
                 stats.closed += 1;
                 record(item, board, 'CLOSED', flow.detail);
-                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${flow.detail}`);
+                this.activity(board.name, 'CLOSED', `${item.company}: ${flow.detail}`);
                 return 'counted';
             }
 

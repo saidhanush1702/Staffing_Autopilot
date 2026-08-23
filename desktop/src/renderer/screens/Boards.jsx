@@ -38,6 +38,7 @@ const TONE = {
     READY_TO_SUBMIT: ['warn', 'Waiting on you'],
     PARKED: ['warn', 'Parked'],
     HANDED_OVER: ['idle', 'Passed to you'],
+    CLOSED: ['idle', 'Expired'],
     SIGNED_IN: ['ok', 'Signed in'],
     SIGNED_OUT: ['warn', 'Signed out'],
     STOPPED: ['stop', 'Stopped'],

@@ -32,6 +32,7 @@ const { resolveBrowser } = require('../src/main/browser/engine.js');
 const { describeFields, fillForm } = require('../src/main/browser/filler.js');
 const {
     CLOSED_SELECTOR, EXTERNAL_SELECTOR, describeObstruction,
+    dismissUploadToast, whichAppears,
 } = require('../src/main/browser/applyFlow.js');
 
 let pass = 0; let fail = 0;
@@ -318,6 +319,92 @@ try {
     await review.press('Enter');
     check('  but the keyboard reaches it anyway',
         await page.evaluate(() => window.__pressed), 1);
+    section('the upload message is closed, and only ever that');
+
+    /**
+     * The résumé step as it looks a second after an upload: the flow's own
+     * Dismiss at the top, the confirmation bar at the bottom. Two X buttons on
+     * one screen, and pressing the wrong one abandons the application.
+     */
+    const AFTER_UPLOAD = `
+      <div data-sdui-screen="com.linkedin.jobs.easyapply.Screen">
+        <button aria-label="Dismiss" onclick="window.__abandoned=true">×</button>
+        <h2>Resume</h2>
+        <div><button>Back</button><button>Review</button></div>
+      </div>
+      <div role="status">
+        Resume uploaded successfully
+        <button aria-label="Dismiss" onclick="this.closest('[role=status]').remove()">×</button>
+      </div>`;
+
+    page = await load(browser, AFTER_UPLOAD);
+    check('the confirmation bar is closed',
+        await dismissUploadToast(page), true);
+    check('  it is really gone', await page.locator('[role="status"]').count(), 0);
+    check('  and the application was NOT abandoned',
+        await page.evaluate(() => window.__abandoned ?? false), false);
+    check('  the flow’s own Dismiss is still there',
+        await page.locator('[data-sdui-screen] button[aria-label="Dismiss"]').count(), 1);
+
+    // The guard that does the work: a container holding Next/Review/Submit is
+    // the flow itself, whatever else it says.
+    page = await load(browser, `
+      <div role="status">
+        Resume uploaded successfully
+        <button aria-label="Dismiss" onclick="window.__abandoned=true">×</button>
+        <button>Review</button>
+      </div>`);
+    check('a "message" that also holds Review is left alone',
+        await dismissUploadToast(page), false);
+    check('  so nothing was pressed',
+        await page.evaluate(() => window.__abandoned ?? false), false);
+
+    // Nothing to close is not a failure.
+    page = await load(browser, '<div role="status">Saving…</div>');
+    check('an unrelated status message is not touched',
+        await dismissUploadToast(page), false);
+
+    section('the page decides its own verdict, however late it says so');
+
+    // Exactly the shape that got this wrong: the notice is rendered by script
+    // after load, so a glance taken on arrival sees an empty page.
+    page = await load(browser, `
+      <h1>React Js Developer</h1>
+      <script>
+        setTimeout(() => {
+          const p = document.createElement('span');
+          p.textContent = 'No longer accepting applications';
+          document.body.appendChild(p);
+        }, 1200);
+      </script>`);
+    check('a glance on arrival misses a notice that has not rendered',
+        await page.locator(CLOSED_SELECTOR).count(), 0);
+    check('  but the race waits for it',
+        await whichAppears(page, {
+            applied: 'button:has-text("Continue applying")',
+            closed: CLOSED_SELECTOR,
+            open: 'button[aria-label*="Easy Apply" i]',
+        }, 5_000), 'closed');
+
+    page = await load(browser, `
+      <h1>Full Stack Developer</h1>
+      <button aria-label="Easy Apply to Full Stack Developer">Easy Apply</button>`);
+    check('an Easy Apply page answers "open"',
+        await whichAppears(page, {
+            applied: 'button:has-text("Continue applying")',
+            closed: CLOSED_SELECTOR,
+            open: 'button[aria-label*="Easy Apply" i]',
+        }, 5_000), 'open');
+
+    page = await load(browser, '<h1>A job</h1><button>Apply</button>');
+    check('a page with none of them answers nothing at all',
+        await whichAppears(page, {
+            applied: 'button:has-text("Continue applying")',
+            closed: CLOSED_SELECTOR,
+            open: 'button[aria-label*="Easy Apply" i]',
+        }, 2_000), null);
+    check('  and its plain Apply is what gets found next',
+        await page.locator(EXTERNAL_SELECTOR).first().isVisible(), true);
 } finally {
     await browser.close();
 }
