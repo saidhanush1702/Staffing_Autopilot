@@ -78,10 +78,19 @@ const ConsultantAnswers = ({ consultantId }) => {
                     <h2 className={`flex items-center gap-2 ${sectionTitle}`}>
                         <MessageSquare className="h-4 w-4 text-slate-400" /> Answer bank
                     </h2>
+                    {/* ── VIEW ONLY, AND SAY SO ────────────────────────────
+                        These are the consultant's own answers about themselves,
+                        given to send their own applications. Management can
+                        read them — a recruiter needs to know what went out
+                        under their consultant's name — but only the consultant
+                        changes them, from the portal or the desktop app. */}
                     <p className="mt-1 text-xs text-slate-500">
-                        {group('APPROVED').length} approved · {group('PENDING').length} awaiting
-                        review · {group('REJECTED').length} rejected. Only approved answers are
-                        used to fill applications.
+                        {group('APPROVED').length} in use
+                        {group('REJECTED').length > 0
+                            ? ` · ${group('REJECTED').length} rejected` : ''}.
+                        These are what the app types into applications. Only
+                        {' '}the consultant can change them, from the
+                        portal or the desktop app.
                     </p>
                 </div>
                 <button type="button" onClick={() => setAsking(true)} className={btn.primary}>

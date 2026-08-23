@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import Activation from './screens/Activation.jsx';
 import Work from './screens/Work.jsx';
 import Boards from './screens/Boards.jsx';
+import Questions from './screens/Questions.jsx';
+import Answers from './screens/Answers.jsx';
 import Applied from './screens/Applied.jsx';
 import Activity from './screens/Activity.jsx';
 import StatusPill from './screens/StatusPill.jsx';
@@ -31,6 +33,8 @@ import StatusPill from './screens/StatusPill.jsx';
  */
 const TABS = [
     { id: 'work', label: 'Work' },
+    { id: 'questions', label: 'Questions' },
+    { id: 'answers', label: 'Answers' },
     { id: 'boards', label: 'Boards' },
     { id: 'applied', label: 'Applied' },
     { id: 'activity', label: 'Activity' },
@@ -98,6 +102,10 @@ const App = () => {
 
     const counts = {
         work: waiting,
+        // Every one of these is an application that cannot be sent, so it is
+        // flagged as loudly as work waiting on a person.
+        questions: snap.outstandingQuestions ?? 0,
+        answers: 0,
         boards: needsSignIn,
         applied: 0,
         activity: 0,
@@ -126,7 +134,9 @@ const App = () => {
                     >
                         {t.label}
                         {counts[t.id] > 0 && (
-                            <span className={`tab-count${t.id === 'work' ? ' alert' : ''}`}>
+                            <span
+                                className={`tab-count${['work', 'questions'].includes(t.id) ? ' alert' : ''}`}
+                            >
                                 {counts[t.id]}
                             </span>
                         )}
@@ -145,6 +155,8 @@ const App = () => {
                             onOpenBoard={(board) => { setTab('boards'); setShowBoard(board); }}
                         />
                     )}
+                    {tab === 'questions' && <Questions onChanged={refresh} />}
+                    {tab === 'answers' && <Answers onChanged={refresh} />}
                     {tab === 'boards' && (
                         <Boards
                             boards={snap.boards}

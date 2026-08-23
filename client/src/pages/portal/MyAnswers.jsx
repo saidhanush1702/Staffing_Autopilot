@@ -100,7 +100,6 @@ const MyAnswers = () => {
 
                 <p className="mt-1 text-xs text-slate-400">
                     {a.category_label}
-                    {a.requires_owner_approval && ' · approved by your organization admin'}
                 </p>
 
                 {/* When a reviewer edited before approving, both texts are shown.
@@ -251,7 +250,7 @@ const MyAnswers = () => {
                         <ModalActions
                             onCancel={() => setEditing(null)}
                             onConfirm={submit}
-                            confirmLabel="Submit for approval"
+                            confirmLabel="Save answer"
                             busy={busy}
                             disabled={!text.trim() || text.trim() === editing.current?.proposed_text}
                         />
@@ -282,9 +281,14 @@ const MyAnswers = () => {
                             className={`mt-1 ${inputBase}`}
                         />
                     </label>
+                    {/* No approval step any more: this is the consultant
+                        answering about themselves, to send their own
+                        application. Waiting for a reviewer meant postings
+                        closed first. */}
                     <p className="mt-2 text-xs text-slate-400">
-                        This replaces your previous answer, which stays on record. It goes back
-                        for approval before it can be used.
+                        This replaces your previous answer, which stays on record. It is used
+                        on your next application straight away — applications already sent
+                        keep the wording they went out with.
                     </p>
                 </Modal>
             )}

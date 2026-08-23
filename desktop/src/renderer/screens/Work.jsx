@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Controls from './Controls.jsx';
 import Review from './Review.jsx';
+import LastRun from './LastRun.jsx';
 
 /**
  * ── THE SCREEN THE APP OPENS ON ───────────────────────────────────────
@@ -10,7 +11,8 @@ import Review from './Review.jsx';
  *   1. the start/stop control          — is it running, and do I want it to be?
  *   2. anything waiting on them        — the only part with a deadline
  *   3. boards that need signing in     — the usual reason nothing is happening
- *   4. numbers                         — context, not action
+ *   4. what the last run did           — the account of the work, with reasons
+ *   5. numbers                         — context, not action
  *
  * Counters are last on purpose. "3 ready to work" is interesting; "an
  * application is waiting for you to submit" is the thing that matters, and
@@ -87,6 +89,8 @@ const Work = ({ snap, onRefresh, onOpenBoard }) => {
                     already done is queued and reported as soon as the connection returns.
                 </p>
             )}
+
+            <LastRun snap={snap} />
 
             <section className="card flush">
                 <div className="grid">

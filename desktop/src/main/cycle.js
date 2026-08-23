@@ -160,10 +160,29 @@ class CycleEngine {
         if (this.running) return { skipped: 'already running' };
         this.running = true;
 
+        // ── WHAT THE PASS DID, ITEM BY ITEM ───────────────────────────
+        //
+        // The counters answer "how many"; `outcomes` answers "which, and why".
+        // A consultant looking at "6 skipped" has no way to tell a run that hit
+        // six closed postings from one that broke six times, and those call for
+        // completely different responses. Every entry carries the job's name and
+        // the reason in the same words the hub was given.
         const stats = {
+            startedAt: new Date().toISOString(),
             pulled: 0, leased: 0, opened: 0,
-            filled: 0, parked: 0, handedToHuman: 0, skipped: 0,
-            signInNeeded: [], botChecked: [], errors: [],
+            filled: 0, submitted: 0, parked: 0, handedToHuman: 0, skipped: 0, closed: 0,
+            signInNeeded: [], botChecked: [], errors: [], outcomes: [],
+        };
+
+        /** Write one line of the ledger. */
+        const record = (item, board, result, reason) => {
+            stats.outcomes.push({
+                company: item.company,
+                title: item.title,
+                board: board?.label ?? item.portal,
+                result,
+                reason: reason ? String(reason).slice(0, 300) : null,
+            });
         };
 
         try {
@@ -176,6 +195,7 @@ class CycleEngine {
             this.store.set({
                 paused: beat.paused,
                 pausedBoards: beat.pausedBoards ?? [],
+                outstandingQuestions: beat.outstandingQuestions ?? 0,
             });
 
             // A paused consultant's app does nothing at all. This is now the
@@ -212,6 +232,7 @@ class CycleEngine {
                         reason: `No recipe for portal ${item.portal}`,
                     }));
                     stats.handedToHuman += 1;
+                    record(item, null, 'HANDED_OVER', `the app has no recipe for ${item.portal}`);
                     continue;
                 }
 
@@ -222,7 +243,7 @@ class CycleEngine {
 
                 try {
                     const outcome = await this.#workOne(
-                        item, board, stats, { approvedAnswers, profile },
+                        item, board, stats, { approvedAnswers, profile, record },
                     );
                     if (outcome === 'counted') worked += 1;
                     // R-19: never parallel, and a real gap between applications.
@@ -236,6 +257,7 @@ class CycleEngine {
                         reason: `The app could not process this: ${err.message}`.slice(0, 500),
                     }));
                     stats.skipped += 1;
+                    record(item, board, 'ERROR', firstLine(err.message));
                 }
             }
 
@@ -269,6 +291,7 @@ class CycleEngine {
         this.store.set({
             paused: beat.paused,
             pausedBoards: beat.pausedBoards ?? [],
+            outstandingQuestions: beat.outstandingQuestions ?? 0,
         });
 
         const { items } = await this.hub.queue();
@@ -321,7 +344,7 @@ class CycleEngine {
      *
      * @returns 'counted' when a cap slot was genuinely used
      */
-    async #workOne(item, board, stats, { approvedAnswers, profile }) {
+    async #workOne(item, board, stats, { approvedAnswers, profile, record = () => {} }) {
         // Bot-check FIRST. Asking a challenged board for anything else is how a
         // temporary challenge becomes a blocked account (R-22).
         if (await this.sessions.isBotChecked(board)) {
@@ -332,6 +355,7 @@ class CycleEngine {
                 state: 'BOT_CHECK',
                 detail: 'Challenge page detected — stopping this board for the day',
             }));
+            record(item, board, 'BOARD_STOPPED', 'this board showed a bot check');
             return 'stopped';
         }
 
@@ -356,7 +380,10 @@ class CycleEngine {
         if (board.verified && !(await this.sessions.isSignedIn(board))) {
             stats.signInNeeded.push(board.name);
             this.activity(board.name, 'SIGNED_OUT', 'Signed out — waiting for you to sign in');
-            if (!(await this.#waitForSignIn(board))) return 'stopped';
+            if (!(await this.#waitForSignIn(board))) {
+                record(item, board, 'NEEDS_SIGN_IN', 'nobody signed in while this job waited');
+                return 'stopped';
+            }
         }
 
         // Lease before opening. The hub decides whether this device may have
@@ -391,6 +418,7 @@ class CycleEngine {
                 : `${board.label} form filling is not verified yet`;
             await this.#report(() => this.hub.reclassify(item.id, { reason }));
             stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
             this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
             return 'counted';
         }
@@ -424,11 +452,34 @@ class CycleEngine {
                     reason: 'The board says this consultant has already applied.',
                 }));
                 stats.skipped += 1;
+                record(item, board, 'ALREADY_APPLIED', 'the board already has an application from you');
                 return 'counted';
             }
-            if (flow.outcome === 'NO_APPLY_FLOW' || flow.outcome === 'LEFT_THE_BOARD') {
+
+            // ── A SHUT POSTING IS NOT WORK FOR ANYBODY ────────────────
+            //
+            // It used to reach the consultant as "no apply button — applying
+            // happens elsewhere", which is true and useless: they opened it and
+            // found a red notice saying applications are closed. Nobody can act
+            // on this one, so it is skipped with the reason the board gave.
+            if (flow.outcome === 'CLOSED') {
+                await this.#report(() => this.hub.skipped(item.id, {
+                    reason: 'This posting is no longer accepting applications.',
+                }));
+                stats.skipped += 1;
+                stats.closed += 1;
+                record(item, board, 'CLOSED', flow.detail);
+                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${flow.detail}`);
+                return 'counted';
+            }
+
+            if (flow.outcome === 'NO_APPLY_FLOW'
+                || flow.outcome === 'EXTERNAL_APPLY'
+                || flow.outcome === 'LEFT_THE_BOARD') {
                 await this.#report(() => this.hub.reclassify(item.id, { reason: flow.detail }));
                 stats.handedToHuman += 1;
+                record(item, board, 'HANDED_OVER', flow.detail);
+                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${flow.detail}`);
                 return 'counted';
             }
 
@@ -449,6 +500,7 @@ class CycleEngine {
                     reason: `The application could not be completed: ${flow.detail}`,
                 }));
                 stats.handedToHuman += 1;
+                record(item, board, 'HANDED_OVER', flow.detail);
                 return 'counted';
             }
         } else {
@@ -470,6 +522,9 @@ class CycleEngine {
                 })),
             }));
             stats.parked += 1;
+            record(item, board, 'PARKED',
+                `waiting on ${blocking.length} question(s): `
+                + blocking.map((u) => u.questionText).join('; '));
             this.activity(board.name, 'PARKED',
                 `${item.company}: parked on ${blocking.length} unanswered question(s)`);
             this.log(`parked ${item.company}: ${blocking.length} unanswered question(s)`);
@@ -495,6 +550,7 @@ class CycleEngine {
                     + 'employer site instead',
             }));
             stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', 'no application form was found on the page');
             this.activity(board.name, 'HANDED_OVER',
                 `${item.company}: no application form on the page — apply on the employer site`);
             this.log(`no form to fill on ${item.company} — handed to you`);
@@ -525,7 +581,8 @@ class CycleEngine {
                     confirmed: pressed.confirmed,
                     detail: pressed.detail,
                 });
-                stats.submitted = (stats.submitted ?? 0) + 1;
+                stats.submitted += 1;
+                record(item, board, 'SUBMITTED', pressed.detail);
                 this.activity(board.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
                 this.log(`submitted ${item.company} — ${item.title}`);
                 return 'counted';
@@ -534,12 +591,15 @@ class CycleEngine {
             // It stays in the review list rather than being recorded as sent.
             // A record claiming an employer received something they did not is
             // worse than having no record at all.
+            record(item, board, 'READY_TO_SUBMIT', `could not submit — ${pressed.error}`);
             this.activity(board.name, 'READY_TO_SUBMIT',
                 `${item.company}: could not submit — ${pressed.error}`);
             this.log(`could not submit ${item.company}: ${pressed.error}`);
             return 'counted';
         }
 
+        record(item, board, 'READY_TO_SUBMIT',
+            `filled ${result.qa.length} field(s) — waiting for you to submit`);
         this.activity(board.name, 'READY_TO_SUBMIT',
             `${item.company}: filled ${result.qa.length} field(s) — waiting for you to submit`);
         this.log(`filled ${item.company} — ${item.title}, waiting for your review`);

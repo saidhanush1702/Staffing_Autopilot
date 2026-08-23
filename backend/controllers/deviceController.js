@@ -29,6 +29,7 @@ import { findOrCreateQuestion } from './questionController.js';
 import { hashToken, newToken, newActivationCode } from '../middleware/verifyDevice.js';
 import { logAction } from './auditLogController.js';
 import { resolveStoredPath } from '../utils/upload.js';
+import { recordBlockers, outstandingForConsultant, releaseAnswered } from '../config/blockers.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
 
 /* ── schemas ──────────────────────────────────────────────────────────── */
@@ -176,9 +177,28 @@ export const heartbeat = async (req, res, next) => {
 
         const profile = capRows[0] ?? {};
 
+        // How many questions are holding applications up. Carried on the
+        // heartbeat so the app can badge it without a second call every minute.
+        const { rows: blocked } = await query(
+            `SELECT COUNT(DISTINCT b.question_id)::int AS n
+               FROM queue_item_blockers b
+               JOIN queue_items q ON q.id = b.queue_item_id
+              WHERE q.consultant_id = $1
+                AND NOT EXISTS (
+                    SELECT 1 FROM answers a
+                      JOIN lkp_answer_statuses s ON s.id = a.status_id
+                     WHERE a.question_id = b.question_id
+                       AND a.consultant_id = $1
+                       AND a.is_current AND s.name = 'APPROVED'
+                       AND a.approved_text IS NOT NULL
+                )`,
+            [consultantId],
+        );
+
         return res.json({
             ok: true,
             serverTime: new Date().toISOString(),
+            outstandingQuestions: blocked[0].n,
             // A paused consultant's app should do nothing at all.
             paused: profile.is_paused ?? false,
             pausedBoards: boards.map((b) => ({
@@ -438,13 +458,26 @@ export const reportParked = async (req, res, next) => {
             return res.status(422).json({ error: 'None of those questions had any text.' });
         }
 
-        // The item is parked on the FIRST one, because releasing needs a single
-        // question to watch. The rest are on the consultant's list either way,
-        // and answering them all is what actually gets this application sent.
+        // The application waits on EVERY one of them. Parking on just the first
+        // meant approving it released the item, which retried, hit the second,
+        // and parked again — one round trip per question on the same job.
+        await withTransaction(async (client) => {
+            await recordBlockers(client, {
+                orgId: req.device.orgId,
+                itemId: req.params.id,
+                asked: asked.map((question, i) => ({
+                    questionId: question.id,
+                    askedAs: unknowns[i]?.questionText ?? question.question_text,
+                    fieldType: unknowns[i]?.fieldType ?? null,
+                    required: unknowns[i]?.required !== false,
+                })),
+            });
+        });
+
         const summary = unknowns.length === 1
-            ? `Form asked: ${unknowns[0].questionText.slice(0, 380)}`
-            : `Form asked ${unknowns.length} questions, starting with: `
-              + `${unknowns[0].questionText.slice(0, 340)}`;
+            ? `Waiting on an answer to: ${unknowns[0].questionText.slice(0, 360)}`
+            : `Waiting on ${unknowns.length} answers, starting with: `
+              + `${unknowns[0].questionText.slice(0, 330)}`;
 
         return await moveItem(req, res, 'PARKED_UNKNOWN', {
             reason: summary,
@@ -739,6 +772,144 @@ export const deviceApplications = async (req, res, next) => {
         }
 
         return res.json({ applications: rows, byBoard });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * GET /api/device/questions — what this consultant still has to answer.
+ *
+ * Only questions with an application actually waiting on them. The bank holds
+ * plenty a consultant could answer one day; these are the ones costing them a
+ * job right now, ordered by how many applications each unblocks.
+ */
+export const deviceQuestions = async (req, res, next) => {
+    try {
+        const rows = await outstandingForConsultant(req.device.orgId, req.device.consultantId);
+        return res.json({ questions: rows });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+/**
+ * GET /api/device/answers — the whole answer bank, as the app will use it.
+ *
+ * Not just the outstanding ones: everything this consultant has answered, which
+ * is exactly what gets typed into their applications. Somebody who suspects an
+ * application said the wrong thing needs to be able to look, and the tool that
+ * did the typing is the obvious place to look in.
+ */
+export const deviceAnswers = async (req, res, next) => {
+    try {
+        const { rows } = await query(
+            `SELECT qu.id AS question_id, qu.question_text,
+                    a.approved_text AS answer_text,
+                    a.revision_no, a.answered_at,
+                    c.name AS category, c.label AS category_label
+               FROM answers a
+               JOIN questions qu ON qu.id = a.question_id
+               JOIN lkp_answer_statuses s ON s.id = a.status_id
+          LEFT JOIN lkp_question_categories c ON c.id = qu.category_id
+              WHERE a.consultant_id = $1
+                AND a.organization_id = $2
+                AND a.is_current
+                AND s.name = 'APPROVED'
+                AND a.approved_text IS NOT NULL
+              ORDER BY qu.question_text`,
+            [req.device.consultantId, req.device.orgId],
+        );
+        return res.json({ answers: rows });
+    } catch (err) {
+        return next(err);
+    }
+};
+
+export const deviceAnswerSchema = Joi.object({
+    answerText: Joi.string().max(5000).required(),
+});
+
+/**
+ * POST /api/device/questions/:id/answer — the consultant answers, and it counts.
+ *
+ * ── WHY THIS NEEDS NO REVIEW ──────────────────────────────────────────
+ *
+ * Job-form answers used to sit as PENDING until a second person approved them,
+ * which is the right rule for something a recruiter writes on somebody else's
+ * behalf. It is the wrong rule here: this is the consultant answering a
+ * question about themselves — their notice period, their rate, their years with
+ * a tool — in order to send their own application.
+ *
+ * Waiting for approval meant the job could close before the answer cleared. The
+ * owner's decision is that these are usable the moment they are given, so they
+ * are written APPROVED with the consultant recorded as both author and
+ * approver. Nothing pretends a second person looked at it.
+ *
+ * PROFILE changes are untouched and still reviewed — those alter what every
+ * future application says, which is a different thing from answering one form.
+ */
+export const deviceAnswerQuestion = async (req, res, next) => {
+    try {
+        const { rows: question } = await query(
+            `SELECT q.id, q.question_text
+               FROM questions q
+              WHERE q.id = $1 AND q.organization_id = $2`,
+            [req.params.id, req.device.orgId],
+        );
+        if (question.length === 0) {
+            return res.status(404).json({ error: 'That question is not in your answer bank.' });
+        }
+
+        const text = req.body.answerText.trim();
+        if (!text) return res.status(422).json({ error: 'An answer cannot be blank.' });
+
+        await withTransaction(async (client) => {
+            // Supersede whatever was there. Answers are revisions, never edits:
+            // an application already sent must keep the wording it was sent with.
+            await client.query(
+                `UPDATE answers
+                    SET is_current = false,
+                        status_id = (SELECT id FROM lkp_answer_statuses WHERE name = 'SUPERSEDED'),
+                        updated_at = now()
+                  WHERE consultant_id = $1 AND question_id = $2 AND is_current`,
+                [req.device.consultantId, req.params.id],
+            );
+
+            const { rows: prev } = await client.query(
+                `SELECT COALESCE(MAX(revision_no), 0) AS n FROM answers
+                  WHERE consultant_id = $1 AND question_id = $2`,
+                [req.device.consultantId, req.params.id],
+            );
+
+            await client.query(
+                `INSERT INTO answers
+                    (id, organization_id, consultant_id, question_id, revision_no,
+                     is_current, proposed_text, approved_text, status_id,
+                     answered_by, answered_at, reviewed_by, reviewed_at, review_note)
+                 VALUES ($1,$2,$3,$4,$5,true,$6,$6,
+                     (SELECT id FROM lkp_answer_statuses WHERE name = 'APPROVED'),
+                     $3, now(), $3, now(),
+                     'Answered by the consultant in the desktop app')`,
+                [uuidv4(), req.device.orgId, req.device.consultantId, req.params.id,
+                    Number(prev[0].n) + 1, text],
+            );
+        });
+
+        // Anything now fully answered goes straight back into the queue.
+        const released = await releaseAnswered(req.device.orgId, req.device.consultantId);
+
+        logAction({
+            orgId: req.device.orgId, module: 'answers', action: 'Answered Question',
+            entityType: 'Question', entityId: req.params.id,
+            entityName: question[0].question_text.slice(0, 200),
+            performedBy: req.device.consultantId, performedByRole: 'CONSULTANT',
+            description: `Answered "${question[0].question_text.slice(0, 120)}" in the `
+                + `desktop app${released ? `, releasing ${released} application(s)` : ''}`,
+            ipAddress: req.ip,
+        }).catch(() => {});
+
+        return res.json({ ok: true, released });
     } catch (err) {
         return next(err);
     }

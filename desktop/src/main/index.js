@@ -147,6 +147,7 @@ const snapshot = () => ({
     nextCycleAt: store?.get('nextCycleAt') ?? null,
     cycleLog: (store?.get('cycleLog') ?? []).slice(-10).reverse(),
     awaitingReview: store?.get('awaitingReview') ?? [],
+    outstandingQuestions: store?.get('outstandingQuestions') ?? 0,
     automationOn: store?.get('automationOn') ?? false,
     autoSubmit: store?.get('autoSubmit') ?? false,
     boards: boardsForDisplay(),
@@ -246,6 +247,7 @@ const heartbeat = async () => {
         store.set({
             paused: beat.paused,
             pausedBoards: beat.pausedBoards ?? [],
+            outstandingQuestions: beat.outstandingQuestions ?? 0,
         });
         // Reports queued while offline go out as soon as we are back.
         await outbox.drain((p, b) => hub.post(p, b));
@@ -463,6 +465,43 @@ const registerIpc = () => {
     // What this consultant has already applied to, grouped by board. Fetched on
     // demand rather than held in the snapshot: it is history, it does not change
     // between pushes, and it can be long.
+    /* ── questions blocking applications ───────────────────────────────
+     *
+     * Answered here rather than on the web, because this is where the job is.
+     * The consultant is looking at "3 applications are waiting on your notice
+     * period"; asking them to go and find the same question in a portal is how
+     * a two-minute job becomes tomorrow's.
+     */
+    ipcMain.handle('questions', async () => {
+        try {
+            return { ok: true, ...(await hub.questions()) };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    /** The whole bank — every answer the app would type into an application. */
+    ipcMain.handle('answerBank', async () => {
+        try {
+            return { ok: true, ...(await hub.answers()) };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    ipcMain.handle('answerQuestion', async (_e, questionId, answerText) => {
+        try {
+            const res = await hub.answerQuestion(questionId, { answerText });
+            // Answering may have freed applications; pull the queue so the
+            // count on screen matches what just happened.
+            await engine.refresh().catch(() => {});
+            setStatus(status.state);
+            return { ok: true, ...res };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
     ipcMain.handle('applications', async () => {
         try {
             return { ok: true, ...(await hub.applications()) };

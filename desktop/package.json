@@ -11,9 +11,11 @@
     "dev:main": "wait-on tcp:5273 && electron .",
     "build:renderer": "vite build",
     "start": "npm run build:renderer && electron .",
-    "test": "node tests/run.mjs",
+    "test": "node tests/run.mjs && node tests/dom.mjs",
+    "test:dom": "node tests/dom.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "verify:board": "node tools/verify-board.mjs",
+    "try:linkedin": "node tools/try-linkedin.mjs",
     "probe:selectors": "node tools/probe-selectors.mjs",
     "dist": "npm run build:renderer && electron-builder"
   },

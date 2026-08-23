@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('smartapply', {
     hideBoardView: (board) => ipcRenderer.invoke('hideBoardView', board),
     browserIsEmbedded: () => ipcRenderer.invoke('browserIsEmbedded'),
 
+    /** Questions with an application waiting on them, and answering one. */
+    questions: () => ipcRenderer.invoke('questions'),
+    answerBank: () => ipcRenderer.invoke('answerBank'),
+    answerQuestion: (id, answerText) => ipcRenderer.invoke('answerQuestion', id, answerText),
+
     /** Everything this consultant has applied to, grouped by job board. */
     applications: () => ipcRenderer.invoke('applications'),
 

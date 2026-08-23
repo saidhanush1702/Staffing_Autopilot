@@ -23,6 +23,7 @@ import { query, withTransaction } from '../db.js';
 import { canAccessConsultant, getAssignedConsultantIds } from '../utils/scope.js';
 import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction } from './auditLogController.js';
+import { releaseAnswered } from '../config/blockers.js';
 
 /* ── validation ──────────────────────────────────────────────────────── */
 
@@ -216,7 +217,8 @@ export const submitAnswer = async (req, res, next) => {
         const status = await statusIds();
 
         const { rows: currentRows } = await query(
-            `SELECT a.id, a.revision_no, a.proposed_text, s.name AS status_name
+            `SELECT a.id, a.revision_no, a.proposed_text, a.approved_text,
+                    s.name AS status_name
                FROM answers a
                JOIN lkp_answer_statuses s ON s.id = a.status_id
               WHERE a.consultant_id = $1 AND a.question_id = $2 AND a.is_current`,
@@ -224,12 +226,11 @@ export const submitAnswer = async (req, res, next) => {
         );
         const current = currentRows[0];
 
-        // Re-submitting identical text would mint a revision that says nothing,
+        // Re-saving identical text would mint a revision that says nothing,
         // exactly as an unchanged criteria save would.
-        if (current && current.proposed_text.trim() === answerText.trim()
-            && current.status_name === 'PENDING') {
+        if (current && (current.approved_text ?? current.proposed_text)?.trim() === answerText.trim()) {
             return res.status(409).json({
-                error: 'That is the same answer you already submitted.',
+                error: 'That is the same answer you already gave.',
             });
         }
 
@@ -245,13 +246,28 @@ export const submitAnswer = async (req, res, next) => {
                     [status.SUPERSEDED, current.id],
                 );
             }
+            // ── NO SECOND PAIR OF EYES ON A JOB-FORM ANSWER ───────────
+            //
+            // These used to land PENDING and wait for a recruiter. That is the
+            // right rule for something written on somebody else's behalf, and
+            // the wrong one here: this is the consultant answering a question
+            // about themselves — their notice period, their rate, their years
+            // with a tool — to send their own application. Waiting for approval
+            // meant postings closed before the answer cleared.
+            //
+            // So it is usable immediately, with the consultant recorded as both
+            // author and approver. Nothing pretends anyone else looked at it.
+            // Profile changes are a different matter and are still reviewed:
+            // those alter what EVERY future application says.
             await client.query(
                 `INSERT INTO answers
                     (id, organization_id, consultant_id, question_id, revision_no,
-                     is_current, proposed_text, status_id, answered_by)
-                 VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$3)`,
+                     is_current, proposed_text, approved_text, status_id,
+                     answered_by, answered_at, reviewed_by, reviewed_at, review_note)
+                 VALUES ($1,$2,$3,$4,$5,TRUE,$6,$6,$7,$3,now(),$3,now(),
+                     'Answered by the consultant')`,
                 [answerId, orgId, consultantId, questionId, revisionNo,
-                    answerText, status.PENDING],
+                    answerText, status.APPROVED],
             );
         });
 
@@ -261,15 +277,20 @@ export const submitAnswer = async (req, res, next) => {
             entityName: question.question_text.slice(0, 200),
             performedBy: consultantId, performedByRole: 'CONSULTANT',
             description: `Answered "${question.question_text}"`
-                + (revisionNo > 1 ? ` (revision ${revisionNo})` : '')
-                + ` — awaiting ${question.category_label} approval`,
+                + (revisionNo > 1 ? ` (revision ${revisionNo})` : ''),
             ipAddress: req.ip,
         }).catch(() => {});
 
+        // Anything that was only waiting on this goes back in the queue.
+        const released = await releaseAnswered(orgId, consultantId);
+
         return res.status(201).json({
-            message: 'Answer submitted for approval.',
+            message: released
+                ? `Saved. ${released} application(s) released.`
+                : 'Saved.',
             answerId,
             revisionNo,
+            released,
         });
     } catch (err) {
         return next(err);

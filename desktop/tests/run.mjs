@@ -706,6 +706,94 @@ check('the board is left unverified again', BOARDS.WELLFOUND.verified, false);
 
 
 
+/* ── the account of a pass ────────────────────────────────────────────── */
+
+section('every pass writes down what it did, and why');
+
+/**
+ * A board page that is a closed posting: no apply button, and a notice saying
+ * applications are shut. Both of the app's earlier answers to this were wrong —
+ * it waited fifteen seconds for a button and then told the consultant to apply
+ * by hand to a job nobody can apply to.
+ */
+const closedPage = () => ({
+    url: () => 'https://wellfound.com/jobs/1',
+    bringToFront: async () => {},
+    waitForSelector: async () => { throw new Error('Timeout'); },
+    waitForTimeout: async () => null,
+    $$eval: async () => [],
+    locator: (sel) => {
+        const shut = sel.startsWith('text=/');
+        const c = {
+            count: async () => (shut ? 1 : 0),
+            isVisible: async () => shut,
+            innerText: async () => (shut ? 'No longer accepting applications' : ''),
+            getAttribute: async () => null,
+            click: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            page: () => ({ waitForTimeout: async () => {} }),
+        };
+        return { ...c, first: () => c, nth: () => c };
+    },
+});
+
+BOARDS.WELLFOUND.verified = true;
+BOARDS.WELLFOUND.apply = {
+    open: 'OPEN', dialog: 'DIALOG', next: 'NEXT', submit: 'SUBMIT',
+    alreadyApplied: 'APPLIED', maxSteps: 4,
+};
+
+let ledgerHub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item({ id: 'q1', company: 'VRSamadhan', title: 'React Js Developer' })],
+        profile: { name: 'Sai Dhanush' },
+        approvedAnswers: [],
+    }),
+});
+let ledgerSess = fakeSessions();
+ledgerSess.page = async () => closedPage();
+
+let ledgerEngine = engineWith(ledgerHub, ledgerSess);
+let stats = await ledgerEngine.run();
+
+check('a closed posting is skipped, not handed to the consultant', stats.skipped, 1);
+check('  and nobody is asked to apply to it', stats.handedToHuman, 0);
+check('  it is counted as closed in its own right', stats.closed, 1);
+check('  the hub is told why',
+    ledgerHub.calls.find((c) => c.name === 'skipped')?.args[1].reason,
+    'This posting is no longer accepting applications.');
+
+check('the pass names the job it decided about',
+    stats.outcomes.map((o) => [o.company, o.result]), [['VRSamadhan', 'CLOSED']]);
+check('  with the reason attached',
+    /no longer accepting/.test(stats.outcomes[0].reason), true);
+check('  and the ledger survives into the run history',
+    (ledgerEngine.store.get('cycleLog').at(-1).outcomes ?? []).length, 1);
+
+// A board the app does not fill still gets a line of its own, so "handed over"
+// is never something the consultant has to infer from an empty screen.
+BOARDS.WELLFOUND.verified = false;
+ledgerHub = fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({
+        items: [item({ id: 'q2', company: 'Crisil', title: 'React Front end developer' })],
+        profile: {},
+        approvedAnswers: [],
+    }),
+});
+ledgerSess = fakeSessions();
+ledgerEngine = engineWith(ledgerHub, ledgerSess);
+stats = await ledgerEngine.run();
+
+check('an unverified board hands over with a stated reason',
+    stats.outcomes.map((o) => o.result), ['HANDED_OVER']);
+check('  naming the board rather than blaming the job',
+    /not verified/.test(stats.outcomes[0].reason), true);
+
+delete BOARDS.WELLFOUND.apply;
+
+
 /* ── multi-step apply flows ───────────────────────────────────────────── */
 
 section('apply flow — the submit button is a wall, not a step');
@@ -723,6 +811,8 @@ const wizardPage = (steps, opts = {}) => {
         count: async () => {
             if (kind === 'open') return opts.noOpen ? 0 : 1;
             if (kind === 'already') return opts.alreadyApplied ? 1 : 0;
+            if (kind === 'closed') return opts.closed ? 1 : 0;
+            if (kind === 'away') return opts.externalApply ? 1 : 0;
             if (kind === 'submit') return opened && step >= steps.length - 1 ? 1 : 0;
             if (kind === 'next') return opened && step < steps.length - 1 ? 1 : 0;
             if (kind === 'dialog') return opened ? 1 : 0;
@@ -748,11 +838,17 @@ const wizardPage = (steps, opts = {}) => {
         setInputFiles: async () => {},
     });
 
+    // `closed` and `away` answer for the two lookups the flow now makes before
+    // and after the apply button. Both default to absent — this board is open
+    // and applies in place — and a test that wants either says so through
+    // `opts`, rather than every unrecognised selector reporting a live dialog.
     const kindOf = (sel) => {
         if (sel.includes('OPEN')) return 'open';
         if (sel.includes('NEXT')) return 'next';
         if (sel.includes('SUBMIT')) return 'submit';
         if (sel.includes('APPLIED')) return 'already';
+        if (sel.startsWith('text=/')) return 'closed';
+        if (sel.includes(':has-text("Apply")')) return 'away';
         return 'dialog';
     };
 
@@ -815,10 +911,35 @@ flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswe
 check('an existing application is recognised', flow.outcome, 'ALREADY_APPLIED');
 check('  and nothing is clicked at all', wiz.clicked.length, 0);
 
-// No apply button: the job is applied for somewhere else.
+// No apply button and nothing else either: we cannot say where applying happens.
 wiz = wizardPage([[]], { noOpen: true });
 flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
 check('a page with no apply button is handed over', flow.outcome, 'NO_APPLY_FLOW');
+
+// ── A CLOSED POSTING IS NOT A HAND-OVER ──────────────────────────────
+//
+// It reads as "no apply button" to everything that only looks for a button,
+// and the consultant then opens it to find applications are closed. These two
+// cases have to be told apart before either is reported.
+wiz = wizardPage([[]], { noOpen: true, closed: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a posting that says applications are closed is recognised', flow.outcome, 'CLOSED');
+check('  and it says so plainly', /no longer accepting/.test(flow.detail), true);
+check('  without waiting for an apply button that will never come',
+    wiz.clicked.length, 0);
+
+// A closed posting is checked BEFORE the opener, so an open one is unaffected.
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]]);
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('an open posting is not mistaken for a closed one', flow.outcome, 'READY_TO_SUBMIT');
+
+// An "Apply" that leaves for the employer's site: a person's job, and the
+// reason given should say that rather than blaming the app.
+wiz = wizardPage([[]], { noOpen: true, externalApply: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('an apply button that leaves the board is recognised', flow.outcome, 'EXTERNAL_APPLY');
+check('  and the reason names the employer’s site',
+    /employer/.test(flow.detail), true);
 
 // A required question nobody has answered stops the wizard mid-way.
 wiz = wizardPage([
@@ -910,10 +1031,10 @@ const applyHub = () => fakeHub({
 const readyPage = () => {
     const clicked = [];
     const ctrl = (kind) => ({
-        count: async () => (kind === 'next' ? 0 : 1),
+        count: async () => (kind === 'next' || kind === 'closed' ? 0 : 1),
         first() { return this; },
         nth() { return this; },
-        isVisible: async () => kind !== 'next' && kind !== 'already',
+        isVisible: async () => !['next', 'already', 'closed'].includes(kind),
         innerText: async () => ({ open: 'Apply', submit: 'Submit application' }[kind] ?? ''),
         getAttribute: async () => null,
         click: async () => clicked.push(kind),
@@ -926,7 +1047,10 @@ const readyPage = () => {
     const kindOf = (sel) => (sel.includes('OPEN') ? 'open'
         : sel.includes('NEXT') ? 'next'
             : sel.includes('SUBMIT') ? 'submit'
-                : sel.includes('APPLIED') ? 'already' : 'dialog');
+                : sel.includes('APPLIED') ? 'already'
+                    // This posting is open and applies in place, so the
+                    // closed-posting probe must come back empty.
+                    : sel.startsWith('text=/') ? 'closed' : 'dialog');
     return {
         clicked,
         url: () => 'https://wellfound.com/jobs/1',

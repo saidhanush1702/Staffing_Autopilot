@@ -122,6 +122,11 @@ const BOARDS = {
             // so applyFlow finds the control by what it SAYS. Set this only if
             // some board turns out to need naming explicitly.
             alreadyApplied: 'button:has-text("Continue applying")',
+            // `closed` and `externalApply` are left unset on purpose. The
+            // defaults in applyFlow.js match on the words a board uses — "no
+            // longer accepting applications", an Apply button that is not Easy
+            // Apply — and those read the same on every board. A selector here
+            // would only be worth adding for a board that says it differently.
             maxSteps: 8,
         },
         // ── NO PER-BOARD VOLUME LIMIT ────────────────────────────────
@@ -137,10 +142,14 @@ const BOARDS = {
         botCheck: ['#captcha-internal'],
         // ── SWITCHED ON BY THE OWNER, ON PARTIAL EVIDENCE ────────────
         //
-        // The session selectors here were measured against a live account. The
-        // apply flow was measured against ONE job, and reached page 1 of 5
-        // before a required screening question stopped it. Nothing has yet
-        // watched this fill a LinkedIn application to the end.
+        // The session selectors here were measured against a live account, and
+        // the flow has since been walked to page 4 of 5 with a probe: contact
+        // details, résumé, screening questions, work authorisation. What that
+        // walk found is written into filler.js — LinkedIn's radios are 0×0
+        // transparent inputs inside a styled proxy, with the question in an
+        // unlinked paragraph above the group.
+        //
+        // Nothing has yet watched this fill a LinkedIn application to the end.
         //
         // So this is on because the owner asked for it, not because the recipe
         // has been proven. What that costs if a selector is wrong is bounded:

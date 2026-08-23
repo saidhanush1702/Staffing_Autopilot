@@ -75,7 +75,8 @@ import {
     leaseItem, reportFilled, reportParked, reportSkipped, reclassify,
     reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
     listDevices, issueDevice, issueDeviceSchema, revokeDevice, deviceResume,
-    deviceApplications,
+    deviceApplications, deviceQuestions, deviceAnswerQuestion, deviceAnswerSchema,
+    deviceAnswers,
     revealActivationCode,
 } from './controllers/deviceController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
@@ -364,6 +365,16 @@ app.get('/api/device/queue', [verifyDevice], deviceQueue);
 // What this consultant has already applied to, so the app can show its own
 // history rather than forgetting each application the moment it is submitted.
 app.get('/api/device/applications', [verifyDevice], deviceApplications);
+
+// Questions with an application waiting on them, answered where the job is.
+// These need no second approval: a consultant answering about their own notice
+// period, to send their own application, is not the case two-person review was
+// written for — and waiting for it let jobs close. Profile changes still are.
+app.get('/api/device/questions', [verifyDevice], deviceQuestions);
+// The whole bank — what the app actually types into applications.
+app.get('/api/device/answers', [verifyDevice], deviceAnswers);
+app.post('/api/device/questions/:id/answer',
+    [verifyDevice, validate(deviceAnswerSchema)], deviceAnswerQuestion);
 
 // Every state change goes through the shared queue state machine, so the app
 // cannot reach a state the portal would refuse.

@@ -88,6 +88,9 @@ class HubClient {
     heartbeat() { return this.#call('get', '/device/heartbeat'); }
     queue() { return this.#call('get', '/device/queue'); }
     applications() { return this.#call('get', '/device/applications'); }
+    questions() { return this.#call('get', '/device/questions'); }
+    answers() { return this.#call('get', '/device/answers'); }
+    answerQuestion(id, body) { return this.#call('post', `/device/questions/${id}/answer`, body); }
 
     lease(id) { return this.#call('post', `/device/queue/${id}/lease`); }
     filled(id, body) { return this.#call('post', `/device/queue/${id}/filled`, body ?? {}); }

@@ -54,6 +54,8 @@ const EMPTY = {
     // Last known settings from the hub.
     paused: false,
     pausedBoards: [],
+    // Questions holding applications up, from the last heartbeat.
+    outstandingQuestions: 0,
     // The cycle's own bookkeeping.
     // When the queue was last READ, as opposed to last worked. They are
     // different questions and a consultant asks the first one far more often.

@@ -48,6 +48,33 @@ const UPLOAD_WORDS = /\b(upload|attach|choose file|select file|add (a )?(resume|
 /** A step that is asking for a CV, whatever it calls one. */
 const RESUME_WORDS = /\b(resume|résumé|cv)\b/i;
 
+/**
+ * A posting that is shut.
+ *
+ * ── WHY THIS IS A SKIP AND NOT A HAND-OVER ────────────────────────────
+ *
+ * A closed job has no apply button, which used to make it indistinguishable
+ * from a job that applies on the employer's site — so the app handed it to the
+ * consultant, who opened it and found a red notice saying nobody can apply.
+ * Doing that across a run fills somebody's list with work that cannot be done.
+ *
+ * The phrases are the boards' own, matched case-insensitively as whole
+ * sentences, and only where the page shows them as its own status rather than
+ * inside a description.
+ */
+const CLOSED_SELECTOR = 'text=/no longer accepting applications'
+    + '|this job is no longer available'
+    + '|applications are closed'
+    + '|this position has been filled/i';
+
+/**
+ * An apply control that hands over to somebody else's site.
+ *
+ * Matched only AFTER the board's own in-page flow has failed to appear, so on a
+ * job that offers both, Easy Apply always wins.
+ */
+const EXTERNAL_SELECTOR = 'button:has-text("Apply"), a:has-text("Apply")';
+
 /** How long to let a step render before reading it. */
 const STEP_SETTLE_MS = 1_800;
 
@@ -80,7 +107,7 @@ const textOf = async (locator) => {
  * visible and enabled still times out. It happened on the same button, on the
  * same job, that had clicked cleanly minutes earlier.
  *
- * ── WHY THIS DOES NOT FALL BACK TO COORDINATES ────────────────────────
+ * ── WHY NOTHING HERE AIMS AT A POSITION ───────────────────────────────
  *
  * The first version of this measured the element's position and clicked that
  * point. It is an obvious idea and it is wrong: the only reason the fallback
@@ -89,9 +116,9 @@ const textOf = async (locator) => {
  * application flow — the "Dismiss" control sits a few pixels from the buttons
  * this needs to press.
  *
- * `force: true` skips the stability wait but still resolves the locator, so it
- * clicks the element or nothing. Whatever else happens, it cannot press a
- * different control than the one it was asked for.
+ * So every step below resolves the LOCATOR and acts on that element or on
+ * nothing. Whatever else happens, none of them can press a different control
+ * than the one they were asked for.
  */
 const clickSteadily = async (locator, log = () => {}) => {
     await locator.scrollIntoViewIfNeeded().catch(() => {});
@@ -105,9 +132,62 @@ const clickSteadily = async (locator, log = () => {}) => {
         }
     }
 
+    // ── SOMETHING IS SITTING ON TOP OF IT ─────────────────────────────
+    //
+    // LinkedIn raises a "Resume uploaded successfully" bar at the bottom of the
+    // flow. In a small window it lands squarely over Next and Review, and
+    // Playwright will not click a control another element would receive the
+    // click for — so the run stopped there until somebody closed the bar by
+    // hand.
+    //
+    // This only NAMES the obstruction; it does not touch it. Closing a message
+    // means clicking an X, and on this flow there is another X a few pixels
+    // away that abandons the whole application. Reading is safe, reaching is
+    // not.
+    const covering = await describeObstruction(locator);
+    if (covering) log(`the "${covering}" message is covering this button`);
+
+    // ── PRESS IT THE WAY A KEYBOARD USER WOULD ────────────────────────
+    //
+    // Focus then Enter activates the focused control and nothing else. Unlike a
+    // click it does not travel through the page's layers, so an overlay cannot
+    // intercept it — and unlike `force: true` it cannot land on whatever
+    // happens to be in that spot. When the earlier fallback used coordinates it
+    // pressed Dismiss twice and shut the application flow; this cannot, because
+    // it never aims at a position at all.
+    try {
+        await locator.focus({ timeout: 4_000 });
+        await locator.press('Enter', { timeout: 4_000 });
+        return;
+    } catch { /* not focusable — one option left */ }
+
     log('the page will not settle — clicking the control directly');
     // Last resort, and still aimed at the element itself.
     await locator.click({ force: true, timeout: 8_000 });
+};
+
+/**
+ * What is covering this control, in its own words.
+ *
+ * Read-only on purpose: it hit-tests the button's centre and walks up from
+ * whatever answers, so the log can say "the Resume uploaded successfully
+ * message is covering this button" instead of "click timed out".
+ *
+ * @returns the obstruction's text, or null when nothing is in the way
+ */
+const describeObstruction = async (locator) => {
+    if (typeof locator.evaluate !== 'function') return null;
+    return locator.evaluate((target) => {
+        const rect = target.getBoundingClientRect();
+        if (!rect.width || !rect.height) return null;
+        const hit = document.elementFromPoint(
+            rect.left + rect.width / 2, rect.top + rect.height / 2,
+        );
+        // An ancestor or a child of the button is not an obstruction.
+        if (!hit || hit === target || target.contains(hit) || hit.contains(target)) return null;
+        return (hit.closest('[role="alert"], [role="status"]') ?? hit)
+            .innerText.replace(/\s+/g, ' ').trim().slice(0, 80) || 'something';
+    }).catch(() => null);
 };
 
 /**
@@ -235,7 +315,8 @@ const visible = async (page, selector) => {
  * Work a board's apply flow as far as it can go without submitting.
  *
  * @returns {{
- *   outcome: 'READY_TO_SUBMIT'|'ALREADY_APPLIED'|'NO_APPLY_FLOW'|'LEFT_THE_BOARD'|'INCOMPLETE',
+ *   outcome: 'READY_TO_SUBMIT'|'ALREADY_APPLIED'|'CLOSED'|'EXTERNAL_APPLY'
+ *          |'NO_APPLY_FLOW'|'LEFT_THE_BOARD'|'INCOMPLETE',
  *   qa, unknown, attachedResume, steps, detail
  * }}
  */
@@ -249,6 +330,17 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
     // board says it already has an application from this person, believe it.
     if (await visible(page, recipe.alreadyApplied)) {
         return { ...empty, outcome: 'ALREADY_APPLIED', detail: 'the board says you already applied' };
+    }
+
+    // Checked BEFORE the apply button, and deliberately so: a closed posting
+    // has no button to wait for, and waiting fifteen seconds to discover that
+    // is fifteen seconds spent per dead job.
+    if (await visible(page, recipe.closed ?? CLOSED_SELECTOR)) {
+        return {
+            ...empty,
+            outcome: 'CLOSED',
+            detail: 'this posting is no longer accepting applications',
+        };
     }
 
     // ── WAIT FOR THE BUTTON, DO NOT GLANCE FOR IT ─────────────────────
@@ -273,6 +365,18 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
         .catch(() => false);
 
     if (!appeared) {
+        // The board's own flow is not on offer. Is there an apply button that
+        // simply leads somewhere else? Saying so is worth the extra look: the
+        // consultant then knows this is a job to do by hand rather than one
+        // the app failed at.
+        const away = page.locator(recipe.externalApply ?? EXTERNAL_SELECTOR).first();
+        if (await away.count() > 0 && await away.isVisible().catch(() => false)) {
+            return {
+                ...empty,
+                outcome: 'EXTERNAL_APPLY',
+                detail: 'this job applies on the employer’s own site, so it needs you',
+            };
+        }
         return {
             ...empty,
             outcome: 'NO_APPLY_FLOW',
@@ -493,4 +597,6 @@ const pressSubmit = async (page, board) => {
 module.exports = {
     runApplyFlow, pressSubmit, isSubmit, attachResume,
     SUBMIT_WORDS, UPLOAD_WORDS, RESUME_WORDS, MAX_STEPS, STEP_SETTLE_MS,
+    clickSteadily, describeObstruction,
+    CLOSED_SELECTOR, EXTERNAL_SELECTOR,
 };
