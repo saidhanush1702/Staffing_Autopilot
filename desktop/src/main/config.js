@@ -124,6 +124,9 @@ module.exports = {
             // Browser profiles persist; everything in `work` is deleted every
             // cycle (R-20).
             profiles: path.join(userDataDir, 'profiles'),
+            // Saved cookie jars, kept OUT of the profile directories --
+            // those belong to Chromium, which is entitled to tidy them.
+            sessions: path.join(userDataDir, 'sessions'),
             work: path.join(userDataDir, 'work'),
             logs: path.join(userDataDir, 'logs'),
         };

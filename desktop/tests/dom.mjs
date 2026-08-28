@@ -31,7 +31,8 @@ const require = createRequire(import.meta.url);
 const { resolveBrowser } = require('../src/main/browser/engine.js');
 const { describeFields, fillForm } = require('../src/main/browser/filler.js');
 const {
-    CLOSED_SELECTOR, EXTERNAL_SELECTOR, describeObstruction,
+    CLOSED_SELECTOR, EXTERNAL_SELECTOR, APPLIED_SELECTOR, describeObstruction,
+    destinationOf,
     dismissUploadToast, whichAppears,
 } = require('../src/main/browser/applyFlow.js');
 
@@ -396,6 +397,27 @@ try {
             open: 'button[aria-label*="Easy Apply" i]',
         }, 5_000), 'open');
 
+    // The status block a finished application leaves behind, as measured on a
+    // real applied job: no apply button anywhere on the page.
+    page = await load(browser, `
+      <h1>React and NextJS Developer</h1>
+      <p>Application status</p><p>Application submitted</p><p>20 minutes ago</p>`);
+    check('a finished application is matched by its status block',
+        await whichAppears(page, {
+            resumable: 'button:has-text("Continue applying")',
+            applied: APPLIED_SELECTOR,
+            closed: CLOSED_SELECTOR,
+            open: 'button[aria-label*="Easy Apply" i]',
+        }, 5_000), 'applied');
+    check('  and an expired posting is still told apart from it',
+        await page.locator(CLOSED_SELECTOR).count(), 0);
+
+    page = await load(browser, `
+      <h1>A job</h1><button aria-label="Easy Apply to A job">Easy Apply</button>`);
+    check('an unapplied Easy Apply page matches neither',
+        await page.locator(APPLIED_SELECTOR).count()
+            + await page.locator(CLOSED_SELECTOR).count(), 0);
+
     page = await load(browser, '<h1>A job</h1><button>Apply</button>');
     check('a page with none of them answers nothing at all',
         await whichAppears(page, {
@@ -405,6 +427,104 @@ try {
         }, 2_000), null);
     check('  and its plain Apply is what gets found next',
         await page.locator(EXTERNAL_SELECTOR).first().isVisible(), true);
+    section('a Built In posting is classified from what it actually is');
+
+    const { BOARDS } = require('../src/main/browser/boards.js');
+    const BI = BOARDS.BUILTIN.apply;
+
+    // Measured on a live Built In job: every apply control is this shape.
+    page = await load(browser, `
+      <h1>Senior React Native Mobile Developer</h1>
+      <a aria-label="Apply to job" target="_blank"
+         href="https://algoleap.zohorecruit.com/jobs/careers/66052300014716">APPLY</a>`);
+    check('the hand-off link is found by its label',
+        await page.locator(BI.externalApply).first().isVisible(), true);
+    check('  and the system it leads to is named',
+        await destinationOf(page.locator(BI.externalApply).first()), 'Zoho Recruit');
+    check('Built In has no in-page flow to open',
+        await page.locator(BI.open).count(), 0);
+
+    for (const [host, expected] of [
+        ['https://blackbaud.wd1.myworkdayjobs.com/ExternalCareers/job/x', 'Workday'],
+        ['https://jobs.smartrecruiters.com/BlueSpireInc1/7439998459152', 'SmartRecruiters'],
+        ['https://jobs.ashbyhq.com/plane/188f905e', 'Ashby'],
+        ['https://techblocks.keka.com/careers/jobdetails/7637', 'Keka'],
+        // Not a system anybody has heard of — reported as itself rather than
+        // guessed at.
+        ['http://careers.hupcfl.com/apply/k3eToF4RNb', 'careers.hupcfl.com'],
+    ]) {
+        page = await load(browser, `<a aria-label="Apply to job" href="${host}">APPLY</a>`);
+        check(`  ${expected}`,
+            await destinationOf(page.locator(BI.externalApply).first()), expected);
+    }
+
+    // A control with no link at all is not a destination.
+    page = await load(browser, '<button>Apply</button>');
+    check('a button with no href names nowhere',
+        await destinationOf(page.locator('button').first()), null);
+
+    // Built In's own wording for a dead posting, measured.
+    page = await load(browser, `
+      <h1>React Developer</h1>
+      <p>Sorry, this job was removed at 08:23 p.m. (UTC) on Tuesday, Aug 11, 2026</p>`);
+    check('a removed Built In posting reads as expired',
+        await page.locator(CLOSED_SELECTOR).first().isVisible(), true);
+
+    section('Workday’s own gate, mid-flow, as measured on a live tenant');
+
+    const WD_APPLY = require('../src/main/browser/destinations.js').DESTINATIONS.WORKDAY.apply;
+
+    // Read off a real "Apply Manually" click: Email Address, Password, Verify
+    // New Password, and a honeypot with no visible label -- a field meant to
+    // trap a script that fills every input it can find, and never a person.
+    const WORKDAY_GATE = `
+      <h1>Application Engineer - III</h1>
+      <h2>Create Account</h2>
+      <label>Email Address*<input type="text" data-automation-id="email"></label>
+      <label>Password*<input type="password" data-automation-id="password"></label>
+      <label>Verify New Password*<input type="password" data-automation-id="verifyPassword"></label>
+      <input type="text" data-automation-id="beecatcher"
+             aria-label="Enter website. This input is for robots only, do not enter anything here.">
+      <button>Sign In</button>
+      <button>Create Account</button>`;
+
+    page = await load(browser, WORKDAY_GATE);
+    check('the gate is recognised by its password field',
+        await page.locator(WD_APPLY.accountWall).count() > 0, true);
+
+    const gateFields = await describeFields(page);
+    const honeypot = gateFields.find((f) => f.label?.toLowerCase().includes('robots'));
+    check('the honeypot is on the page, named by its aria-label',
+        Boolean(honeypot), true);
+
+    // `fillForm` alone has no idea this page is a gate rather than a real
+    // step -- that judgement is `runApplyFlow`'s (proven in run.mjs: nothing
+    // past an accountWall is ever touched, because `fillForm` is never even
+    // called while one is showing). What IS a `fillForm`-level guarantee,
+    // holding regardless of context, is R-18's absolute refusal of a password
+    // field, and never inventing a value for an unlabelled honeypot.
+    const outOfGate = await fillForm(page, {
+        profile: { name: 'Sai Dhanush', email: 'sd@example.com' },
+        approvedAnswers: [], resumePath: null, typing: NO_PAUSE,
+    });
+    check('the honeypot is never filled, even though nothing marks it as one to a script',
+        await page.locator('[data-automation-id="beecatcher"]').inputValue(), '');
+    check('neither password field is ever touched (R-18)',
+        outOfGate.refusals.filter((r) => /password/i.test(r.reason)).length, 2);
+
+    // The real "My Information" step that follows has no password field at
+    // all -- which is exactly why `password`, not `email`, is what the
+    // selector keys off. An `email`-based check would misfire here the moment
+    // a later step legitimately asked for one.
+    const MY_INFORMATION = `
+      <h1>My Information</h1>
+      <label>Given Name(s)*<input type="text" data-automation-id="legalNameSection_firstName"></label>
+      <label>Family Name*<input type="text" data-automation-id="legalNameSection_lastName"></label>
+      <label>Phone Number*<input type="text" data-automation-id="phone-number"></label>
+      <button>Save and Continue</button>`;
+    page = await load(browser, MY_INFORMATION);
+    check('the real information step is never mistaken for the gate',
+        await page.locator(WD_APPLY.accountWall).count(), 0);
 } finally {
     await browser.close();
 }

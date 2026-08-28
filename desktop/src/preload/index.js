@@ -38,6 +38,9 @@ contextBridge.exposeInMainWorld('smartapply', {
      * why it is offered whether or not automation is running.
      */
     checkForJobs: () => ipcRenderer.invoke('checkForJobs'),
+    // Answers to the countdown banner. See attention.js for what each means.
+    attentionContinue: () => ipcRenderer.invoke('attentionContinue'),
+    attentionSkip: () => ipcRenderer.invoke('attentionSkip'),
 
     /** Open a board's login page so the consultant can sign in themselves. */
     signIn: (board) => ipcRenderer.invoke('signIn', board),

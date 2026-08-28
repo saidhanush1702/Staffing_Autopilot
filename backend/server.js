@@ -72,7 +72,7 @@ import {
 import { verifyDevice } from './middleware/verifyDevice.js';
 import {
     activate, activateSchema, heartbeat, deviceQueue,
-    leaseItem, reportFilled, reportParked, reportSkipped, reclassify,
+    leaseItem, reportFilled, reportParked, reportSkipped, reclassify, askQuestions,
     reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
     listDevices, issueDevice, issueDeviceSchema, revokeDevice, deviceResume,
     deviceApplications, deviceQuestions, deviceAnswerQuestion, deviceAnswerSchema,
@@ -383,6 +383,10 @@ app.post('/api/device/queue/:id/lease', [verifyDevice], leaseItem);
 // every delivery is audited with the device that asked.
 app.get('/api/device/queue/:id/resume', [verifyDevice], deviceResume);
 app.post('/api/device/queue/:id/filled', [verifyDevice, validate(reportSchema)], reportFilled);
+// Raise the questions a form asked WITHOUT giving the job up. The device
+// calls this the moment it meets one it cannot answer, shows the consultant a
+// countdown, and only calls `parked` below if nobody answers in time.
+app.post('/api/device/queue/:id/questions', [verifyDevice, validate(reportSchema)], askQuestions);
 app.post('/api/device/queue/:id/parked', [verifyDevice, validate(reportSchema)], reportParked);
 app.post('/api/device/queue/:id/skipped', [verifyDevice, validate(reportSchema)], reportSkipped);
 app.post('/api/device/queue/:id/reclassify', [verifyDevice, validate(reportSchema)], reclassify);

@@ -7,6 +7,7 @@ import Answers from './screens/Answers.jsx';
 import Applied from './screens/Applied.jsx';
 import Activity from './screens/Activity.jsx';
 import StatusPill from './screens/StatusPill.jsx';
+import Attention from './screens/Attention.jsx';
 
 /**
  * ── THE SHELL ─────────────────────────────────────────────────────────
@@ -146,6 +147,11 @@ const App = () => {
 
             {/* Boards is a live browser page; it gets the whole window. The
                 reading tabs stay in a capped column. */}
+            {/* Above the tabs, deliberately: the automation has STOPPED and is
+                waiting on a person, and that must not be something you have to
+                be on the right tab to discover. */}
+            <Attention attention={snap.attention} onChanged={refresh} />
+
             <main className={`screen${tab === 'boards' ? ' flush' : ''}`}>
                 <div className={`screen-inner${tab === 'boards' ? ' wide' : ''}`}>
                     {tab === 'work' && (

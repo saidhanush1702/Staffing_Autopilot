@@ -52,6 +52,51 @@ const BOARDS = {
         sessionProbeUrl: 'https://builtin.com/',
         signedIn: { present: ['a[href*="logout"]'], absent: [] },
         botCheck: [],
+        // ── BUILT IN DOES NOT HOST APPLICATIONS ──────────────────────
+        //
+        // Twenty-one Built In job pages were read — the fifteen in the queue
+        // and six more from Built In's own search. Every apply control found
+        // was the same thing:
+        //
+        //     <a aria-label="Apply to job" target="_blank"
+        //        href="https://<employer>.<ats>.com/…">APPLY</a>
+        //
+        // going to Workday, SmartRecruiters, Zoho Recruit, Ashby, Keka or the
+        // employer's own careers site. Not one posting had an in-house form.
+        // The only <form> on a Built In job page is their Salesforce support
+        // form — name, email, message — which is not an application, and the
+        // two `input[type=file]` on the page belong to it.
+        //
+        // So there is no Built In apply flow to write, and `verified` stays
+        // false because there is nothing here to fill. What the recipe below
+        // does instead is CLASSIFY well: recognise a removed posting, find the
+        // hand-off link, and name the system it leads to, so the consultant
+        // knows what they are opening.
+        //
+        // Automating the destination is a different job, one system at a time.
+        // Across the queue: Workday 4, SmartRecruiters 3, Zoho Recruit 3, and
+        // one each of Ashby, Keka and a custom site.
+        apply: {
+            // Semantic and stable, unlike LinkedIn's hashed classes. Built In
+            // labels every one of these the same way.
+            externalApply: 'a[aria-label="Apply to job"], a:has-text("APPLY")',
+            // `open` is deliberately a selector that matches nothing: there is
+            // no in-page flow to open, so the verdict race should never answer
+            // "open" for this board.
+            open: '[data-builtin-inhouse-apply]',
+            dialog: '[data-builtin-inhouse-apply]',
+            next: '[data-builtin-inhouse-apply]',
+            submit: '[data-builtin-inhouse-apply]',
+        },
+        // ── AND IT MUST NEVER SEND ONE BY ITSELF ─────────────────────
+        //
+        // Set by the owner's instruction: work a Built In application as far as
+        // the submit button and stop, so they can read it and press the button
+        // themselves. This is on the BOARD rather than left to the global
+        // auto-submit toggle on purpose — a setting can be switched on by
+        // somebody who has forgotten this conversation, and the instruction was
+        // about this board, not about a mood.
+        neverAutoSubmit: true,
         verified: false,
     },
     CRUNCHBOARD: {

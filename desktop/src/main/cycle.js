@@ -44,8 +44,11 @@
  */
 const fs = require('node:fs');
 const { BOARDS, boardForPortal } = require('./browser/boards.js');
-const { fillForm } = require('./browser/filler.js');
+const { fillForm, describeFields } = require('./browser/filler.js');
 const { runApplyFlow, pressSubmit } = require('./browser/applyFlow.js');
+const { tenantFor } = require('./browser/destinations.js');
+const { normaliseQuestion } = require('./browser/answers.js');
+const { WAIT_MS } = require('./attention.js');
 const {
     POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS, SIGNIN_WAIT_MS, SIGNIN_POLL_MS,
 } = require('./config.js');
@@ -85,6 +88,11 @@ const nextPollMs = (hadWork, rand = Math.random) => {
 class CycleEngine {
     constructor({
         hub, sessions, store, outbox, paths, log = () => {},
+        // Owns every "the bot needs a person" pause: the notification, the
+        // countdown on screen, and the two buttons. Optional so the suite can
+        // run the engine without one, in which case every gate behaves as it
+        // did before this existed -- it waits, and nobody is told.
+        attention = null,
         // Board-tagged progress. `log` is one flat stream for the whole app;
         // this says WHICH board a line belongs to, so the screen can keep
         // LinkedIn's story separate from Built In's instead of interleaving
@@ -104,6 +112,7 @@ class CycleEngine {
         this.activity = activity;
         this.signInWaitMs = signInWaitMs;
         this.signInPollMs = signInPollMs;
+        this.attention = attention;
         this.running = false;
         this.stopRequested = false;
     }
@@ -300,6 +309,32 @@ class CycleEngine {
     }
 
     /**
+     * Pause and ask the consultant for something, if there is anybody to ask.
+     *
+     * Falls back to a plain silent wait when no Attention was supplied -- the
+     * suite, and any build without a window -- so the gates keep working
+     * without one and nothing here has to check twice.
+     *
+     * @returns 'done' | 'skipped' | 'timeout'
+     */
+    async #askHuman({ kind, board, company, title, message, check, waitMs }) {
+        if (this.attention) {
+            return this.attention.raise({
+                kind,
+                board: board?.name ?? null,
+                boardLabel: board?.label ?? null,
+                company: company ?? null,
+                title: title ?? null,
+                message,
+                check,
+                waitMs,
+            });
+        }
+        const ok = await this.#waitOut(waitMs ?? this.signInWaitMs, check);
+        return ok ? 'done' : 'timeout';
+    }
+
+    /**
      * Wait for the consultant to sign in, having opened the window for them.
      *
      * The stall is reported to the hub BEFORE the wait, not after, so a
@@ -316,26 +351,56 @@ class CycleEngine {
         await this.sessions.promptSignIn(board);
         this.log(`${board.label}: waiting for you to sign in`);
 
-        const deadline = Date.now() + this.signInWaitMs;
-        while (Date.now() < deadline) {
-            await new Promise((r) => { setTimeout(r, this.signInPollMs); });
+        const outcome = await this.#askHuman({
+            kind: 'SIGN_IN',
+            board,
+            message: `Sign in to ${board.label} in the window that just opened. `
+                + 'The app never sees your password.',
+            waitMs: this.signInWaitMs,
             // Looks at the page in front of the consultant rather than
             // navigating it — polling with a navigation would reload the login
             // form they are typing into, every few seconds.
-            if (await this.sessions.isSignedInNow(board)) {
-                // Close the sign-in window and reload the automation's own page,
-                // which is still showing what it loaded while signed out.
-                await this.sessions.finishSignIn?.(board.name);
-                this.log(`${board.label}: signed in — carrying on`);
-                this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
-                await this.#report(() => this.hub.boardStatus({
-                    board: board.name, state: 'OK', detail: 'Signed in',
-                }));
-                return true;
-            }
+            check: () => this.sessions.isSignedInNow(board),
+        });
+
+        if (outcome === 'done') {
+            // Close the sign-in window and reload the automation's own page,
+            // which is still showing what it loaded while signed out.
+            await this.sessions.finishSignIn?.(board.name);
+            // Written down straight away. Waiting until the app quits would
+            // mean a crash -- or a consultant killing the window -- threw away
+            // the sign-in they just did.
+            await this.sessions.saveSession?.(board.name);
+            this.log(`${board.label}: signed in — carrying on`);
+            this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
+            await this.#report(() => this.hub.boardStatus({
+                board: board.name, state: 'OK', detail: 'Signed in',
+            }));
+            return true;
         }
 
         this.log(`${board.label}: still not signed in — leaving it for now`);
+        return false;
+    }
+
+    /**
+     * Poll a condition for up to `timeoutMs`, on `this.signInPollMs` ticks.
+     *
+     * The same shape as `#waitForSignIn`'s own loop, pulled out so a second
+     * kind of "give the person a moment" -- clearing a captcha, getting past a
+     * mid-flow sign-in gate -- does not have to reinvent it. Neither of those
+     * needs `#waitForSignIn`'s extra machinery (opening a login URL, reporting
+     * SESSION_EXPIRED to the hub), which is why this stays a plain poll rather
+     * than a third copy of that whole method.
+     *
+     * @param condition called on every tick; resolving true ends the wait
+     */
+    async #waitOut(timeoutMs, condition) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            await new Promise((r) => { setTimeout(r, this.signInPollMs); });
+            if (await condition()) return true;
+        }
         return false;
     }
 
@@ -348,15 +413,42 @@ class CycleEngine {
         // Bot-check FIRST. Asking a challenged board for anything else is how a
         // temporary challenge becomes a blocked account (R-22).
         if (await this.sessions.isBotChecked(board)) {
-            stats.botChecked.push(board.name);
-            this.activity(board.name, 'STOPPED', 'Stopped for today — this board showed a bot check');
-            await this.#report(() => this.hub.boardStatus({
-                board: board.name,
-                state: 'BOT_CHECK',
-                detail: 'Challenge page detected — stopping this board for the day',
-            }));
-            record(item, board, 'BOARD_STOPPED', 'this board showed a bot check');
-            return 'stopped';
+            // ── ASK BEFORE GIVING UP ON THE WHOLE BOARD ───────────────
+            //
+            // R-22's full stop exists because working AROUND a challenge is
+            // what turns a temporary block into a permanent one. Asking a
+            // person to solve it is not working around it -- it is the
+            // intended way through, and they are sitting right there. Only if
+            // nobody answers does the board stop for the day, exactly as
+            // before.
+            this.activity(board.name, 'STOPPED', `${board.label} is asking for a human check`);
+            await this.sessions.page(board.name).then((p) => p.bringToFront()).catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'BOT_CHECK',
+                board,
+                company: item.company,
+                title: item.title,
+                message: `${board.label} is asking for a human check. Solve it in the browser `
+                    + 'window and this carries on by itself.',
+                check: () => this.sessions.isBotChecked(board).then((v) => !v),
+            });
+
+            if (said !== 'done') {
+                stats.botChecked.push(board.name);
+                this.activity(board.name, 'STOPPED',
+                    'Stopped for today — this board showed a bot check');
+                await this.#report(() => this.hub.boardStatus({
+                    board: board.name,
+                    state: 'BOT_CHECK',
+                    detail: 'Challenge page detected — stopping this board for the day',
+                }));
+                record(item, board, 'BOARD_STOPPED', said === 'skipped'
+                    ? 'you skipped the human check'
+                    : 'this board showed a bot check and nobody cleared it');
+                return 'stopped';
+            }
+            this.log(`${board.label}: human check cleared — carrying on`);
+            this.activity(board.name, 'WORKING', 'Check cleared — carrying on');
         }
 
         // The consultant signs in themselves (R-18). We open the window, wait,
@@ -400,22 +492,39 @@ class CycleEngine {
 
         // ── classify ──────────────────────────────────────────────────
         //
-        // Two independent reasons an item goes to the consultant instead:
+        // ── READING A PAGE AND TYPING INTO IT ARE DIFFERENT RIGHTS ────
         //
-        //   the apply flow leaves the board  →  we have no recipe for wherever
-        //                                       it landed
-        //   the board's recipe is unverified →  we will not type into a real
-        //                                       employer's form on a guess
+        // `verified` used to decide both, and short-circuited here: an
+        // unverified board never reached its own recipe, so every item came
+        // back as "Built In form filling is not verified yet". True, and
+        // useless — the consultant opens the job and finds it applies on
+        // Workday, or that the posting was removed a fortnight ago. The recipe
+        // knew both of those things and was never asked.
+        //
+        // So the two are split. ANY board with a recipe gets to classify, which
+        // costs nothing and types nothing; `verified` still governs the only
+        // dangerous act, which is filling a real employer's form. A board that
+        // hosts no application of its own — Built In — is therefore fully
+        // useful while staying permanently unverified, because there is nothing
+        // there to verify.
         const page = await this.sessions.page(board.name);
         const landedOn = new URL(page.url()).host.replace(/^www\./, '');
         const stillOnBoard = landedOn.endsWith(
             new URL(board.loginUrl).host.replace(/^www\./, ''),
         );
 
-        if (!stillOnBoard || !board.verified) {
-            const reason = !stillOnBoard
-                ? `Applying happens on ${landedOn}, which the app does not fill`
-                : `${board.label} form filling is not verified yet`;
+        if (!stillOnBoard) {
+            const reason = `Applying happens on ${landedOn}, which the app does not fill`;
+            await this.#report(() => this.hub.reclassify(item.id, { reason }));
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+            return 'counted';
+        }
+
+        // No recipe and no permission to fill leaves nothing to try.
+        if (!board.apply && !board.verified) {
+            const reason = `${board.label} form filling is not verified yet`;
             await this.#report(() => this.hub.reclassify(item.id, { reason }));
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
@@ -428,7 +537,13 @@ class CycleEngine {
         // The resume is fetched for THIS job and lands in `work`, which is
         // wiped at the end of the pass (spec §6, R-20).
         this.activity(board.name, 'FILLING', `Filling the application for ${item.company}`);
-        const resumePath = await this.hub.resume(item.id, this.paths.work);
+        // Fetched only when this board may actually fill. The hub audits every
+        // delivery against this device, so pulling a consultant's CV down for a
+        // job we were never going to fill puts a record in the audit trail that
+        // did not happen for any reason.
+        const resumePath = board.verified
+            ? await this.hub.resume(item.id, this.paths.work)
+            : null;
         const fillOptions = { profile, approvedAnswers, resumePath };
 
         // ── ONE FORM, OR A WIZARD? ────────────────────────────────────
@@ -441,7 +556,11 @@ class CycleEngine {
         // been sent, and it goes to the consultant to submit.
         let result;
         if (board.apply) {
-            const flow = await runApplyFlow(page, board, fillOptions, { log: this.log });
+            const flow = await runApplyFlow(page, board, fillOptions, {
+                log: this.log,
+                // Classification is free; typing is not. See the note above.
+                canFill: Boolean(board.verified),
+            });
             this.log(`${item.company}: ${flow.outcome} — ${flow.detail}`);
 
             // Outcomes that are nobody's fault and nothing to fill.
@@ -474,13 +593,32 @@ class CycleEngine {
                 return 'counted';
             }
 
+            // ── FOLLOW THE HAND-OFF, WHERE WE CAN ────────────────────
+            //
+            // Built In applies nowhere itself; every job leaves for the
+            // employer's own system. Stopping at the doorstep means the app
+            // does nothing for an entire board, so when the destination is one
+            // we handle, the work continues there instead.
+            if (flow.outcome === 'EXTERNAL_APPLY' && flow.externalUrl) {
+                const tenant = tenantFor(flow.externalUrl);
+                if (tenant) {
+                    return this.#workDestination(item, board, tenant, flow, stats, {
+                        approvedAnswers, profile, record,
+                    });
+                }
+            }
+
             if (flow.outcome === 'NO_APPLY_FLOW'
                 || flow.outcome === 'EXTERNAL_APPLY'
+                || flow.outcome === 'NOT_VERIFIED'
                 || flow.outcome === 'LEFT_THE_BOARD') {
-                await this.#report(() => this.hub.reclassify(item.id, { reason: flow.detail }));
+                const reason = flow.outcome === 'EXTERNAL_APPLY'
+                    ? `${flow.detail}, so it needs you`
+                    : flow.detail;
+                await this.#report(() => this.hub.reclassify(item.id, { reason }));
                 stats.handedToHuman += 1;
-                record(item, board, 'HANDED_OVER', flow.detail);
-                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${flow.detail}`);
+                record(item, board, 'HANDED_OVER', reason);
+                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
                 return 'counted';
             }
 
@@ -516,20 +654,57 @@ class CycleEngine {
         // the queue over a field the consultant could simply leave blank.
         const blocking = result.unknown.filter((u) => u.required);
         if (blocking.length > 0) {
-            await this.#report(() => this.hub.parked(item.id, {
-                unknownQuestions: result.unknown.map((u) => ({
-                    questionText: u.questionText,
-                    fieldType: u.fieldType,
-                })),
-            }));
-            stats.parked += 1;
-            record(item, board, 'PARKED',
-                `waiting on ${blocking.length} question(s): `
-                + blocking.map((u) => u.questionText).join('; '));
-            this.activity(board.name, 'PARKED',
-                `${item.company}: parked on ${blocking.length} unanswered question(s)`);
-            this.log(`parked ${item.company}: ${blocking.length} unanswered question(s)`);
-            return 'counted';
+            const said = await this.#askUnanswered({
+                item,
+                board,
+                page,
+                root: board.apply?.dialog ?? null,
+                blocking,
+                allUnknown: result.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') return 'counted';
+
+            // Answered while the form was still on screen. Fill again with the
+            // answers as they stand now -- the same page, the same step, no
+            // re-walking of anything -- and carry on from there.
+            const fresh = await this.hub.queue().catch(() => null);
+            const answersNow = fresh?.approvedAnswers ?? approvedAnswers;
+            const second = board.apply
+                ? await runApplyFlow(page, board, { ...fillOptions, approvedAnswers: answersNow },
+                    { log: this.log, canFill: Boolean(board.verified) })
+                : await fillForm(page, { ...fillOptions, approvedAnswers: answersNow });
+
+            result = board.apply
+                ? {
+                    qa: second.qa,
+                    unknown: second.unknown,
+                    attachedResume: second.attachedResume,
+                    refusals: [],
+                    readyToSubmit: second.outcome === 'READY_TO_SUBMIT',
+                    steps: second.steps,
+                }
+                : { ...second, readyToSubmit: true };
+
+            // Still blocked after all that -- an answer that did not match, or
+            // a step behind this one asking something new. Park for real now
+            // rather than looping a person round the same countdown.
+            const stillBlocking = (result.unknown ?? []).filter((u) => u.required);
+            if (stillBlocking.length > 0) {
+                await this.#report(() => this.hub.parked(item.id, {
+                    unknownQuestions: result.unknown.map((u) => ({
+                        questionText: u.questionText,
+                        fieldType: u.fieldType,
+                    })),
+                }));
+                stats.parked += 1;
+                record(item, board, 'PARKED',
+                    `still waiting on ${stillBlocking.length} question(s) after answering`);
+                this.activity(board.name, 'PARKED',
+                    `${item.company}: still ${stillBlocking.length} unanswered`);
+                return 'counted';
+            }
         }
 
         // ── "FILLED" HAS TO MEAN SOMETHING ────────────────────────────
@@ -572,7 +747,15 @@ class CycleEngine {
         this.#rememberForReview(item, board, result, { profile, approvedAnswers, resumePath });
         stats.filled += 1;
 
-        if (this.store.get('autoSubmit') && result.readyToSubmit) {
+        // A board can refuse auto-submission outright, and that refusal beats
+        // the toggle. `autoSubmit` is a preference someone sets once and forgets;
+        // `neverAutoSubmit` is a decision recorded against the board itself, for
+        // boards whose applications are to be read before they are sent.
+        if (board.neverAutoSubmit && this.store.get('autoSubmit')) {
+            this.log(`${board.label}: filled and left for you — this board never submits by itself`);
+        }
+
+        if (this.store.get('autoSubmit') && !board.neverAutoSubmit && result.readyToSubmit) {
             this.activity(board.name, 'SUBMITTING',
                 `${item.company}: submitting ${result.qa.length} answer(s)`);
 
@@ -605,6 +788,428 @@ class CycleEngine {
             `${item.company}: filled ${result.qa.length} field(s) — waiting for you to submit`);
         this.log(`filled ${item.company} — ${item.title}, waiting for your review`);
         return 'counted';
+    }
+
+    /**
+     * Carry on into the system a board handed the job to.
+     *
+     * ── THE SAME WORK, SOMEWHERE ELSE ─────────────────────────────────
+     *
+     * A destination is deliberately shaped like a board, so everything below is
+     * machinery that already existed: its own browser profile, its own sign-in
+     * gate, its own bot-check stop, the same apply flow and the same filler.
+     * Nothing here is a second implementation of anything.
+     *
+     * ── AND WHY THE PROFILE IS PER EMPLOYER ───────────────────────────
+     *
+     * Workday is not one site; each employer runs their own, with their own
+     * accounts. `tenantFor` keys the session by host for that reason, so
+     * signing in at one employer never makes the app look signed in at another.
+     *
+     * Anything it cannot finish becomes a hand-over with the reason attached.
+     * The consultant is going to open this job either way — the only question
+     * is whether they are told why before they do.
+     */
+    async #workDestination(item, board, tenant, flow, stats, { approvedAnswers, profile, record }) {
+        const handOver = async (reason) => {
+            await this.#report(() => this.hub.reclassify(item.id, { reason }));
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+            return 'counted';
+        };
+
+        this.activity(board.name, 'CONNECTING',
+            `${item.company}: following through to ${tenant.label}`);
+        this.log(`${item.company}: ${board.label} hands off to ${tenant.label}`);
+
+        await this.sessions.openJob(tenant.name, flow.externalUrl);
+        const page = await this.sessions.page(tenant.name);
+
+        // R-22 first, exactly as for a board. SmartRecruiters answers automated
+        // requests with a DataDome challenge.
+        if (await this.sessions.isBotChecked(tenant)) {
+            // ── A CHALLENGE IS NOT ALWAYS "STOP FOR THE DAY" ──────────
+            //
+            // A board gets R-22's full stop, because working AROUND a
+            // challenge -- retrying, rotating something -- is what turns a
+            // temporary block into a permanent one. This is different: a
+            // destination that declares `botCheckWaitMs` is asking for thirty
+            // seconds for a PERSON to clear it, the same human act as typing a
+            // sign-in password, not an automated workaround. Zero means the
+            // old behaviour: stop immediately.
+            if (tenant.botCheckWaitMs > 0) {
+                this.activity(board.name, 'STOPPED',
+                    `${item.company}: ${tenant.label} wants a human check — over to you`);
+                await page.bringToFront().catch(() => {});
+                const said = await this.#askHuman({
+                    kind: 'BOT_CHECK',
+                    board,
+                    company: item.company,
+                    title: item.title,
+                    message: `${tenant.label} is asking for a human check. Solve it in the `
+                        + 'browser window and this carries on by itself.',
+                    waitMs: tenant.botCheckWaitMs,
+                    check: () => this.sessions.isBotChecked(tenant).then((v) => !v),
+                });
+                if (said === 'skipped') {
+                    return handOver(`You skipped this one while ${tenant.label} was asking for a human check`);
+                }
+                const clearedByHand = said === 'done';
+                if (clearedByHand) {
+                    this.log(`${item.company}: ${tenant.label} check cleared — carrying on`);
+                    this.activity(board.name, 'WORKING',
+                        `${item.company}: check cleared — carrying on`);
+                } else {
+                    stats.botChecked.push(tenant.name);
+                    return handOver(
+                        `${tenant.label} is asking for a human check, so this one needs you`,
+                    );
+                }
+            } else {
+                stats.botChecked.push(tenant.name);
+                this.activity(board.name, 'STOPPED',
+                    `${item.company}: ${tenant.label} is asking for a human check`);
+                return handOver(`${tenant.label} is asking for a human check, so this one needs you`);
+            }
+        }
+
+        // Accepting terms is a decision, not a step. A tenant that shows a legal
+        // notice is handed over rather than agreed with.
+        if (tenant.legalGate && await page.locator(tenant.legalGate).count() > 0) {
+            // Agreeing to terms on somebody's behalf is still not the app's to
+            // do. But it can put the page in front of them and wait, which is
+            // the difference between "you must go and find this later" and
+            // "read this now, it takes ten seconds".
+            await page.bringToFront().catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'LEGAL_GATE',
+                board,
+                company: item.company,
+                title: item.title,
+                message: `${tenant.label} wants you to accept its terms before the form appears. `
+                    + 'Read them and choose — the app will not decide this for you.',
+                check: () => page.locator(tenant.legalGate).count().then((n) => n === 0),
+            });
+            if (said !== 'done') {
+                return handOver(
+                    `${tenant.label} asks you to accept its terms first, which is yours to decide`,
+                );
+            }
+        }
+
+        // The consultant signs in themselves (R-18), once per employer.
+        if (!(await this.sessions.isSignedIn(tenant))) {
+            this.activity(board.name, 'SIGNED_OUT',
+                `${item.company}: waiting for you to sign in to ${tenant.label}`);
+            if (!(await this.#waitForSignIn(tenant))) {
+                stats.signInNeeded.push(tenant.name);
+                return handOver(`${tenant.label} needs you to sign in before anything can be filled`);
+            }
+        }
+
+        const resumePath = tenant.verified
+            ? await this.hub.resume(item.id, this.paths.work)
+            : null;
+
+        // Mid-flow gates -- Workday's own sign-in, met only after "Apply
+        // Manually" is pressed -- are handled the same way as the header
+        // gate: front the page, wait, poll for the gate's own selector to
+        // disappear. Owned here rather than in applyFlow.js because that
+        // module has no clock strategy and no hub client of its own.
+        const waitForHuman = async (p, clearedWhenGoneSelector, message) => {
+            this.activity(board.name, 'SIGNED_OUT', `${item.company}: ${message}`);
+            await p.bringToFront().catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'ACCOUNT_WALL',
+                board,
+                company: item.company,
+                title: item.title,
+                message,
+                waitMs: this.signInWaitMs,
+                check: () => p.locator(clearedWhenGoneSelector).count().then((n) => n === 0),
+            });
+            return said === 'done';
+        };
+
+        const inner = await runApplyFlow(page, tenant, {
+            profile, approvedAnswers, resumePath,
+        }, { log: this.log, canFill: Boolean(tenant.verified), waitForHuman });
+
+        this.log(`${item.company} @ ${tenant.label}: ${inner.outcome} — ${inner.detail}`);
+
+        if (inner.outcome === 'ALREADY_APPLIED') {
+            await this.#report(() => this.hub.skipped(item.id, {
+                reason: `${tenant.label} says this consultant has already applied.`,
+            }));
+            stats.skipped += 1;
+            record(item, board, 'ALREADY_APPLIED', `${tenant.label}: already applied`);
+            return 'counted';
+        }
+
+        if (inner.outcome === 'CLOSED') {
+            await this.#report(() => this.hub.skipped(item.id, {
+                reason: 'This job is expired — the posting is no longer accepting applications.',
+            }));
+            stats.skipped += 1;
+            stats.closed += 1;
+            record(item, board, 'CLOSED', `${tenant.label}: ${inner.detail}`);
+            return 'counted';
+        }
+
+        if (inner.outcome !== 'READY_TO_SUBMIT' && inner.outcome !== 'INCOMPLETE') {
+            return handOver(`${tenant.label}: ${inner.detail}`);
+        }
+
+        // A question nobody has answered stops it here, the same as on a board —
+        // and it lands in the same Questions tab, because it is the same bank.
+        let filled = inner;
+        const blocking = (filled.unknown ?? []).filter((u) => u.required);
+        if (blocking.length > 0) {
+            // Identical treatment to a board's own form: ask, hold the page
+            // open, and only give the job up if nobody answers. A Workday
+            // wizard is five steps deep by this point, so re-walking it later
+            // is far more expensive here than on a one-page form.
+            const said = await this.#askUnanswered({
+                item,
+                board,
+                page,
+                root: tenant.apply?.dialog ?? null,
+                blocking,
+                allUnknown: filled.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') return 'counted';
+
+            const fresh = await this.hub.queue().catch(() => null);
+            filled = await runApplyFlow(page, tenant, {
+                profile,
+                approvedAnswers: fresh?.approvedAnswers ?? approvedAnswers,
+                resumePath,
+            }, { log: this.log, canFill: Boolean(tenant.verified) });
+
+            const stillBlocking = (filled.unknown ?? []).filter((u) => u.required);
+            if (stillBlocking.length > 0) {
+                await this.#report(() => this.hub.parked(item.id, {
+                    unknownQuestions: filled.unknown.map((u) => ({
+                        questionText: u.questionText,
+                        fieldType: u.fieldType,
+                    })),
+                }));
+                stats.parked += 1;
+                record(item, board, 'PARKED',
+                    `${tenant.label} — still waiting on ${stillBlocking.length} question(s)`);
+                this.activity(board.name, 'PARKED',
+                    `${item.company}: still ${stillBlocking.length} unanswered`);
+                return 'counted';
+            }
+        }
+
+        if ((filled.qa ?? []).length === 0) {
+            return handOver(`${tenant.label}: nothing on the page could be filled`);
+        }
+
+        // Filled, and left exactly there. Every destination carries
+        // `neverAutoSubmit`, so the toggle cannot send one of these — the
+        // consultant reads it and presses the button themselves.
+        await this.#report(() => this.hub.filled(item.id));
+        this.#rememberForReview(item, tenant, {
+            ...filled,
+            refusals: [],
+            readyToSubmit: filled.outcome === 'READY_TO_SUBMIT',
+        }, { profile, approvedAnswers, resumePath });
+        stats.filled += 1;
+        record(item, board, 'READY_TO_SUBMIT',
+            `${tenant.label} — filled ${filled.qa.length} field(s), waiting for you to submit`);
+        this.activity(board.name, 'READY_TO_SUBMIT',
+            `${item.company}: filled on ${tenant.label} — waiting for you to submit`);
+        return 'counted';
+    }
+
+    /**
+     * Put unanswered questions in front of the consultant and hold the job open.
+     *
+     * ── WHY THIS IS NOT JUST PARKING ANY MORE ─────────────────────────
+     *
+     * Parking was the right answer when nobody was watching: bank the question,
+     * give the job up, and let someone answer it hours later. With the
+     * consultant sitting at the machine it is the wrong answer twice over --
+     * they are RIGHT THERE, and the application is already open on the very
+     * step that needs the answer. Giving up and re-walking five wizard steps
+     * later is pure waste.
+     *
+     * So the questions are banked immediately (without parking), the consultant
+     * is shown a countdown, and the job is only given up if nobody answers.
+     *
+     * ── TWO WAYS TO SATISFY IT, BECAUSE PEOPLE DO BOTH ────────────────
+     *
+     * A consultant may answer in the app's Questions tab, or simply type into
+     * the form that is open in front of them. Both are watched:
+     *
+     *   the bank   the answer is saved and every future job that asks the same
+     *              question is answered without anybody being interrupted
+     *   the form   the field is no longer empty, so THIS application can go on
+     *              -- but nothing was learned, and the next job asking the same
+     *              thing will stop again
+     *
+     * The bank is the better outcome and the message says so, but a job that
+     * can proceed should proceed, so the form counts too.
+     *
+     * @returns 'answered' when the job may carry on, 'parked' when it may not
+     */
+    async #askUnanswered({
+        item, board, page, root, blocking, allUnknown, record, stats,
+    }) {
+        const payload = allUnknown.map((u) => ({
+            questionText: u.questionText,
+            fieldType: u.fieldType,
+            required: u.required !== false,
+        }));
+
+        // Raise them first, so they are already on the Questions tab when the
+        // countdown appears. The ids come back with them, which is what lets
+        // an answer typed into the BROWSER be banked afterwards.
+        const raised = await this.#report(() => this.hub.askQuestions(item.id, {
+            unknownQuestions: payload,
+        })).catch(() => null);
+
+        const idFor = new Map(
+            (raised?.questions ?? []).map((q) => [normaliseQuestion(q.questionText), q.id]),
+        );
+
+        this.activity(board.name, 'PARKED',
+            `${item.company}: waiting on ${blocking.length} answer(s) — over to you`);
+
+        const wanted = blocking.map((u) => u.questionText);
+
+        // ── TIME PER QUESTION, NOT PER PAGE ───────────────────────────
+        //
+        // One window for the whole step gave a consultant the same two minutes
+        // whether the form asked one question or six, which is the same as
+        // giving them a sixth of the time each. The window is per question, up
+        // to a ceiling -- a step asking twenty things is a step to park and
+        // come back to, not one to sit through.
+        const perQuestion = WAIT_MS.UNKNOWN_QUESTIONS;
+        const waitMs = Math.min(perQuestion * Math.max(1, wanted.length), 10 * 60_000);
+
+        const said = await this.#askHuman({
+            kind: 'UNKNOWN_QUESTIONS',
+            board,
+            company: item.company,
+            title: item.title,
+            waitMs,
+            // The clock decides, not the keystrokes. See attention.js: polling
+            // a form cannot tell "finished typing" from "paused mid-word", and
+            // moving on at the first character of an answer is worse than
+            // waiting. "I’ve done it" is the way to go early.
+            holdUntilDeadline: true,
+            message: wanted.length === 1
+                ? `"${wanted[0]}" — answer it on the Questions tab, or type it straight `
+                  + 'into the form. Either way it is saved for future applications.'
+                : `${wanted.length} questions need answers (about `
+                  + `${Math.round(waitMs / 60_000)} min) — the Questions tab has them, `
+                  + 'or type them straight into the form.',
+            check: async () => {
+                // The bank first: it is the answer that lasts.
+                try {
+                    const res = await this.hub.answers();
+                    const known = new Set(
+                        (res?.answers ?? [])
+                            .filter((a) => (a.answer_text ?? '').trim())
+                            .map((a) => normaliseQuestion(a.question_text)),
+                    );
+                    if (wanted.every((q) => known.has(normaliseQuestion(q)))) return true;
+                } catch { /* offline, or the hub blinked -- try the form */ }
+
+                // Then the form itself: nothing left empty and required.
+                if (!page || !root) return false;
+                try {
+                    const still = await describeFields(page, root);
+                    const empty = still.filter(
+                        (f) => f.required && !f.hasValue && f.visible && !f.disabled
+                            && !['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(f.type),
+                    );
+                    return empty.length === 0;
+                } catch {
+                    return false;
+                }
+            },
+        });
+
+        if (said === 'done') {
+            // ── KEEP WHAT THEY TYPED ──────────────────────────────────
+            //
+            // An answer typed into the browser gets this one application
+            // through and teaches the app nothing -- the same question stops
+            // the next job, and the one after that. So whatever is in those
+            // boxes now is read back and banked under the question it answers.
+            //
+            // Best effort by design: this is a bonus on top of an application
+            // that is already going to succeed, and a hub that blinks here
+            // must not cost the consultant the job they just answered for.
+            await this.#bankTypedAnswers({ page, root, wanted, idFor });
+
+            this.log(`${item.company}: answered — carrying on`);
+            this.activity(board.name, 'FILLING', `${item.company}: answered — carrying on`);
+            return 'answered';
+        }
+
+        // Nobody answered, or they said move on. This is the old behaviour,
+        // and it is still the right one: bank, park, and let it be picked up
+        // whenever the answer arrives.
+        await this.#report(() => this.hub.parked(item.id, { unknownQuestions: payload }));
+        stats.parked += 1;
+        record(item, board, 'PARKED', said === 'skipped'
+            ? `you skipped it; still waiting on ${blocking.length} question(s)`
+            : `waiting on ${blocking.length} question(s): `
+              + blocking.map((u) => u.questionText).join('; '));
+        this.activity(board.name, 'PARKED',
+            `${item.company}: parked on ${blocking.length} unanswered question(s)`);
+        this.log(`parked ${item.company}: ${blocking.length} unanswered question(s)`);
+        return 'parked';
+    }
+
+    /**
+     * Save answers the consultant typed into the form, so they last.
+     *
+     * The Questions tab and the browser form are two doors into the same
+     * decision, and only one of them used to be remembered. This makes them
+     * equal: answer it wherever you like, and every future application that
+     * asks the same thing is answered without anybody being interrupted.
+     *
+     * Never throws — see the caller.
+     */
+    async #bankTypedAnswers({ page, root, wanted, idFor }) {
+        if (!page || !root || idFor.size === 0) return 0;
+
+        let saved = 0;
+        try {
+            const fields = await describeFields(page, root);
+            for (const question of wanted) {
+                const key = normaliseQuestion(question);
+                const id = idFor.get(key);
+                if (!id) continue;
+
+                // Match the field back to the question by the same normaliser
+                // the answer bank uses, so wording that differs only in
+                // punctuation or a trailing asterisk still lines up.
+                const field = fields.find((f) => {
+                    const asked = f.groupLabel || f.label;
+                    return asked && normaliseQuestion(asked) === key;
+                });
+                const text = String(field?.value ?? '').trim();
+                if (!text) continue;
+
+                const ok = await this.hub.answerQuestion(id, { answerText: text })
+                    .then(() => true).catch(() => false);
+                if (ok) {
+                    saved += 1;
+                    this.log(`saved your answer to "${question.slice(0, 60)}" for future jobs`);
+                }
+            }
+        } catch { /* nothing banked; the application still goes ahead */ }
+        return saved;
     }
 
     /**

@@ -246,6 +246,19 @@ const describeFields = (page, root = null) => page.$$eval(
             // unchecked radio still reports value "on", so reading `value` here
             // marked every option on every form as already answered — and the
             // app then filled in none of them and pressed Next anyway.
+            // ── WHAT IS ACTUALLY IN THE BOX ───────────────────────────
+            //
+            // Reported so that an answer the CONSULTANT typed into the form
+            // can be read back and banked, turning a one-off into something
+            // every future application benefits from.
+            //
+            // Never for a password: R-18 says this app holds no portal
+            // credential, and a descriptor carrying one would smuggle it into
+            // logs, IPC and the review screen. The refusal lives here, at the
+            // only place that could read it, rather than being left to callers
+            // to remember.
+            value: type === 'password' || type === 'file' ? ''
+                : (isOption ? (el.checked ? (label || 'Yes') : '') : String(el.value ?? '')),
             hasValue: Boolean(
                 isOption
                     ? (el.checked || (proxy && proxy.getAttribute('aria-checked') === 'true'))

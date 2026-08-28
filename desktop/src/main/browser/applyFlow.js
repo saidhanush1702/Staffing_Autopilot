@@ -65,7 +65,38 @@ const RESUME_WORDS = /\b(resume|résumé|cv)\b/i;
 const CLOSED_SELECTOR = 'text=/no longer accepting applications'
     + '|this job is no longer available'
     + '|applications are closed'
-    + '|this position has been filled/i';
+    + '|this position has been filled'
+    // Built In's wording, measured: "Sorry, this job was removed at 08:23 p.m."
+    + '|this job was removed/i';
+
+/**
+ * A job this account has already applied to.
+ *
+ * ── WHY THE BUTTON WAS NOT ENOUGH ─────────────────────────────────────
+ *
+ * `alreadyApplied` in the recipe is "Continue applying" — a HALF-FINISHED
+ * application you can resume. A FINISHED one looks completely different: the
+ * apply button is gone and the page carries a status block instead.
+ *
+ * So a job that had genuinely been applied to matched none of the three
+ * verdicts, and came back as "no apply button on this page" — telling the
+ * consultant to go and apply by hand to something they had already applied to.
+ * The same wrong-label bug as the expired postings, in a third flavour.
+ *
+ * ── AND WHY ONLY ONE PHRASE ───────────────────────────────────────────
+ *
+ * This is the wording read off a real applied job:
+ *
+ *     Application status
+ *     Application submitted
+ *     20 minutes ago
+ *
+ * Nothing else is listed, on purpose. A false match here is the expensive
+ * direction — it silently skips a job we could have applied to, and nobody
+ * finds out — so the list holds only what has actually been observed. Add a
+ * phrase when a page is seen using it, not before.
+ */
+const APPLIED_SELECTOR = 'text=/application submitted/i';
 
 /**
  * An apply control that hands over to somebody else's site.
@@ -74,6 +105,50 @@ const CLOSED_SELECTOR = 'text=/no longer accepting applications'
  * job that offers both, Easy Apply always wins.
  */
 const EXTERNAL_SELECTOR = 'button:has-text("Apply"), a:has-text("Apply")';
+
+/**
+ * The applicant tracking systems these links lead to, by the host that gives
+ * them away. Every one of these was seen on a real Built In posting.
+ *
+ * Naming the destination is worth the lookup. "Applies elsewhere" tells a
+ * consultant nothing; "applies on Workday" tells them whether they already have
+ * an account, roughly how long it will take, and whether it is worth starting
+ * now — and it tells US which system is worth automating next, because the
+ * hand-over reasons add up into a tally.
+ */
+const ATS_NAMES = [
+    [/myworkdayjobs\.com$|workday/i, 'Workday'],
+    [/smartrecruiters\.com$/i, 'SmartRecruiters'],
+    [/zohorecruit\.com$/i, 'Zoho Recruit'],
+    [/ashbyhq\.com$/i, 'Ashby'],
+    [/keka\.com$/i, 'Keka'],
+    [/greenhouse\.io$/i, 'Greenhouse'],
+    [/lever\.co$/i, 'Lever'],
+    [/icims\.com$/i, 'iCIMS'],
+    [/taleo\.net$/i, 'Taleo'],
+    [/successfactors\.com$/i, 'SuccessFactors'],
+];
+
+/**
+ * Where does this apply control lead?
+ *
+ * @returns a system's name, or the bare host, or null when it has no link
+ */
+const destinationOf = async (locator) => {
+    const href = await locator.getAttribute('href').catch(() => null);
+    if (!href) return null;
+    let host;
+    try {
+        host = new URL(href, 'https://example.invalid').host.replace(/^www\./, '');
+    } catch {
+        return null;
+    }
+    if (!host || host === 'example.invalid') return null;
+    const known = ATS_NAMES.find(([pattern]) => pattern.test(host));
+    // The employer's own careers page is the common case and has no name worth
+    // inventing, so it is reported as itself.
+    return known ? known[1] : host;
+};
 
 /** How long to let a step render before reading it. */
 const STEP_SETTLE_MS = 1_800;
@@ -328,6 +403,98 @@ const dismissUploadToast = async (page, log = () => {}) => {
     return true;
 };
 
+/**
+ * Wait until a step has actually built itself.
+ *
+ * ── WHY A FIXED SETTLE IS NOT ENOUGH ──────────────────────────────────
+ *
+ * Measured on Workday: the wizard renders its shell immediately -- step
+ * headings, the Back link, the word "Loading" -- and takes roughly EIGHT
+ * seconds to put the fields in. `STEP_SETTLE_MS` is under two. So the engine
+ * would have arrived at a container that existed, contained nothing, filled
+ * nothing, found nothing to report, and pressed on.
+ *
+ * The fields are the thing worth waiting for, so this waits for a field. A
+ * step that genuinely has none -- a review page, a confirmation -- times out
+ * and carries on, which is why failure here is silent rather than an error.
+ */
+const RENDER_TIMEOUT_MS = 20_000;
+
+const waitForFields = async (page, root) => {
+    if (!root || typeof page.waitForSelector !== 'function') return false;
+    // VISIBLE, not merely attached. Workday's step has hidden inputs present
+    // from the first paint, so waiting for "attached" matched one instantly
+    // and the engine filled the page while it still said "Loading" -- nothing
+    // typed, nothing reported, and the step apparently empty. Waiting for a
+    // field a person could actually SEE is the difference between the two.
+    const anyField = `${root} input, ${root} select, ${root} textarea`;
+    try {
+        await page.waitForSelector(anyField, { state: 'visible', timeout: RENDER_TIMEOUT_MS });
+        // Fields arrive in a burst rather than all at once, so give the rest
+        // of the burst a moment before reading the form.
+        await page.waitForTimeout(STEP_SETTLE_MS);
+        return true;
+    } catch {
+        return false;                    // a step with nothing to fill in
+    }
+};
+
+/**
+ * A control that REVEALS fields rather than doing anything itself.
+ *
+ * ── THE STEP THAT LOOKED EMPTY ────────────────────────────────────────
+ *
+ * LinkedIn's "Work experience" step arrives holding nothing but a button:
+ *
+ *     Work experience
+ *     [ Add work experience ]
+ *     [ Back ]  [ Next ]
+ *
+ * The engine read it honestly -- no fields, nothing to fill, nothing it could
+ * not answer -- and pressed Next, which is the one thing that cannot work,
+ * because the step is asking for something and simply has not drawn the boxes
+ * yet. From outside it looked like the automation skipped a whole section.
+ *
+ * Matched on the leading word rather than on any particular wording, so
+ * "Add education", "Add another employer" and "+ Add" all work while "Back",
+ * "Next" and "Save" do not. Anchored at the start on purpose: a button whose
+ * text merely CONTAINS "add" -- "Address", "Add to favourites" -- is not this.
+ */
+const REVEAL_WORDS = /^\s*[+]?\s*add\b/i;
+
+/**
+ * "Add" that is not asking for form fields.
+ *
+ * "Add to favourites", "Add to list" — a preposition after the verb means the
+ * button acts on something that already exists rather than creating an entry to
+ * fill in. Worth its own line: LinkedIn puts a save control on these very
+ * screens, and clicking it would silently favourite a job instead of opening
+ * the section the form is waiting on.
+ */
+const NOT_REVEAL = /^\s*[+]?\s*add\s+to\b/i;
+
+/**
+ * The first reveal control on this step, if there is one.
+ *
+ * Résumé wording is excluded deliberately: "Add resume" is an upload, and
+ * `attachResume` already owns that path with a file chooser behind it. Two
+ * pieces of code racing for the same button would be worse than either.
+ */
+const findRevealControl = async (page, root) => {
+    const buttons = page.locator(`${root} button, ${root} [role="button"]`);
+    const count = await buttons.count().catch(() => 0);
+    for (let i = 0; i < count; i += 1) {
+        const b = buttons.nth(i);
+        const name = await textOf(b);
+        if (!REVEAL_WORDS.test(name) || NOT_REVEAL.test(name)) continue;
+        if (RESUME_WORDS.test(name) || UPLOAD_WORDS.test(name)) continue;
+        // Never something that sends the application, whatever it is called.
+        if (SUBMIT_WORDS.test(name)) continue;
+        if (await b.isVisible().catch(() => false)) return { control: b, name };
+    }
+    return null;
+};
+
 /** Would clicking this send the application? */
 const isSubmit = async (locator) => SUBMIT_WORDS.test(await textOf(locator));
 
@@ -435,7 +602,16 @@ const visible = async (page, selector) => {
  *   qa, unknown, attachedResume, steps, detail
  * }}
  */
-const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) => {
+const runApplyFlow = async (page, board, fillOptions, {
+    log = () => {}, canFill = true,
+    // Called only when a recipe declares `accountWall` and the page shows
+    // one. Owns the actual polling and any reporting to the hub -- this
+    // module has neither a clock strategy nor a hub client of its own, on
+    // purpose, the same reason `#waitForSignIn` lives in cycle.js and not
+    // here. The default never waits, so nothing changes for a recipe that
+    // has no wall and a caller that supplies nothing.
+    waitForHuman = async () => false,
+} = {}) => {
     const recipe = board.apply;
     if (!recipe) return { outcome: 'NO_APPLY_FLOW', detail: 'this board has no apply flow defined' };
 
@@ -461,15 +637,22 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
     // page shows first is the answer, and none of them can be missed for
     // arriving late.
     const verdict = await whichAppears(page, {
-        applied: recipe.alreadyApplied,
+        resumable: recipe.alreadyApplied,
+        applied: recipe.applied ?? APPLIED_SELECTOR,
         closed: recipe.closed ?? CLOSED_SELECTOR,
         open: recipe.open,
     }, OPENER_TIMEOUT_MS);
 
     // Applying twice under someone's name is worse than not applying. If the
-    // board says it already has an application from this person, believe it.
-    if (verdict === 'applied') {
-        return { ...empty, outcome: 'ALREADY_APPLIED', detail: 'the board says you already applied' };
+    // board says it already has an application from this person, believe it —
+    // whether it says so with a resume-this-draft button or with a status block
+    // where the apply button used to be.
+    if (verdict === 'resumable' || verdict === 'applied') {
+        return {
+            ...empty,
+            outcome: 'ALREADY_APPLIED',
+            detail: 'this job has already been applied to from this account',
+        };
     }
 
     if (verdict === 'closed') {
@@ -487,16 +670,54 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
         // could not read.
         const away = page.locator(recipe.externalApply ?? EXTERNAL_SELECTOR).first();
         if (await away.count() > 0 && await away.isVisible().catch(() => false)) {
+            const where = await destinationOf(away);
+            // The link itself, not just its name. Without this the engine has
+            // nowhere to follow the hand-off TO -- `destinations.js` matches on
+            // the URL, and a caller holding only "this applies on Workday" as a
+            // string cannot open Workday. Losing this field is exactly what
+            // silently disabled destination-following: the outcome looked
+            // right, the string read right, and nothing ever actually opened.
+            const externalUrl = await away.getAttribute('href').catch(() => null);
             return {
                 ...empty,
                 outcome: 'EXTERNAL_APPLY',
-                detail: 'this job applies on the employer’s own site, so it needs you',
+                externalUrl: externalUrl ?? null,
+                destination: where ?? null,
+                // No "so it needs you" here -- that is the CALLER's word choice
+                // for when nobody could follow the link. When the engine DOES
+                // follow it, the same sentence would end up glued onto itself.
+                detail: where
+                    ? `this job applies on ${where}`
+                    : 'this job applies on the employer’s own site',
             };
         }
         return {
             ...empty,
             outcome: 'NO_APPLY_FLOW',
             detail: 'no apply button on this page',
+        };
+    }
+
+    // ── THE FORM IS HERE, AND WE MAY NOT TOUCH IT ─────────────────────
+    //
+    // Reaching this point means the board's own recipe found a real apply
+    // button on a real, open, unapplied posting. On a board or destination
+    // that has never been watched filling a form -- `verified: false` -- that
+    // is exactly the moment to stop, not the moment to press on: a guessed
+    // selector clicking into a real employer's form is the one mistake this
+    // whole module exists to prevent.
+    //
+    // This was previously unenforced here -- `canFill` was accepted by nothing,
+    // so an unverified board's own recipe filled the form and reached
+    // READY_TO_SUBMIT exactly as if it had been proven safe. `verified` was
+    // being checked by every CALLER and by nothing INSIDE the one function that
+    // actually presses buttons and types into fields.
+    if (!canFill) {
+        return {
+            ...empty,
+            outcome: 'NOT_VERIFIED',
+            detail: `${board.label} has a form here, but filling it has not been `
+                + 'checked yet — left for you',
         };
     }
 
@@ -515,7 +736,30 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
     const before = new URL(page.url()).host;
     await clickSteadily(opener, log);
 
-    await page.waitForSelector(recipe.dialog, { timeout: 15_000 }).catch(() => null);
+    // ── THE CHOOSER, WHERE THERE IS ONE ───────────────────────────────
+    //
+    // Workday's Apply does not open the form. It opens a small modal offering
+    // "Autofill with Resume", "Apply Manually" and "Use My Last Application",
+    // and picking one NAVIGATES to a wizard in a different container. A board
+    // whose Apply opens the form directly declares no `chooser` and none of
+    // this runs.
+    if (recipe.chooser) {
+        await page.waitForSelector(recipe.chooser, { timeout: 15_000 }).catch(() => null);
+        await page.waitForTimeout(STEP_SETTLE_MS);
+        if (recipe.start) {
+            const choice = page.locator(recipe.start).first();
+            if (await choice.count() === 0) {
+                return {
+                    ...empty,
+                    outcome: 'NO_APPLY_FLOW',
+                    detail: `${board.label} did not offer a way to fill this in by hand`,
+                };
+            }
+            await clickSteadily(choice, log);
+        }
+    }
+
+    await page.waitForSelector(recipe.dialog, { timeout: 20_000 }).catch(() => null);
     await page.waitForTimeout(STEP_SETTLE_MS);
 
     // Some "apply" buttons are a redirect to the employer's own site.
@@ -531,13 +775,76 @@ const runApplyFlow = async (page, board, fillOptions, { log = () => {} } = {}) =
         return { ...empty, outcome: 'NO_APPLY_FLOW', detail: 'the apply form never opened' };
     }
 
+    // A board that offers `start` WITHOUT a chooser -- the form is already
+    // open and one more click reveals it.
+    if (recipe.start && !recipe.chooser) {
+        const startControl = page.locator(recipe.start).first();
+        if (await startControl.count() > 0) {
+            await clickSteadily(startControl, log);
+            await page.waitForTimeout(STEP_SETTLE_MS);
+        }
+    }
+
+    // ── AN ACCOUNT WALL IS A SIGN-IN GATE, NOT A DEAD END ──────────────
+    //
+    // Measured on Workday: signing in at the header does not guarantee the
+    // application flow itself is authenticated. Clicking "Apply Manually" can
+    // still land on its OWN email/password/create-account page -- a second
+    // gate, inside the wizard, that the generic engine had no way to notice
+    // until now. The consultant signs in here themselves (R-18); this only
+    // recognises the gate and hands the waiting off to `waitForHuman`.
+    if (recipe.accountWall && await page.locator(recipe.accountWall).count() > 0) {
+        const cleared = await waitForHuman(
+            page, recipe.accountWall,
+            `${board.label} is asking you to sign in before this application form appears`,
+        );
+        if (!cleared) {
+            return {
+                ...empty,
+                outcome: 'ACCOUNT_WALL',
+                detail: `${board.label} is asking you to sign in or create an account, `
+                    + 'so this one needs you',
+            };
+        }
+        await page.waitForTimeout(STEP_SETTLE_MS);
+    }
+
     const qa = [];
     const unknown = [];
     let attachedResume = false;
     let steps = 0;
 
+    // Steps whose hidden fields have already been revealed. Without this, a
+    // step that still looks empty after expanding -- because the consultant
+    // has nothing to add there -- would be expanded again on every pass round
+    // the loop, adding a blank entry each time.
+    const revealed = new Set();
+
     for (; steps < (recipe.maxSteps ?? MAX_STEPS); steps += 1) {
-        const filled = await fillForm(page, { ...fillOptions, root: recipe.dialog });
+        // Every step of a multi-step wizard renders on its own schedule, not
+        // just the first, so this waits each time round rather than once.
+        await waitForFields(page, recipe.dialog);
+        let filled = await fillForm(page, { ...fillOptions, root: recipe.dialog });
+
+        // ── A STEP WITH NOTHING ON IT IS USUALLY HIDING SOMETHING ─────
+        //
+        // Nothing filled AND nothing unanswerable means the engine found no
+        // fields at all. On a step that is plainly asking for something, that
+        // is not an empty step -- it is a collapsed one, and pressing Next
+        // would skip a section the form is waiting on.
+        if (filled.qa.length === 0 && filled.unknown.length === 0) {
+            const here = await stepSignature(page, recipe.dialog);
+            const reveal = revealed.has(here) ? null : await findRevealControl(page, recipe.dialog);
+            if (reveal) {
+                revealed.add(here);
+                log(`${board.label}: opening "${reveal.name}" to reach the fields behind it`);
+                await clickSteadily(reveal.control, log);
+                await waitForFields(page, recipe.dialog);
+                // Read the step again now that it has drawn itself.
+                filled = await fillForm(page, { ...fillOptions, root: recipe.dialog });
+            }
+        }
+
         qa.push(...filled.qa);
         unknown.push(...filled.unknown);
 
@@ -725,8 +1032,10 @@ const pressSubmit = async (page, board) => {
 module.exports = {
     runApplyFlow, pressSubmit, isSubmit, attachResume,
     SUBMIT_WORDS, UPLOAD_WORDS, RESUME_WORDS, MAX_STEPS, STEP_SETTLE_MS,
+    REVEAL_WORDS, NOT_REVEAL, findRevealControl,
+    waitForFields,
     dismissUploadToast,
     whichAppears,
     clickSteadily, describeObstruction,
-    CLOSED_SELECTOR, EXTERNAL_SELECTOR,
+    CLOSED_SELECTOR, EXTERNAL_SELECTOR, APPLIED_SELECTOR, destinationOf, ATS_NAMES,
 };

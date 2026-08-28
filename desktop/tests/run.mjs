@@ -22,14 +22,18 @@ const { Store } = require('../src/main/store.js');
 const { Outbox } = require('../src/main/outbox.js');
 const { fingerprint } = require('../src/main/fingerprint.js');
 const { BOARDS, boardForPortal } = require('../src/main/browser/boards.js');
+const { BrowserSessions } = require('../src/main/browser/session.js');
+const { Attention, WAIT_MS } = require('../src/main/attention.js');
+const { DESTINATIONS, tenantFor } = require('../src/main/browser/destinations.js');
 const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
 const {
     buildAnswerBook, resolveAnswer, chooseOption, chooseSuggestion,
 } = require('../src/main/browser/answers.js');
-const { fillForm } = require('../src/main/browser/filler.js');
+const { fillForm, describeFields } = require('../src/main/browser/filler.js');
 const {
     runApplyFlow, pressSubmit, isSubmit,
     UPLOAD_WORDS: UPLOAD_PATTERN, RESUME_WORDS: RESUME_PATTERN,
+    REVEAL_WORDS, NOT_REVEAL,
 } = require('../src/main/browser/applyFlow.js');
 const { resolveBrowser } = require('../src/main/browser/engine.js');
 const { record } = require('../src/main/diagnostics.js');
@@ -84,7 +88,12 @@ const fakeSessions = (opts = {}) => {
         page: () => Promise.resolve({
             url: () => opts.landsOn ?? 'https://wellfound.com/jobs/1',
             bringToFront: () => Promise.resolve(),
-            waitForSelector: async () => null,
+            // Nothing is on this page, and it has to say so consistently. It
+            // used to resolve `waitForSelector` for every selector while its
+            // `locator` reported a count of zero — harmless while unverified
+            // boards short-circuited before the recipe ran, and an invented
+            // "already applied" the moment they stopped doing that.
+            waitForSelector: async (sel) => { throw new Error(`Timeout waiting for ${sel}`); },
             waitForTimeout: async () => null,
             $$eval: async () => opts.fields ?? [],
             locator: () => ({
@@ -145,8 +154,18 @@ check('four boards known', Object.keys(BOARDS).sort(),
 // has watched them fill a real application.
 check('only LinkedIn is switched on',
     Object.values(BOARDS).filter((b) => b.verified).map((b) => b.name), ['LINKEDIN']);
-check('  and it is the only board with an apply recipe',
-    Object.values(BOARDS).filter((b) => b.apply).map((b) => b.name), ['LINKEDIN']);
+// Built In has a recipe too, but it is a CLASSIFYING one — it recognises a
+// removed posting and finds the hand-off link, and has nothing to fill. The
+// thing that must stay unique to LinkedIn is permission to type into a form,
+// and that is `verified`, checked above.
+check('Built In has a recipe, and still may not fill anything',
+    [Boolean(BOARDS.BUILTIN.apply), BOARDS.BUILTIN.verified], [true, false]);
+check('  because Built In hosts no application of its own',
+    BOARDS.BUILTIN.apply.externalApply.includes('Apply to job'), true);
+// The owner's instruction, recorded where a toggle cannot overrule it.
+check('  and it never submits by itself', BOARDS.BUILTIN.neverAutoSubmit, true);
+check('LinkedIn carries no such refusal, because the toggle governs it',
+    Boolean(BOARDS.LINKEDIN.neverAutoSubmit), false);
 // Volume limits are gone by decision: no board rations applications any more.
 check('no board carries a volume ceiling',
     Object.values(BOARDS).some((b) => 'maxPerDay' in b || 'maxPerCycle' in b), false);
@@ -730,13 +749,13 @@ const closedPage = () => ({
     // and a fake that resolves — or throws — for all of them proves nothing.
     // This page shows the closed notice and nothing else.
     waitForSelector: async (sel) => {
-        if (sel.startsWith('text=/')) return null;
+        if (sel.startsWith('text=/') && !sel.includes('application submitted')) return null;
         throw new Error(`Timeout waiting for ${sel}`);
     },
     waitForTimeout: async () => null,
     $$eval: async () => [],
     locator: (sel) => {
-        const shut = sel.startsWith('text=/');
+        const shut = sel.startsWith('text=/') && !sel.includes('application submitted');
         const c = {
             count: async () => (shut ? 1 : 0),
             isVisible: async () => shut,
@@ -799,12 +818,245 @@ ledgerSess = fakeSessions();
 ledgerEngine = engineWith(ledgerHub, ledgerSess);
 stats = await ledgerEngine.run();
 
-check('an unverified board hands over with a stated reason',
-    stats.outcomes.map((o) => o.result), ['HANDED_OVER']);
-check('  naming the board rather than blaming the job',
-    /not verified/.test(stats.outcomes[0].reason), true);
+check('an unverified board still hands over', stats.outcomes.map((o) => o.result), ['HANDED_OVER']);
+// It got as far as its own recipe and reported what the PAGE was, rather than
+// stopping at "this board is not verified" — which was true of every job on the
+// board and therefore told nobody anything.
+check('  and the reason describes the page, not the board',
+    /no apply button/.test(stats.outcomes[0].reason), true);
 
 delete BOARDS.WELLFOUND.apply;
+
+
+/* ── destinations: where a board hands the job to ─────────────────────── */
+
+section('a hand-off is recognised, and kept per employer');
+
+check('a Workday URL is recognised', tenantFor(
+    'https://jda.wd5.myworkdayjobs.com/JDA_Careers/job/Hyderabad/DevOps-Engineer_262499',
+)?.system, 'WORKDAY');
+check('  whichever employer runs it', tenantFor(
+    'https://vanguard.wd5.myworkdayjobs.com/vanguard_external/job/x',
+)?.system, 'WORKDAY');
+check('SmartRecruiters is recognised too',
+    tenantFor('https://jobs.smartrecruiters.com/BlueSpireInc1/74399')?.system, 'SMARTRECRUITERS');
+check('an employer’s own careers page is not a destination',
+    tenantFor('http://careers.hupcfl.com/apply/k3eToF4RNb'), null);
+check('nor is a malformed link', tenantFor('not a url'), null);
+
+// ── ONE SESSION PER EMPLOYER, NOT PER SYSTEM ─────────────────────────
+//
+// Every employer runs their own Workday with their own accounts. Sharing one
+// profile across tenants would mean signing in once and appearing signed out
+// forever afterwards.
+const wd1 = tenantFor('https://jda.wd5.myworkdayjobs.com/JDA_Careers/job/a');
+const wd2 = tenantFor('https://vanguard.wd5.myworkdayjobs.com/vanguard_external/job/b');
+check('two employers get two profiles', wd1.name === wd2.name, false);
+check('  and both are safe as directory names',
+    [wd1.name, wd2.name].every((n) => /^[a-z0-9-]+$/.test(n)), true);
+check('  the same employer always gets the same one',
+    tenantFor('https://jda.wd5.myworkdayjobs.com/JDA_Careers/job/zzz').name, wd1.name);
+
+// A destination is a board in shape, which is what lets the engine reuse
+// everything it already had.
+check('a tenant carries what the engine asks a board for',
+    ['name', 'loginUrl', 'signedIn', 'botCheck', 'verified']
+        .every((k) => k in wd1), true);
+check('sign-in happens on the job page, needing no guessed login path',
+    wd1.loginUrl, 'https://jda.wd5.myworkdayjobs.com/JDA_Careers/job/a');
+
+// ── NOTHING HERE MAY FILL, AND NOTHING MAY SUBMIT ────────────────────
+//
+// The public parts were measured; the form behind the account wall was not.
+// Until somebody has watched one being filled, these classify and hand over.
+// Workday earned it: filling was watched working through `runApplyFlow`
+// against the live site. SmartRecruiters has not, and cannot be -- it answers
+// automated requests with a challenge.
+check('only Workday is verified',
+    Object.values(DESTINATIONS).filter((d) => d.verified).map((d) => d.name), ['WORKDAY']);
+check('  and a verified destination still refuses to auto-submit',
+    tenantFor('https://acme.wd5.myworkdayjobs.com/x/job/y').neverAutoSubmit, true);
+// The chooser and the form are different elements -- conflating them was the
+// bug that made the wizard unreachable.
+check('the chooser and the fill root are not the same selector',
+    DESTINATIONS.WORKDAY.apply.chooser === DESTINATIONS.WORKDAY.apply.dialog, false);
+// `fillForm` scopes by string prefix, so a comma here would silently match
+// the whole page instead of the form.
+check('the fill root is a single selector, never a list',
+    DESTINATIONS.WORKDAY.apply.dialog.includes(','), false);
+check('and every one of them refuses to auto-submit',
+    Object.values(DESTINATIONS).every((d) => d.neverAutoSubmit), true);
+check('  which a tenant carries through', wd1.neverAutoSubmit, true);
+
+// SmartRecruiters answered our probes with a DataDome challenge. R-22 says stop.
+check('SmartRecruiters has no apply recipe at all',
+    'apply' in DESTINATIONS.SMARTRECRUITERS, false);
+check('  only a bot check to recognise',
+    DESTINATIONS.SMARTRECRUITERS.botCheck.some((s) => s.includes('captcha')), true);
+check('  and a tenant of it inherits that',
+    tenantFor('https://jobs.smartrecruiters.com/x/y').botCheck.length > 0, true);
+
+// Workday's controls were read off four tenants and never varied.
+check('Workday is driven by data-automation-id, not by classes',
+    DESTINATIONS.WORKDAY.apply.open, '[data-automation-id="adventureButton"]');
+check('  and it chooses Apply Manually over autofill',
+    DESTINATIONS.WORKDAY.apply.start, '[data-automation-id="applyManually"]');
+
+
+section('the engine follows a hand-off into a destination');
+
+/**
+ * A board page that offers only an external APPLY, plus a destination page
+ * behind it. `pages` is keyed by session name, which is how the engine keeps a
+ * board and a destination apart.
+ */
+const handOffSessions = (destUrl, destOpts = {}) => {
+    const opened = [];
+    const ctrl = (kind, opts) => {
+        const c = {
+            count: async () => (opts[kind] ? 1 : 0),
+            isVisible: async () => Boolean(opts[kind]),
+            innerText: async () => (kind === 'away' ? 'APPLY' : ''),
+            getAttribute: async (a) => (kind === 'away' && a === 'href' ? destUrl : null),
+            click: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            page: () => ({ waitForTimeout: async () => {} }),
+        };
+        return { ...c, first: () => c, nth: () => c };
+    };
+    const kindOf = (sel) => {
+        if (sel.includes('application submitted')) return 'appliedNotice';
+        if (sel.startsWith('text=/')) return 'closed';
+        if (sel.includes('Apply to job') || sel.includes(':has-text("Apply")')) return 'away';
+        if (sel.includes('captcha')) return 'captcha';
+        if (sel.includes('legalNotice')) return 'legal';
+        return 'other';
+    };
+    const makePage = (opts) => ({
+        url: () => opts.url,
+        bringToFront: async () => {},
+        waitForSelector: async (sel) => {
+            if (!opts[kindOf(sel)]) throw new Error(`Timeout waiting for ${sel}`);
+            return null;
+        },
+        waitForTimeout: async () => null,
+        $$eval: async () => [],
+        locator: (sel) => ctrl(kindOf(sel), opts),
+    });
+
+    const pages = {
+        BUILTIN: makePage({ url: 'https://builtin.com/job/1', away: true }),
+    };
+    // `captchaClearsAfterCalls` lets a test simulate the person solving the
+    // challenge partway through a wait -- each poll from `#waitOut` counts as
+    // one call, so a small number here means "cleared after a couple of ticks"
+    // without the test needing real wall-clock time to pass.
+    let botCheckCalls = 0;
+    return {
+        opened,
+        isBotChecked: async (def) => {
+            if (def.name === 'BUILTIN' || !destOpts.captcha) return false;
+            botCheckCalls += 1;
+            if (destOpts.captchaClearsAfterCalls
+                && botCheckCalls > destOpts.captchaClearsAfterCalls) return false;
+            return true;
+        },
+        isSignedIn: async (def) => (def.name === 'BUILTIN' ? true : Boolean(destOpts.signedIn)),
+        isSignedInNow: async () => Boolean(destOpts.signedIn),
+        promptSignIn: async () => ({ awaitingHuman: true }),
+        openJob: async (name, url) => {
+            opened.push([name, url]);
+            pages[name] = pages[name] ?? makePage({ url, ...destOpts });
+        },
+        page: async (name) => pages[name] ?? makePage({ url: destUrl, ...destOpts }),
+    };
+};
+
+const biItem = () => item({
+    id: 'b1', portal: 'BUILTIN', company: 'Blue Yonder',
+    title: 'DevOps Engineer', source_url: 'https://builtin.com/job/1',
+});
+const biHub = () => fakeHub({
+    heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+    queue: () => Promise.resolve({ items: [biItem()], profile: {}, approvedAnswers: [] }),
+});
+
+const WD = 'https://jda.wd5.myworkdayjobs.com/JDA_Careers/job/Hyderabad/DevOps-Engineer_262499';
+
+// The destination is opened in ITS OWN session, not the board's.
+let dHub = biHub();
+let dSess = handOffSessions(WD, { signedIn: true });
+let dEngine = engineWith(dHub, dSess);
+let dStats = await dEngine.run();
+
+check('the hand-off link is followed', dSess.opened.length, 2);
+check('  the board is opened first', dSess.opened[0][0], 'BUILTIN');
+check('  then the destination, in a profile of its own',
+    dSess.opened[1][0], tenantFor(WD).name);
+check('  at the address the board gave', dSess.opened[1][1], WD);
+check('  and the job is handed over, because Workday is not verified',
+    dStats.outcomes.map((o) => o.result), ['HANDED_OVER']);
+check('  naming the employer’s system in the reason',
+    /Workday/.test(dStats.outcomes[0].reason), true);
+
+// A destination that challenges us stops, and says so in those words.
+dHub = biHub();
+dSess = handOffSessions(WD, { captcha: true });
+dEngine = engineWith(dHub, dSess);
+dStats = await dEngine.run();
+check('a destination showing a bot check is not pushed at',
+    /human check/.test(dStats.outcomes[0].reason), true);
+check('  and it is recorded against the run', dStats.botChecked.length, 1);
+
+// Nobody signed in: the item waits for a person rather than failing.
+dHub = biHub();
+dSess = handOffSessions(WD, { signedIn: false });
+dEngine = engineWith(dHub, dSess);
+dStats = await dEngine.run();
+check('an unsigned-in destination asks for a sign-in',
+    /sign in/.test(dStats.outcomes[0].reason), true);
+check('  and the login page was opened for them', dStats.signInNeeded.length, 1);
+
+// An employer's own careers site is not a system we handle — unchanged.
+dHub = biHub();
+dSess = handOffSessions('http://careers.hupcfl.com/apply/k3eToF4RNb');
+dEngine = engineWith(dHub, dSess);
+dStats = await dEngine.run();
+check('an unknown destination is still just a hand-over', dSess.opened.length, 1);
+check('  named by its host', /hupcfl/.test(dStats.outcomes[0].reason), true);
+
+section('a challenge that clears gets a person a chance, not an instant hand-over');
+
+// Real timing (30s) would make the suite itself take thirty seconds. The
+// engine reads this fresh through `tenantFor` on every call, so shrinking it
+// for the test and restoring it after is the same trick already used above
+// for `BOARDS.WELLFOUND.verified`.
+const realWait = DESTINATIONS.SMARTRECRUITERS.botCheckWaitMs;
+DESTINATIONS.SMARTRECRUITERS.botCheckWaitMs = 60;
+
+const SR = 'https://jobs.smartrecruiters.com/SomeCo/12345-a-job';
+
+// Cleared in time: the item is worked, not handed over.
+dHub = biHub();
+dSess = handOffSessions(SR, { captcha: true, captchaClearsAfterCalls: 1, signedIn: true });
+dEngine = engineWith(dHub, dSess);
+dStats = await dEngine.run();
+check('a challenge that clears in time is not a hand-over',
+    dStats.outcomes.map((o) => o.result), ['HANDED_OVER']);
+check('  it did carry on past the check, though — not counted as botChecked',
+    dStats.botChecked.length, 0);
+
+// Never cleared: still hands over, same as before, just after giving a person
+// the chance.
+dHub = biHub();
+dSess = handOffSessions(SR, { captcha: true });
+dEngine = engineWith(dHub, dSess);
+dStats = await dEngine.run();
+check('a challenge that never clears still hands over',
+    /human check/.test(dStats.outcomes[0].reason), true);
+check('  and is recorded as a bot check, same as before', dStats.botChecked.length, 1);
+
+DESTINATIONS.SMARTRECRUITERS.botCheckWaitMs = realWait;
 
 
 /* ── multi-step apply flows ───────────────────────────────────────────── */
@@ -825,14 +1077,21 @@ const wizardPage = (steps, opts = {}) => {
             if (kind === 'open') return opts.noOpen ? 0 : 1;
             if (kind === 'already') return opts.alreadyApplied ? 1 : 0;
             if (kind === 'closed') return opts.closed ? 1 : 0;
+            if (kind === 'appliedNotice') return opts.appliedNotice ? 1 : 0;
             if (kind === 'away') return opts.externalApply ? 1 : 0;
+            // `start` is a fixed one-time choice (Workday's "Apply Manually"),
+            // present until clicked. `wall` is a live gate a test can clear
+            // from its own `waitForHuman`, so it is read from `opts.wall`
+            // fresh on every count() rather than cached at page-creation time.
+            if (kind === 'start') return opts.start && !clicked.includes('start') ? 1 : 0;
+            if (kind === 'wall') return opts.wall ? 1 : 0;
             if (kind === 'submit') return opened && step >= steps.length - 1 ? 1 : 0;
             if (kind === 'next') return opened && step < steps.length - 1 ? 1 : 0;
             if (kind === 'dialog') return opened ? 1 : 0;
             return 0;
         },
         isVisible: async () => (await control(kind).count()) > 0,
-        innerText: async () => ({ open: 'Easy Apply', next: 'Next', submit: 'Submit application', already: 'Applied' }[kind] ?? ''),
+        innerText: async () => ({ open: 'Easy Apply', next: 'Next', submit: 'Submit application', already: 'Applied', start: 'Apply Manually' }[kind] ?? ''),
         getAttribute: async () => null,
         click: async () => {
             clicked.push(kind);
@@ -857,9 +1116,13 @@ const wizardPage = (steps, opts = {}) => {
     // `opts`, rather than every unrecognised selector reporting a live dialog.
     const kindOf = (sel) => {
         if (sel.includes('OPEN')) return 'open';
+        if (sel.includes('START')) return 'start';
+        if (sel.includes('WALL')) return 'wall';
         if (sel.includes('NEXT')) return 'next';
         if (sel.includes('SUBMIT')) return 'submit';
         if (sel.includes('APPLIED')) return 'already';
+        // Two text-engine selectors now, and they mean opposite things.
+        if (sel.includes('application submitted')) return 'appliedNotice';
         if (sel.startsWith('text=/')) return 'closed';
         if (sel.includes(':has-text("Apply")')) return 'away';
         return 'dialog';
@@ -867,6 +1130,7 @@ const wizardPage = (steps, opts = {}) => {
 
     return {
         clicked,
+        opts,
         currentStep: () => step,
         url: () => opts.landsOn ?? 'https://board.test/job/1',
         locator: (sel) => {
@@ -946,13 +1210,115 @@ wiz = wizardPage([[wField({ index: 0, label: 'Email' })]]);
 flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
 check('an open posting is not mistaken for a closed one', flow.outcome, 'READY_TO_SUBMIT');
 
+// ── AND A FINISHED APPLICATION IS NOT A MISSING BUTTON ───────────────
+//
+// A completed application removes the apply button and puts a status block
+// where it was. With only "Continue applying" — a resumable DRAFT — to match
+// on, the page matched nothing, and the consultant was told to go and apply by
+// hand to a job they had already applied to.
+wiz = wizardPage([[]], { noOpen: true, appliedNotice: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a finished application is recognised without a button to match',
+    flow.outcome, 'ALREADY_APPLIED');
+check('  and nothing on the page was touched', wiz.clicked.length, 0);
+
+// Both shapes mean the same thing and must report the same thing.
+wiz = wizardPage([[]], { alreadyApplied: true });
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a resumable draft says the same', flow.outcome, 'ALREADY_APPLIED');
+
+
 // An "Apply" that leaves for the employer's site: a person's job, and the
 // reason given should say that rather than blaming the app.
 wiz = wizardPage([[]], { noOpen: true, externalApply: true });
 flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
 check('an apply button that leaves the board is recognised', flow.outcome, 'EXTERNAL_APPLY');
+
+// ── CLASSIFYING IS NOT PERMISSION TO FILL ────────────────────────────
+//
+// Unverified boards now reach their own recipe, so that a job's REASON can
+// describe the page rather than the board. That must not leak into permission:
+// here the page has a real in-page application and the board has never been
+// watched filling one.
+let nvFlow = await runApplyFlow(
+    wizardPage([[wField({ index: 0, label: 'Email' })]]), wizardBoard,
+    { profile: {}, approvedAnswers: [] }, { canFill: false },
+);
+check('a form on an unverified board is recognised and refused',
+    nvFlow.outcome, 'NOT_VERIFIED');
+check('  and the reason says filling is what is unchecked',
+    /filling it has not been checked/.test(nvFlow.detail), true);
+
+const nvPage = wizardPage([[wField({ index: 0, label: 'Email' })]]);
+await runApplyFlow(nvPage, wizardBoard, { profile: {}, approvedAnswers: [] }, { canFill: false });
+check('  the apply button was never pressed', nvPage.clicked.length, 0);
+
+// The very same page, once the board is trusted, is worked as normal.
+nvFlow = await runApplyFlow(
+    wizardPage([[wField({ index: 0, label: 'Email' })]]), wizardBoard,
+    { profile: { email: 'mj@example.com' }, approvedAnswers: [] }, { canFill: true },
+);
+check('  and filling resumes the moment it is', nvFlow.outcome, 'READY_TO_SUBMIT');
 check('  and the reason names the employer’s site',
     /employer/.test(flow.detail), true);
+
+// ── A SECOND CLICK, ONLY WHEN THE RECIPE ASKS FOR ONE ────────────────
+//
+// Workday's Apply opens a CHOICE (Autofill / Apply Manually / Use My Last
+// Application), not the form itself. `start` names the one that leads to a
+// form the app is allowed to fill.
+const gatedBoard = { ...wizardBoard, apply: { ...wizardBoard.apply, start: 'START', accountWall: 'WALL' } };
+
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]], { start: true });
+flow = await runApplyFlow(wiz, gatedBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a declared start control is pressed, right after the opener',
+    wiz.clicked.slice(0, 2), ['open', 'start']);
+check('  and filling still reaches the end', flow.outcome, 'READY_TO_SUBMIT');
+
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]]);
+flow = await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] });
+check('a board with no `start` never gains a click for one',
+    wiz.clicked.includes('start'), false);
+
+// ── AN ACCOUNT WALL MID-FLOW, NOT JUST AT THE DOOR ────────────────────
+//
+// Measured on Workday: signing in at the header does not guarantee the apply
+// flow itself is authenticated. "Apply Manually" can land on its own
+// email/password gate. `waitForHuman` is how the caller (cycle.js in
+// production) is given the chance to get a person through it.
+let waited = [];
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]], { start: true, wall: true });
+flow = await runApplyFlow(wiz, gatedBoard, { profile: wizProfile, approvedAnswers: [] }, {
+    waitForHuman: async (page, selector, message) => {
+        waited.push({ selector, message });
+        return false; // nobody signed in within the (fake) window
+    },
+});
+check('an account wall is recognised', flow.outcome, 'ACCOUNT_WALL');
+check('  the caller was asked to wait, with the gate’s own selector',
+    waited[0]?.selector, 'WALL');
+check('  and a message naming the board', /Test Board/.test(waited[0]?.message ?? ''), true);
+check('  nothing past the wall was touched', wiz.clicked.includes('next'), false);
+
+// The same wall, but the person gets through it in time.
+waited = [];
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]], { start: true, wall: true });
+flow = await runApplyFlow(wiz, gatedBoard, { profile: wizProfile, approvedAnswers: [] }, {
+    waitForHuman: async () => {
+        wiz.opts.wall = false; // the human signed in; the gate is gone now
+        return true;
+    },
+});
+check('once the wall clears, filling carries on through it', flow.outcome, 'READY_TO_SUBMIT');
+
+// A recipe with no accountWall at all is never asked to wait for one.
+let askedAtAll = false;
+wiz = wizardPage([[wField({ index: 0, label: 'Email' })]]);
+await runApplyFlow(wiz, wizardBoard, { profile: wizProfile, approvedAnswers: [] }, {
+    waitForHuman: async () => { askedAtAll = true; return false; },
+});
+check('a board that declares no accountWall never calls waitForHuman', askedAtAll, false);
+
 
 // A required question nobody has answered stops the wizard mid-way.
 wiz = wizardPage([
@@ -1064,8 +1430,8 @@ const readyPage = () => {
         : sel.includes('NEXT') ? 'next'
             : sel.includes('SUBMIT') ? 'submit'
                 : sel.includes('APPLIED') ? 'already'
-                    // This posting is open and applies in place, so the
-                    // closed-posting probe must come back empty.
+                    // This posting is open, unapplied, and applies in place, so
+                    // both text-engine probes must come back empty.
                     : sel.startsWith('text=/') ? 'closed' : 'dialog');
     return {
         clicked,
@@ -1118,6 +1484,29 @@ check('  with the answers that were filled',
     Array.isArray(hub.calls.find((c) => c.name === 'submitted').args[1].qa), true);
 check('  and it does not linger on the review screen',
     engine.store.get('awaitingReview').length, 0);
+
+// ── A BOARD CAN REFUSE, AND THE TOGGLE DOES NOT OVERRULE IT ──────────
+//
+// Built In is marked `neverAutoSubmit` on the owner's instruction: fill it to
+// the submit button and stop, so a person reads the application before it goes.
+// A preference somebody set weeks ago must not be able to undo that, which is
+// the whole reason it lives on the board and not in the settings.
+BOARDS.WELLFOUND.neverAutoSubmit = true;
+sess = fakeSessions();
+rp = readyPage();
+sess.page = async () => rp;
+hub = applyHub();
+engine = engineWith(hub, sess);
+engine.store.set({ automationOn: true, autoSubmit: true });
+r = await engine.run();
+check('a board that refuses auto-submit is not submitted, toggle or no toggle',
+    rp.clicked.includes('submit'), false);
+check('  the hub is not told it was sent',
+    hub.calls.some((c) => c.name === 'submitted'), false);
+check('  the application is still filled, not abandoned', r.filled, 1);
+check('  and it waits for the consultant instead',
+    engine.store.get('awaitingReview').length, 1);
+delete BOARDS.WELLFOUND.neverAutoSubmit;
 
 BOARDS.WELLFOUND.verified = false;
 delete BOARDS.WELLFOUND.apply;
@@ -1174,6 +1563,577 @@ check('  nothing was opened, filled or submitted',
 check('  and it works while the app is stopped', seen.ok, true);
 
 /* ── packaging concerns ───────────────────────────────────────────────── */
+
+section('a sign-in survives the app being closed');
+
+/**
+ * A fake context that behaves like Chromium in the one way that matters here:
+ * cookies added to it are remembered while it lives, and a NEW one starts
+ * empty -- which is precisely what made Workday log the consultant out of
+ * every tenant, every restart, no matter how many times they signed in.
+ */
+const fakeChromium = () => {
+    const launched = [];
+    return {
+        launched,
+        launchPersistentContext: async () => {
+            const jar = [];
+            const ctx = {
+                jar,
+                setDefaultNavigationTimeout() {},
+                on() {},
+                pages: () => [],
+                newPage: async () => ({}),
+                cookies: async () => [...jar],
+                addCookies: async (cookies) => { jar.push(...cookies); },
+                close: async () => {},
+            };
+            launched.push(ctx);
+            return ctx;
+        },
+    };
+};
+
+const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-sess-'));
+const makeSessions = (chromiumFake) => new BrowserSessions({
+    chromium: chromiumFake,
+    profilesDir: path.join(sessionRoot, 'profiles'),
+    sessionsDir: path.join(sessionRoot, 'sessions'),
+});
+
+let chromeFake = fakeChromium();
+let jarSess = makeSessions(chromeFake);
+let jarCtx = await jarSess.context('WORKDAY-ACME');
+// The shape Workday actually uses: no expiry, so Chromium drops it on close.
+await jarCtx.addCookies([{ name: 'CALYPSO_SESSION', value: 'tok', domain: 'acme.test', path: '/' }]);
+await jarSess.closeAll();
+
+chromeFake = fakeChromium();
+jarSess = makeSessions(chromeFake);
+jarCtx = await jarSess.context('WORKDAY-ACME');
+check('a session cookie is put back into a brand-new context',
+    (await jarCtx.cookies()).map((c) => c.name), ['CALYPSO_SESSION']);
+check('  and the context really was new, not the old one cached',
+    chromeFake.launched.length, 1);
+
+// One employer's session must never leak into another's -- separate accounts,
+// separate profiles, separate jars.
+const other = await jarSess.context('WORKDAY-OTHERCO');
+check('another employer’s tenant starts empty', (await other.cookies()).length, 0);
+await jarSess.closeAll();
+
+// Revocation (R-21) has to take saved sign-ins with it; a cookie jar on disk
+// is a sign-in in a file.
+jarSess.forgetSessions();
+chromeFake = fakeChromium();
+jarSess = makeSessions(chromeFake);
+jarCtx = await jarSess.context('WORKDAY-ACME');
+check('forgetting sessions really removes them', (await jarCtx.cookies()).length, 0);
+await jarSess.closeAll();
+
+fs.rmSync(sessionRoot, { recursive: true, force: true });
+
+
+section('only a couple of browsers are open at once');
+
+/**
+ * The same fake as above, but it records closes -- because the thing being
+ * proven here is that browsers actually go away, not merely that they were
+ * asked to.
+ */
+const countingChromium = () => {
+    const opened = [];
+    const closed = [];
+    return {
+        opened,
+        closed,
+        launchPersistentContext: async (dir) => {
+            const jar = [];
+            const ctx = {
+                dir,
+                setDefaultNavigationTimeout() {},
+                on() {},
+                pages: () => [],
+                newPage: async () => ({}),
+                cookies: async () => [...jar],
+                addCookies: async (c) => { jar.push(...c); },
+                close: async () => { closed.push(dir); },
+            };
+            opened.push(dir);
+            return ctx;
+        },
+    };
+};
+
+const lruRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-lru-'));
+let lruChrome = countingChromium();
+let lru = new BrowserSessions({
+    chromium: lruChrome,
+    profilesDir: path.join(lruRoot, 'profiles'),
+    sessionsDir: path.join(lruRoot, 'sessions'),
+    maxOpenContexts: 2,
+});
+
+await lru.context('LINKEDIN');
+await lru.context('BUILTIN');
+check('two boards, two browsers', lruChrome.opened.length, 2);
+check('  and nothing closed yet', lruChrome.closed.length, 0);
+
+// A third employer arrives -- eight of these is what exhausted the machine.
+await lru.context('WORKDAY-ACME');
+check('a third opens', lruChrome.opened.length, 3);
+check('  and the oldest is closed to make room', lruChrome.closed.length, 1);
+check('  the one closed is the least recently used',
+    lruChrome.closed[0].endsWith('linkedin'), true);
+check('  never more than the cap are open at once', lru.contexts.size, 2);
+
+// Touching a board keeps it alive; the untouched one goes instead.
+await lru.context('BUILTIN');            // refresh its place in the queue
+await lru.context('WORKDAY-OTHER');
+check('a board used recently is not the one evicted',
+    lru.contexts.has('BUILTIN'), true);
+
+await lru.closeAll();
+
+// ── AND EVICTION MUST NOT COST A SIGN-IN ─────────────────────────────
+//
+// Closing a browser to save memory would be no help at all if it logged the
+// consultant out. It does not, because the jar is written before the close.
+lruChrome = countingChromium();
+lru = new BrowserSessions({
+    chromium: lruChrome,
+    profilesDir: path.join(lruRoot, 'profiles'),
+    sessionsDir: path.join(lruRoot, 'sessions'),
+    maxOpenContexts: 1,
+});
+let signedIn = await lru.context('WORKDAY-ACME');
+await signedIn.addCookies([
+    { name: 'CALYPSO_SESSION', value: 'tok', domain: 'acme.test', path: '/' },
+]);
+await lru.context('LINKEDIN');           // forces WORKDAY-ACME out
+check('the evicted browser really was closed', lruChrome.closed.length, 1);
+signedIn = await lru.context('WORKDAY-ACME');   // and back again
+check('  yet its sign-in came back with it',
+    (await signedIn.cookies()).map((c) => c.name), ['CALYPSO_SESSION']);
+
+await lru.closeAll();
+fs.rmSync(lruRoot, { recursive: true, force: true });
+
+
+section('when the bot needs a person, it asks and waits');
+
+const attentionWith = (over = {}) => {
+    const published = [];
+    const notified = [];
+    return {
+        published,
+        notified,
+        a: new Attention({
+            notify: (x) => notified.push(x),
+            publish: (x) => published.push(x),
+            pollMs: 5,           // real seconds are not the thing being tested
+            ...over,
+        }),
+    };
+};
+
+// Already satisfied: a gate nobody needs must not pause anybody.
+let { a, published, notified } = attentionWith();
+let attnSaid = await a.raise({ kind: 'BOT_CHECK', check: async () => true, waitMs: 500 });
+check('a gate already clear resolves at once', attnSaid, 'done');
+check('  and the screen is told to clear it again', published.at(-1), null);
+check('  the consultant is still told it happened', notified.length, 1);
+
+// Cleared partway through: the common case.
+({ a, published, notified } = attentionWith());
+let attnLooks = 0;
+attnSaid = await a.raise({
+    kind: 'BOT_CHECK',
+    check: async () => { attnLooks += 1; return attnLooks > 2; },
+    waitMs: 2_000,
+});
+check('a gate cleared partway through is noticed', attnSaid, 'done');
+
+// Nobody there.
+({ a, published } = attentionWith());
+attnSaid = await a.raise({ kind: 'BOT_CHECK', check: async () => false, waitMs: 60 });
+check('a gate nobody clears times out', attnSaid, 'timeout');
+check('  and the banner is taken down either way', published.at(-1), null);
+
+// ── THE TWO BUTTONS ──────────────────────────────────────────────────
+({ a } = attentionWith());
+let attnPressed = false;
+const skipping = a.raise({
+    kind: 'UNKNOWN_QUESTIONS',
+    check: async () => false,
+    waitMs: 10_000,
+});
+setTimeout(() => { attnPressed = a.skip(); }, 20);
+check('"Skip this job" ends the wait', await skipping, 'skipped');
+check('  and it reported that something was waiting', attnPressed, true);
+
+// "I've done it" is a request to LOOK, not a claim. Pressing it while the gate
+// is still up must not abandon the job on somebody's optimism.
+({ a } = attentionWith());
+let attnCleared = false;
+const nudging = a.raise({
+    kind: 'SIGN_IN',
+    check: async () => attnCleared,
+    waitMs: 3_000,
+});
+setTimeout(() => { a.continueNow(); }, 15);      // too early -- still not done
+setTimeout(() => { attnCleared = true; }, 120);      // now they really have
+check('"I’ve done it" pressed too early does not end the job', await nudging, 'done');
+
+// Nothing is waiting: the buttons are inert rather than throwing.
+({ a } = attentionWith());
+check('the buttons do nothing when no gate is up', [a.continueNow(), a.skip()], [false, false]);
+
+// ── WHAT THE SCREEN IS GIVEN ─────────────────────────────────────────
+({ a, published } = attentionWith());
+await a.raise({
+    kind: 'UNKNOWN_QUESTIONS',
+    board: 'LINKEDIN',
+    boardLabel: 'LinkedIn',
+    company: 'Freshworks',
+    message: 'Answer it on the Questions tab',
+    check: async () => true,
+    waitMs: 1_000,
+});
+const attnShown = published[0];
+check('the banner is given a deadline, not a countdown',
+    [typeof attnShown.until, typeof attnShown.totalMs], ['number', 'number']);
+check('  and enough to say which job stopped',
+    [attnShown.company, attnShown.boardLabel], ['Freshworks', 'LinkedIn']);
+check('  with a headline of its own', typeof attnShown.headline, 'string');
+
+// The durations the owner asked for: 60s / 2min / 5min.
+check('a human check waits a minute', WAIT_MS.BOT_CHECK, 60_000);
+check('an unanswered question waits two', WAIT_MS.UNKNOWN_QUESTIONS, 120_000);
+check('signing in waits five', WAIT_MS.SIGN_IN, 300_000);
+
+
+section('an answered question resumes the job it stopped');
+
+/**
+ * A board page whose form asks one thing nobody has answered. The answer bank
+ * is a live object the test mutates, standing in for a consultant typing into
+ * the Questions tab while the countdown runs.
+ */
+const askingPage = (bank) => {
+    const ctrl = (kind) => {
+        const c = {
+            count: async () => (kind === 'dialog' ? 1 : 0),
+            isVisible: async () => false,
+            innerText: async () => '',
+            getAttribute: async () => null,
+            click: async () => {},
+            scrollIntoViewIfNeeded: async () => {},
+            fill: async () => {},
+            pressSequentially: async () => {},
+            selectOption: async () => {},
+            check: async () => {},
+            setInputFiles: async () => {},
+            page: () => ({ waitForTimeout: async () => {} }),
+        };
+        return { ...c, first: () => c, nth: () => c };
+    };
+    return {
+        url: () => 'https://wellfound.com/jobs/1',
+        bringToFront: async () => {},
+        waitForSelector: async () => null,
+        waitForTimeout: async () => null,
+        // The one question. Once the bank holds an answer the filler resolves
+        // it, so the second pass reports no unknowns -- exactly what happens
+        // on a real page once the consultant has answered.
+        $$eval: async () => [{
+            index: 0, tag: 'input', type: 'text', name: '', id: '',
+            label: 'What is your notice period?', groupLabel: '', groupKey: '',
+            required: true, disabled: false, visible: true, hittable: true,
+            hasValue: bank.some((a) => a.question_text === 'What is your notice period?'),
+            options: [],
+        }],
+        locator: (sel) => ctrl(sel.includes('DIALOG') ? 'dialog' : 'other'),
+    };
+};
+
+const askingHub = (bank) => {
+    const hub = fakeHub({
+        heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+        queue: () => Promise.resolve({
+            items: [item({ id: 'aq1', company: 'Freshworks', title: 'Full Stack' })],
+            profile: { name: 'Sai Dhanush' },
+            approvedAnswers: bank,
+        }),
+    });
+    hub.askQuestions = (...args) => { hub.calls.push({ name: 'askQuestions', args }); return Promise.resolve({ ok: true }); };
+    hub.answers = () => Promise.resolve({ ok: true, answers: bank });
+    return hub;
+};
+
+// The board has to be one the engine will actually FILL, or it hands over
+// before a question is ever reached. No apply recipe: this exercises the
+// plain single-page form path.
+BOARDS.WELLFOUND.verified = true;
+
+// ── ANSWERED IN TIME: the same job carries on ────────────────────────
+let bank = [];
+let aHub = askingHub(bank);
+let aSess = fakeSessions();
+aSess.page = async () => askingPage(bank);
+let aAttn = new Attention({ pollMs: 5 });
+let aEngine = engineWith(aHub, aSess, { attention: aAttn });
+
+// The consultant answers a moment after the countdown appears.
+setTimeout(() => { bank.push({ question_text: 'What is your notice period?', answer_text: '30 days', question_id: 'Q1' }); }, 40);
+
+let aStats = await aEngine.run();
+check('the questions are raised before anything is given up',
+    aHub.calls.some((c) => c.name === 'askQuestions'), true);
+check('  and the job is NOT parked when somebody answers',
+    aHub.calls.some((c) => c.name === 'parked'), false);
+check('  it carries on to the review screen instead',
+    aStats.outcomes.map((o) => o.result), ['READY_TO_SUBMIT']);
+check('  nothing was counted as parked', aStats.parked, 0);
+
+// ── NOBODY ANSWERS: exactly the old behaviour ────────────────────────
+bank = [];
+aHub = askingHub(bank);
+aSess = fakeSessions();
+aSess.page = async () => askingPage(bank);
+aAttn = new Attention({ pollMs: 5 });
+aEngine = engineWith(aHub, aSess, { attention: aAttn });
+
+aStats = await aEngine.run();
+check('an unanswered question still parks the job in the end',
+    aHub.calls.some((c) => c.name === 'parked'), true);
+check('  counted as parked', aStats.parked, 1);
+check('  and the reason names what it is waiting on',
+    /notice period/.test(aStats.outcomes[0].reason), true);
+
+// ── SKIPPED: the person said move on ─────────────────────────────────
+bank = [];
+aHub = askingHub(bank);
+aSess = fakeSessions();
+aSess.page = async () => askingPage(bank);
+aAttn = new Attention({ pollMs: 5 });
+aEngine = engineWith(aHub, aSess, { attention: aAttn });
+setTimeout(() => { aAttn.skip(); }, 30);
+
+aStats = await aEngine.run();
+check('skipping parks it too, and says so',
+    /skipped/.test(aStats.outcomes[0].reason), true);
+
+BOARDS.WELLFOUND.verified = false;
+check('the test board is left as it was found', BOARDS.WELLFOUND.verified, false);
+
+
+section('a step hiding its fields behind a button is opened, not skipped');
+
+// The wording rule, on the buttons these forms actually carry.
+// Mirrors the full guard in `findRevealControl`, not just the two patterns:
+// a control that submits is refused there, whatever else it is called.
+const opensFields = (t) => REVEAL_WORDS.test(t) && !NOT_REVEAL.test(t)
+    // Mirrors the full guard in `findRevealControl`, not just the two
+// patterns: a control that submits is refused there whatever else it is
+// called, so the helper has to refuse it too or the test is not testing
+// the same rule.
+    && !/\b(submit|send application|apply now|finish|confirm and send)\b/i.test(t);
+check('"Add work experience" opens a section', opensFields('Add work experience'), true);
+check('  so does "+ Add" and "Add another employer"',
+    [opensFields('+ Add'), opensFields('Add another employer')], [true, true]);
+check('Back, Next and Save do not',
+    ['Back', 'Next', 'Save'].some(opensFields), false);
+check('nor does a field whose LABEL merely contains the word',
+    opensFields('Address line 1'), false);
+// LinkedIn puts a save control on these very screens; clicking it would
+// favourite the job instead of opening the section.
+check('nor "Add to favourites" — the preposition gives it away',
+    opensFields('Add to favourites'), false);
+check('and nothing that submits, whatever it is called',
+    opensFields('Add and submit application'), false);
+
+/**
+ * A step that arrives empty and grows fields once its button is pressed —
+ * LinkedIn's "Work experience", which the engine used to read as empty and
+ * press Next straight past.
+ */
+const collapsedPage = (opts = {}) => {
+    const clicked = [];
+    let open = false;
+    let step = 0;
+
+    const fieldsNow = () => {
+        if (step > 0) return [wField({ index: 0, label: 'Email' })];
+        return open ? [wField({ index: 0, label: 'Employer', required: true })] : [];
+    };
+
+    const control = (kind) => ({
+        count: async () => {
+            if (kind === 'open') return 1;
+            if (kind === 'reveal') return step === 0 && !opts.noReveal ? 1 : 0;
+            if (kind === 'submit') return step >= 1 ? 1 : 0;
+            if (kind === 'next') return step < 1 ? 1 : 0;
+            if (kind === 'dialog') return 1;
+            return 0;
+        },
+        isVisible: async () => (await control(kind).count()) > 0,
+        innerText: async () => ({
+            open: 'Easy Apply',
+            reveal: opts.revealText ?? 'Add work experience',
+            next: 'Next',
+            submit: 'Submit application',
+        }[kind] ?? ''),
+        getAttribute: async () => null,
+        click: async () => {
+            clicked.push(kind);
+            if (kind === 'reveal') open = true;
+            if (kind === 'next') step += 1;
+        },
+        scrollIntoViewIfNeeded: async () => {},
+        page: () => ({ waitForTimeout: async () => {} }),
+        fill: async () => {}, pressSequentially: async () => {},
+        selectOption: async () => {}, check: async () => {}, setInputFiles: async () => {},
+    });
+
+    const kindOf = (sel) => {
+        if (sel.includes('OPEN')) return 'open';
+        if (sel.includes('NEXT')) return 'next';
+        if (sel.includes('SUBMIT')) return 'submit';
+        if (sel.includes('APPLIED')) return 'already';
+        if (sel.includes('application submitted')) return 'appliedNotice';
+        if (sel.startsWith('text=/')) return 'closed';
+        // The reveal finder asks for every button inside the step.
+        if (sel.includes('button')) return 'reveal';
+        return 'dialog';
+    };
+
+    return {
+        clicked,
+        url: () => 'https://board.test/job/1',
+        locator: (sel) => {
+            const c = control(kindOf(sel));
+            return { ...c, first: () => c, nth: () => c, count: c.count };
+        },
+        waitForSelector: async (sel) => {
+            if (await control(kindOf(sel)).count() === 0) throw new Error(`Timeout ${sel}`);
+            return null;
+        },
+        waitForTimeout: async () => null,
+        $$eval: async () => fieldsNow(),
+    };
+};
+
+let cp = collapsedPage();
+let cpFlow = await runApplyFlow(cp, wizardBoard, {
+    profile: { name: 'Mary Jane Watson' }, approvedAnswers: [],
+});
+check('the hidden section is opened', cp.clicked.includes('reveal'), true);
+// Next is never reached here at all: the revealed field is required and
+// unanswered, so the flow stops to ask rather than pressing on -- which is
+// itself the point. What matters is that Next was not pressed FIRST.
+check('  and Next was not pressed past it', cp.clicked.includes('next'), false);
+check('  and the field behind it is seen',
+    cpFlow.unknown.some((u) => u.questionText === 'Employer'), true);
+
+// It must not keep pressing the same button on a step that stays empty.
+cp = collapsedPage({ revealText: 'Add work experience' });
+await runApplyFlow(cp, wizardBoard, { profile: {}, approvedAnswers: [] });
+check('the same section is never opened twice',
+    cp.clicked.filter((c) => c === 'reveal').length, 1);
+
+// A step that genuinely has nothing behaves exactly as it did before.
+cp = collapsedPage({ noReveal: true });
+cpFlow = await runApplyFlow(cp, wizardBoard, { profile: {}, approvedAnswers: [] });
+check('a step with no such button is untouched', cp.clicked.includes('reveal'), false);
+check('  and the flow still reaches the end', cpFlow.outcome, 'READY_TO_SUBMIT');
+
+
+section('a question wait is decided by the clock, not by keystrokes');
+
+// ── THE BUG THIS EXISTS FOR ──────────────────────────────────────────
+//
+// The form check asks "is every required field non-empty?", which turns true
+// after the FIRST CHARACTER of the last answer. Polling it meant a consultant
+// typing "30 days" had the bot move on at "3", taking a half-typed answer.
+// So for questions the window is held open and the button is the way out.
+let { a: holdA } = attentionWith();
+let looked = 0;
+let holdSaid = await holdA.raise({
+    kind: 'UNKNOWN_QUESTIONS',
+    // Satisfied from the very first instant — a field with one character in it.
+    check: async () => { looked += 1; return true; },
+    waitMs: 60,
+    holdUntilDeadline: true,
+});
+check('a held wait does not end the moment the field looks filled', looked > 0, true);
+check('  it runs to the deadline and only then accepts', holdSaid, 'done');
+
+// Held, and still nothing there at the end.
+({ a: holdA } = attentionWith());
+holdSaid = await holdA.raise({
+    kind: 'UNKNOWN_QUESTIONS',
+    check: async () => false,
+    waitMs: 60,
+    holdUntilDeadline: true,
+});
+check('a held wait nobody answers still times out', holdSaid, 'timeout');
+
+// The button is the shortcut, and it still has to be true to work.
+({ a: holdA } = attentionWith());
+let ready = false;
+const held = holdA.raise({
+    kind: 'UNKNOWN_QUESTIONS',
+    check: async () => ready,
+    waitMs: 10_000,
+    holdUntilDeadline: true,
+});
+setTimeout(() => { holdA.continueNow(); }, 15);     // pressed while still blank
+setTimeout(() => { ready = true; holdA.continueNow(); }, 90);
+check('"I’ve done it" is the way past a held wait', await held, 'done');
+
+// A gate that is either up or down still ends the moment it clears — holding
+// those would make every captcha cost a full minute for nothing.
+({ a: holdA } = attentionWith());
+let up = true;
+const quick = holdA.raise({ kind: 'BOT_CHECK', check: async () => !up, waitMs: 10_000 });
+setTimeout(() => { up = false; }, 20);
+check('a captcha still ends as soon as it is cleared', await quick, 'done');
+
+// The screen is told which kind of wait it is, so the banner can say so.
+({ a: holdA, published } = attentionWith());
+await holdA.raise({
+    kind: 'UNKNOWN_QUESTIONS', check: async () => true, waitMs: 20, holdUntilDeadline: true,
+});
+check('the banner is told the clock decides', published[0].holdUntilDeadline, true);
+
+
+section('a form value is readable, except where it must never be');
+
+const valuePage = await (async () => {
+    const engineNow = resolveBrowser();
+    const b = await engineNow.chromium.launch({ headless: true, ...engineNow.launchOptions });
+    const pg = await b.newPage();
+    await pg.setContent(`<!doctype html><html><body><div id="f">
+      <label for="n">Notice period</label><input id="n" value="30 days">
+      <label for="p">Password</label><input id="p" type="password" value="hunter2">
+      <label for="e">Empty</label><input id="e" value="">
+    </div></body></html>`);
+    const fields = await describeFields(pg, '#f');
+    await b.close();
+    return fields;
+})();
+
+check('a typed answer can be read back for banking',
+    valuePage.find((f) => f.label === 'Notice period')?.value, '30 days');
+// R-18: a descriptor carrying a password would smuggle it into logs, IPC and
+// the review screen. The refusal lives where the value is read.
+check('a password is never carried in a descriptor',
+    valuePage.find((f) => f.type === 'password')?.value, '');
+check('  even though the box plainly has one in it',
+    valuePage.find((f) => f.type === 'password')?.hasValue, true);
+check('an empty field reads as empty', valuePage.find((f) => f.label === 'Empty')?.value, '');
+
 
 section('a packaged build can still find a browser');
 

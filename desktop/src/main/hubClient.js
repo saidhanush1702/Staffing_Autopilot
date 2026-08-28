@@ -94,6 +94,15 @@ class HubClient {
 
     lease(id) { return this.#call('post', `/device/queue/${id}/lease`); }
     filled(id, body) { return this.#call('post', `/device/queue/${id}/filled`, body ?? {}); }
+    /**
+     * Raise a form's unanswered questions WITHOUT giving the job up.
+     *
+     * Called the moment the filler meets one, so the questions are already on
+     * the consultant's Questions tab when the countdown appears. `parked`
+     * below is the separate, later act of actually abandoning the job.
+     */
+    askQuestions(id, body) { return this.#call('post', `/device/queue/${id}/questions`, body); }
+
     parked(id, body) { return this.#call('post', `/device/queue/${id}/parked`, body); }
     skipped(id, body) { return this.#call('post', `/device/queue/${id}/skipped`, body); }
     reclassify(id, body) { return this.#call('post', `/device/queue/${id}/reclassify`, body ?? {}); }

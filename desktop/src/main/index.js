@@ -14,10 +14,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 const {
     app, BrowserWindow, Tray, Menu, ipcMain, safeStorage, shell, nativeImage,
-    crashReporter,
+    crashReporter, Notification,
 } = require('electron');
 
 const config = require('./config.js');
+const { Attention } = require('./attention.js');
 const { Store } = require('./store.js');
 const { Outbox } = require('./outbox.js');
 const { Secrets } = require('./secrets.js');
@@ -81,13 +82,47 @@ const TRAY_TEXT = {
     OFFLINE: 'Cannot reach the hub',
 };
 
+/**
+ * Push something to the window, if there is still a window to push to.
+ *
+ * ── WHY `win?.` WAS NOT THE CHECK IT LOOKED LIKE ──────────────────────
+ *
+ * `win?.webContents.send(...)` only asks whether the VARIABLE is set. A
+ * BrowserWindow object outlives its renderer: close the window, or catch it
+ * mid-reload, and `win` is still an object while the frame behind it is gone.
+ * `send` then throws "Render frame was disposed before WebFrameMain could be
+ * accessed" -- which is what filled the terminal during a run, once per
+ * activity line, from five different call sites.
+ *
+ * It was never dangerous: the throw happened inside a fire-and-forget
+ * notification, so the automation carried on correctly and only the UI missed
+ * an update it had no window to show anyway. But noise like that buries the
+ * errors that DO matter, which is reason enough to stop making it.
+ *
+ * Failure stays silent for the same reason it was harmless: a consultant who
+ * has closed the window is not waiting to be told that closing it worked.
+ */
+const toRenderer = (channel, payload) => {
+    if (!win || win.isDestroyed()) return false;
+    const wc = win.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    try {
+        wc.send(channel, payload);
+        return true;
+    } catch {
+        // The frame went away between the check and the send. Nothing to do,
+        // and nothing worth saying about it.
+        return false;
+    }
+};
+
 const setStatus = (state, detail = '') => {
     status = { state, detail };
     if (tray) {
         tray.setToolTip(`SmartApply — ${TRAY_TEXT[state] ?? state}${detail ? `: ${detail}` : ''}`);
         buildTrayMenu();
     }
-    win?.webContents.send('status', { ...status, ...snapshot() });
+    toRenderer('status', { ...status, ...snapshot() });
 };
 
 /**
@@ -101,6 +136,9 @@ const setStatus = (state, detail = '') => {
  * who restarts the app wants to know what is happening NOW, not what happened
  * before the restart. The durable record is the hub's.
  */
+/** Set once the app is ready; read by `snapshot` from the first tick. */
+let attention = null;
+
 const BOARD_LOG_MAX = 40;
 const boardActivity = new Map();
 
@@ -110,7 +148,7 @@ const recordActivity = (board, state, message) => {
     entry.at = new Date().toISOString();
     entry.lines = [...entry.lines, { at: entry.at, state, message }].slice(-BOARD_LOG_MAX);
     boardActivity.set(board, entry);
-    win?.webContents.send('status', { ...status, ...snapshot() });
+    toRenderer('status', { ...status, ...snapshot() });
 };
 
 /** Every board we know about, whether or not it has done anything yet. */
@@ -153,6 +191,9 @@ const snapshot = () => ({
     boards: boardsForDisplay(),
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
+    // What the bot is waiting for, or null. Carries a deadline rather than a
+    // countdown so the renderer can tick on its own clock -- see attention.js.
+    attention: attention?.snapshot() ?? null,
 });
 
 const buildTrayMenu = () => {
@@ -197,7 +238,7 @@ const showWindow = () => {
 
     win.once('ready-to-show', () => {
         win.show();
-        win.webContents.send('status', { ...status, ...snapshot() });
+        toRenderer('status', { ...status, ...snapshot() });
     });
 
     // Closing the window leaves the app running in the tray, which is what a
@@ -232,7 +273,10 @@ const handleRevoked = async (reason) => {
     secrets?.clear();
     store?.wipe();
     try { await sessions?.closeAll(); } catch { /* nothing open */ }
-    for (const dir of [paths.profiles, paths.work]) {
+    // Saved cookie jars are sign-ins in a file. A revoked device keeping one
+    // would be exactly the "signed-in window pointed at their account" this
+    // rule exists to prevent, so `sessions` is wiped with the rest.
+    for (const dir of [paths.profiles, paths.sessions, paths.work]) {
         fs.rmSync(dir, { recursive: true, force: true });
     }
     showWindow();
@@ -347,7 +391,7 @@ const registerIpc = () => {
             autoSubmit: Boolean(options.autoSubmit),
         });
         engine.allowStart();
-        win?.webContents.send('log',
+        toRenderer('log',
             options.autoSubmit
                 ? 'started — applications will be submitted automatically'
                 : 'started — applications will stop for you to review');
@@ -361,7 +405,7 @@ const registerIpc = () => {
         // Clearing the timer only prevents the NEXT pass. This reaches the one
         // already running, which is what makes the button appear to work.
         engine.requestStop();
-        win?.webContents.send('log', 'stopped — no more jobs will be worked');
+        toRenderer('log', 'stopped — no more jobs will be worked');
         setStatus('STOPPED');
         return { ok: true, stoppingAfterCurrent: engine.running };
     });
@@ -372,11 +416,21 @@ const registerIpc = () => {
      * Available whether or not automation is running, because it commits the
      * consultant to nothing. Starting work is a separate, deliberate button.
      */
+    // ── THE TWO BUTTONS ON THE COUNTDOWN ──────────────────────────────
+    //
+    // "Continue now" is a request to LOOK AGAIN, not an assertion that the work
+    // is done -- if the challenge is still up or the question still
+    // unanswered, the countdown carries on rather than the job being thrown
+    // away on somebody's optimism. "Skip" is the opposite: an explicit
+    // decision, taken immediately, no recheck.
+    ipcMain.handle('attentionContinue', () => ({ ok: Boolean(attention?.continueNow()) }));
+    ipcMain.handle('attentionSkip', () => ({ ok: Boolean(attention?.skip()) }));
+
     ipcMain.handle('checkForJobs', async () => {
         if (!secrets.read()) return { ok: false, error: 'This device is not activated.' };
         try {
             const res = await engine.refresh();
-            win?.webContents.send('log',
+            toRenderer('log',
                 res.waiting === 0
                     ? 'checked — no jobs waiting'
                     : `checked — ${res.waiting} job(s) waiting`);
@@ -401,7 +455,7 @@ const registerIpc = () => {
             // The login now opens in its own window, so there is no need to
             // drag the consultant to the Boards tab — but selecting that board
             // means the automation's page is what they come back to.
-            win?.webContents.send('showBoard', def.name);
+            toRenderer('showBoard', def.name);
 
             // Opening the window is not the end of it. The board is on hold at
             // the hub until something says otherwise, and the only thing that
@@ -415,11 +469,12 @@ const registerIpc = () => {
                 await new Promise((r) => { setTimeout(r, config.SIGNIN_POLL_MS); });
                 if (await sessions.isSignedInNow(def)) {
                     await sessions.finishSignIn?.(def.name);
+                    await sessions.saveSession?.(def.name);
                     await hub.boardStatus({
                         board: def.name, state: 'OK', detail: 'Signed in',
                     }).catch(() => {});
                     await heartbeat();
-                    win?.webContents.send('log', `${def.label}: signed in`);
+                    toRenderer('log', `${def.label}: signed in`);
                     runCycle('manual');
                     return { ok: true, signedIn: true };
                 }
@@ -566,7 +621,39 @@ const registerIpc = () => {
 /* ── boot ─────────────────────────────────────────────────────────────── */
 
 app.on('second-instance', showWindow);
-app.on('before-quit', () => { app.isQuitting = true; stopUpdater?.(); });
+/**
+ * ── LEAVING NOTHING RUNNING ───────────────────────────────────────────
+ *
+ * Every board and every Workday employer is a whole Chromium, launched as a
+ * CHILD of this process but not tied to its life. Quitting without closing
+ * them left them running -- invisible, with no window, holding hundreds of
+ * megabytes each. They accumulate across restarts until a real browser cannot
+ * get memory to render a page, which is exactly how LinkedIn ended up dying
+ * with "Aw, Snap! Out of Memory".
+ *
+ * `closeAll` saves each session before closing it, so tidying up costs the
+ * consultant nothing: they are still signed in next time.
+ *
+ * The quit is deferred once, because closing browsers is asynchronous and
+ * Electron will not wait for a promise on its own. `isQuitting` is set first
+ * so the window's own close handler stops hiding instead of closing, and the
+ * second `app.quit()` runs after the work is done.
+ */
+let cleaningUp = false;
+app.on('before-quit', (e) => {
+    app.isQuitting = true;
+    stopUpdater?.();
+
+    if (cleaningUp || !sessions) return;
+    cleaningUp = true;
+    e.preventDefault();
+    (async () => {
+        try {
+            await sessions.closeAll();
+        } catch { /* a browser that has already gone is not a problem */ }
+        app.quit();
+    })();
+});
 // The tray is the app. Closing the last window must not end it.
 app.on('window-all-closed', () => {});
 
@@ -580,7 +667,7 @@ app.whenReady().then(() => {
     // the one this needs to catch.
     diagnostics = startDiagnostics({
         app, crashReporter, logsDir: paths.logs,
-        log: (m) => { win?.webContents.send('log', m); },
+        log: (m) => { toRenderer('log', m); },
     });
 
     store = new Store(paths.state);
@@ -607,18 +694,45 @@ app.whenReady().then(() => {
             chromium,
             cdpEndpoint: `http://127.0.0.1:${config.CDP_PORT}`,
             getWindow: () => win,
-            log: (m) => { win?.webContents.send('log', m); },
+            log: (m) => { toRenderer('log', m); },
         });
     } else {
         // The original path, kept because driving Electron's own pages depends
         // on a debugging port that a locked-down machine may refuse to open.
-        sessions = new BrowserSessions({ chromium, profilesDir: paths.profiles, launchOptions });
+        sessions = new BrowserSessions({
+            chromium, profilesDir: paths.profiles, sessionsDir: paths.sessions, launchOptions,
+        });
     }
+
+    // ── THE BOT ASKING FOR HELP ───────────────────────────────────────
+    //
+    // Three ways the consultant finds out, because they may be looking at any
+    // of them: an OS notification (they are in another window), the countdown
+    // banner in the app, and the browser window itself being brought forward.
+    attention = new Attention({
+        notify: (a) => {
+            try {
+                if (!Notification.isSupported()) return;
+                new Notification({
+                    title: a.headline,
+                    body: [a.company, a.message].filter(Boolean).join(' — ').slice(0, 240),
+                    urgency: 'critical',
+                }).on('click', showWindow).show();
+            } catch { /* a notification nobody can show is not worth a crash */ }
+        },
+        // Straight into the same status push the rest of the UI already uses,
+        // so the banner appears without the renderer polling for it.
+        publish: () => {
+            toRenderer('status', { ...status, ...snapshot() });
+            buildTrayMenu();
+        },
+    });
 
     engine = new CycleEngine({
         hub, sessions, store, outbox, paths,
-        log: (m) => { win?.webContents.send('log', m); },
+        log: (m) => { toRenderer('log', m); },
         activity: recordActivity,
+        attention,
     });
 
     // A 1×1 transparent image: a real icon is a D7 asset, and an empty tray is
@@ -645,7 +759,7 @@ app.whenReady().then(() => {
 
     stopUpdater = startUpdater({
         app,
-        log: (m) => { win?.webContents.send('log', m); },
+        log: (m) => { toRenderer('log', m); },
         record: diagnostics.record,
     });
 });

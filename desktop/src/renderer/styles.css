@@ -387,3 +387,34 @@ input.search {
     text-transform: none;
     text-align: left;
 }
+
+/* ── the bot is waiting for you ──────────────────────────────────────
+   Above the tabs and full width, because a pause nobody notices is the
+   same as the automation being broken. */
+.attention {
+    margin: 0 16px 12px;
+    padding: 12px 14px;
+    border: 1px solid #f0d8a8;
+    border-radius: var(--r);
+    background: linear-gradient(180deg, #fffaf0, var(--paper));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+/* The last fifteen seconds read differently, without moving anything. */
+.attention.urgent { border-color: #f3c9c9; background: linear-gradient(180deg, #fff5f5, var(--paper)); }
+
+.attention-head { display: flex; align-items: center; gap: 10px; }
+.attention-spacer { flex: 1; }
+.attention-clock { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.attention.urgent .attention-clock { color: var(--stop); }
+.attention-message { font-size: 13px; line-height: 1.5; }
+
+.attention-track { height: 4px; border-radius: 999px; background: var(--line-soft); overflow: hidden; }
+.attention-fill {
+    height: 100%;
+    background: var(--warn);
+    /* Matches the 500ms tick, so the bar glides instead of stepping. */
+    transition: width 0.5s linear;
+}
+.attention.urgent .attention-fill { background: var(--stop); }

@@ -353,6 +353,23 @@ const moveItem = async (req, res, toState, { reason, extra = {} } = {}) => {
                 extra.parkedQuestionId ?? null,
                 extra.becameReadyAt ?? null],
         );
+
+        // ── BLOCKERS BELONG TO A WAITING JOB, AND NOTHING ELSE ────────
+        //
+        // A job is only "waiting on an answer" while it is parked. Once it is
+        // filled, skipped, reclassified or submitted, any blocker left behind
+        // would keep its question on the consultant's Questions tab claiming a
+        // job needs it — forever, for a job that finished.
+        //
+        // That became possible when the device started raising questions
+        // BEFORE parking, to hold a job open while somebody answers. Clearing
+        // here, centrally, means every exit from the waiting state is covered
+        // rather than each caller having to remember.
+        if (toState !== 'PARKED_UNKNOWN') {
+            await client.query(
+                'DELETE FROM queue_item_blockers WHERE queue_item_id = $1', [item.id],
+            );
+        }
         await client.query(
             `INSERT INTO queue_item_transitions
                 (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
@@ -408,6 +425,114 @@ export const reportFilled = async (req, res, next) => {
  * The unknowns are recorded against the consultant so they appear in the Phase
  * 4 inbox. Approving one releases every item parked on that question.
  */
+/**
+ * ── PUTTING A FORM'S QUESTIONS INTO THE BANK ──────────────────────────
+ *
+ * Every unknown is added to the bank if it is new, matched to the existing
+ * entry if it is not, and raised against THIS consultant so it appears on their
+ * screen. Categorisation is the same classifier the rest of the system uses, so
+ * a question about pay still lands in the owner-approval queue rather than a
+ * recruiter's (R-07).
+ *
+ * ── WHY THIS IS SEPARATE FROM PARKING ─────────────────────────────────
+ *
+ * It used to be one act: bank the questions AND park the job, in a single
+ * endpoint. That was fine when the only answer to an unknown question was
+ * "give up on this application and ask someone later".
+ *
+ * It is not fine now. The consultant sits in front of the machine while the
+ * automation runs, so the useful thing is to put the question in front of them
+ * IMMEDIATELY, hold the job open for a couple of minutes, and carry on with the
+ * same application if they answer. That needs the questions banked without the
+ * job being parked — parking is what happens only if nobody answers in time.
+ *
+ * @returns the question rows that were raised, newest first
+ */
+const bankUnknownQuestions = async (device, item, unknowns) => {
+    const asked = [];
+    for (const u of unknowns.slice(0, 20)) {
+        const text = String(u.questionText ?? '').trim();
+        if (!text) continue;
+
+        const { question } = await findOrCreateQuestion(
+            device.orgId, device.consultantId,
+            { questionText: text, appliesToAll: false },
+        );
+
+        await query(
+            `INSERT INTO consultant_questions
+                (id, organization_id, consultant_id, question_id, source, source_note, created_by)
+             VALUES ($1,$2,$3,$4,'FORM',$5,$6)
+             ON CONFLICT (consultant_id, question_id) DO NOTHING`,
+            [uuidv4(), device.orgId, device.consultantId, question.id,
+                `Asked by ${item?.company ?? 'an application form'}`.slice(0, 255),
+                device.consultantId],
+        );
+        asked.push(question);
+    }
+    return asked;
+};
+
+/**
+ * POST /api/device/queue/:id/questions — raise these questions, park nothing.
+ *
+ * The device calls this the moment it meets a question it cannot answer, then
+ * waits. The queue item keeps its lease and its status: it is still being
+ * worked, and if the consultant answers within the window the same application
+ * carries on where it stopped. Only when nobody answers does the device call
+ * `parked`, which is what actually gives the job up.
+ */
+export const askQuestions = async (req, res, next) => {
+    try {
+        const unknowns = req.body.unknownQuestions ?? [];
+        if (unknowns.length === 0) {
+            return res.status(422).json({ error: 'No questions were sent.' });
+        }
+
+        const item = await loadOwnedItem(req.device, req.params.id);
+        if (!item) return res.status(404).json({ error: 'Queue item not found.' });
+
+        const asked = await bankUnknownQuestions(req.device, item, unknowns);
+        if (asked.length === 0) {
+            return res.status(422).json({ error: 'None of those questions had any text.' });
+        }
+
+        // ── RAISED MEANS VISIBLE ──────────────────────────────────────
+        //
+        // The Questions tab lists from `queue_item_blockers`, not from the
+        // bank — it answers "what is a job waiting on", which is a different
+        // question from "what have you ever been asked". So banking alone put
+        // nothing on screen, and the device told the consultant to go and
+        // answer something on a tab where it did not appear.
+        //
+        // Recording the blockers here fixes that, and is safe on a job that is
+        // still being worked: `releasableItems` only ever touches items in
+        // PARKED_UNKNOWN, and `moveItem` clears blockers the moment an item
+        // moves anywhere else, so none of this can outlive the job.
+        await withTransaction(async (client) => {
+            await recordBlockers(client, {
+                orgId: req.device.orgId,
+                itemId: req.params.id,
+                asked: asked.map((question, i) => ({
+                    questionId: question.id,
+                    askedAs: unknowns[i]?.questionText ?? question.question_text,
+                    fieldType: unknowns[i]?.fieldType ?? null,
+                    required: unknowns[i]?.required !== false,
+                })),
+            });
+        });
+
+        return res.json({
+            ok: true,
+            // The ids matter to the caller: it polls the answer bank for these
+            // exact questions rather than guessing from the wording it sent.
+            questions: asked.map((q) => ({ id: q.id, questionText: q.question_text })),
+        });
+    } catch (err) {
+        return next(err);
+    }
+};
+
 export const reportParked = async (req, res, next) => {
     try {
         const unknowns = req.body.unknownQuestions ?? [];
@@ -419,40 +544,9 @@ export const reportParked = async (req, res, next) => {
         const item = await loadOwnedItem(req.device, req.params.id);
         if (!item) return res.status(404).json({ error: 'Queue item not found.' });
 
-        // ── EVERY UNKNOWN GOES INTO THE BANK ──────────────────────────
-        //
-        // This used to look the first question up and discard the rest. Nothing
-        // was ever created, so a form asking six things produced no entry
-        // anywhere, "My Answers" stayed empty, and the parked item could never
-        // be released — the application was stuck permanently with no way for
-        // anyone to unstick it.
-        //
-        // Now each one is added to the bank if it is new, matched to the
-        // existing entry if it is not, and raised against THIS consultant so it
-        // appears on their screen. Categorisation is the same classifier the
-        // rest of the system uses, so a question about pay still lands in the
-        // owner-approval queue rather than a recruiter's (R-07).
-        const asked = [];
-        for (const u of unknowns.slice(0, 20)) {
-            const text = String(u.questionText ?? '').trim();
-            if (!text) continue;
-
-            const { question } = await findOrCreateQuestion(
-                req.device.orgId, req.device.consultantId,
-                { questionText: text, appliesToAll: false },
-            );
-
-            await query(
-                `INSERT INTO consultant_questions
-                    (id, organization_id, consultant_id, question_id, source, source_note, created_by)
-                 VALUES ($1,$2,$3,$4,'FORM',$5,$6)
-                 ON CONFLICT (consultant_id, question_id) DO NOTHING`,
-                [uuidv4(), req.device.orgId, req.device.consultantId, question.id,
-                    `Asked by ${item?.company ?? 'an application form'}`.slice(0, 255),
-                    req.device.consultantId],
-            );
-            asked.push(question);
-        }
+        // Banking is idempotent, so a device that already raised these while it
+        // waited does not create them twice.
+        const asked = await bankUnknownQuestions(req.device, item, unknowns);
 
         if (asked.length === 0) {
             return res.status(422).json({ error: 'None of those questions had any text.' });
