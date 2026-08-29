@@ -3,7 +3,49 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="SmartApply — staffing and application automation for recruiting teams." />
+    <meta name="theme-color" content="#f6f8fb" />
+    <link rel="icon" type="image/png" href="/image.png" />
+
+    <!-- Two families, one job each: Plus Jakarta Sans for headings and
+         figures, Inter for everything a person reads a paragraph of. Weights
+         are pinned to the five the design system actually uses — a variable
+         range would ship a font file twice the size for nothing. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
     <title>SmartApply</title>
+
+    <!--
+      THEME, BEFORE THE FIRST PAINT.
+
+      Every colour in the app is a CSS variable keyed off <html data-theme>.
+      If React set it, a dark-mode user would get a white flash for as long as
+      the bundle takes to parse — on a cold load, long enough to be unpleasant
+      and to look broken. Nine lines here remove the whole problem.
+
+      It is deliberately dependency-free and wrapped in try/catch: storage can
+      throw in private mode, and a theme preference is not worth a blank page.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('smartapply.theme');
+          var dark = stored === 'dark'
+            || ((!stored || stored === 'system')
+                && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+          document.querySelector('meta[name="theme-color"]')
+            .setAttribute('content', dark ? '#0b0f17' : '#f6f8fb');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

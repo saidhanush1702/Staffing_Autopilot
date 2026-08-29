@@ -202,7 +202,7 @@ const Postings = () => {
                             ) : (
                                 <div className="mt-2 space-y-2">
                                     {detail.matches.map((m) => (
-                                        <div key={m.consultant_id} className="rounded-lg border border-slate-200 p-3">
+                                        <div key={m.consultant_id} className="rounded-lg border border-line p-3">
                                             <div className="flex flex-wrap items-center justify-between gap-2">
                                                 <p className="text-sm font-medium text-slate-900">
                                                     {m.consultant_name}

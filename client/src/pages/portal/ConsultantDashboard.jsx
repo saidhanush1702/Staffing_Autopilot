@@ -1,23 +1,42 @@
 import { useEffect, useState } from 'react';
-import { Briefcase, HelpCircle, Send, UserCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Briefcase, HelpCircle, Send, Sparkles, UserCheck } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import PageHeader from '../../components/ui/PageHeader.jsx';
+import StatCard from '../../components/ui/StatCard.jsx';
+import Alert from '../../components/ui/Alert.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { card, cardPad } from '../../design/tokens.js';
+import { card, cardInteractive, sectionTitle, stack, statGrid } from '../../design/tokens.js';
 
-const StatCard = ({ icon: Icon, label, value }) => (
-    <div className={`${card} ${cardPad}`}>
-        <div className="flex items-center gap-3">
-            <span className="rounded-lg bg-brand-50 p-2">
-                <Icon className="h-5 w-5 text-brand-600" />
-            </span>
-            <div>
-                <p className="text-2xl font-semibold text-slate-900">{value}</p>
-                <p className="text-xs text-slate-500">{label}</p>
-            </div>
-        </div>
-    </div>
-);
+/**
+ * The consultant's own view: what is queued for them, what is waiting on them,
+ * and what has already gone out under their name.
+ *
+ * "Questions to answer" is given the warning tone whenever it is non-zero,
+ * because it is the only figure on the screen that BLOCKS work — an
+ * application with an unanswered required question cannot be sent at all.
+ */
+const NEXT_STEPS = [
+    {
+        to: '/portal/answers',
+        icon: HelpCircle,
+        title: 'Answer your questions',
+        body: 'Each answer is approved once by your recruiter, then reused automatically.',
+    },
+    {
+        to: '/portal/profile',
+        icon: UserCheck,
+        title: 'Keep your profile current',
+        body: 'Your profile fills the standard parts of every application form.',
+    },
+    {
+        to: '/portal/criteria',
+        icon: Briefcase,
+        title: 'Check your search criteria',
+        body: 'Titles, locations and pay your recruiter is searching against.',
+    },
+];
 
 const ConsultantDashboard = () => {
     const { user } = useAuth();
@@ -30,32 +49,89 @@ const ConsultantDashboard = () => {
             .catch((err) => setError(errorMessage(err)));
     }, []);
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <Alert tone="danger">{error}</Alert>;
     if (!data) return <PageLoader />;
 
-    return (
-        <div>
-            <h1 className="text-xl font-semibold text-slate-900">Welcome, {user?.name}</h1>
-            <p className="mt-1 text-sm text-slate-500">
-                Your recruiter is{' '}
-                <span className="font-medium text-slate-700">
-                    {data.recruiterName ?? 'not assigned yet'}
-                </span>.
-            </p>
+    const firstName = user?.name?.split(' ')[0] ?? 'there';
 
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard icon={Briefcase} label="Jobs in queue" value={data.queuedJobs} />
-                <StatCard icon={HelpCircle} label="Questions to answer" value={data.pendingAnswers} />
-                <StatCard icon={Send} label="Applications submitted" value={data.applicationsSubmitted} />
-                <StatCard icon={UserCheck} label="My recruiter" value={data.recruiterName ? '1' : '0'} />
+    return (
+        <div className={stack}>
+            <PageHeader
+                title={`Welcome, ${firstName}`}
+                subtitle={data.recruiterName
+                    ? `Your recruiter is ${data.recruiterName}.`
+                    : 'You have not been assigned a recruiter yet.'}
+            />
+
+            {data.pendingAnswers > 0 && (
+                <Alert tone="warning" title={`${data.pendingAnswers} question${
+                    data.pendingAnswers === 1 ? '' : 's'} waiting on you`}>
+                    An application cannot be sent while a required question is unanswered.{' '}
+                    <Link to="/portal/answers" className="font-medium underline underline-offset-2">
+                        Answer them now
+                    </Link>.
+                </Alert>
+            )}
+
+            <div className={statGrid}>
+                <StatCard icon={Briefcase} label="Jobs in queue" value={data.queuedJobs} tone="brand" />
+                <StatCard
+                    icon={HelpCircle}
+                    label="Questions to answer"
+                    value={data.pendingAnswers}
+                    tone={data.pendingAnswers > 0 ? 'warning' : 'success'}
+                    hint={data.pendingAnswers > 0 ? 'blocking applications' : 'nothing outstanding'}
+                />
+                <StatCard
+                    icon={Send}
+                    label="Applications submitted"
+                    value={data.applicationsSubmitted}
+                    tone="success"
+                />
+                <StatCard
+                    icon={UserCheck}
+                    label="My recruiter"
+                    value={data.recruiterName ?? 'Unassigned'}
+                    tone={data.recruiterName ? 'info' : 'neutral'}
+                />
             </div>
 
-            <div className="mt-6 rounded-xl border border-dashed border-slate-300 bg-white p-6">
-                <p className="text-sm font-medium text-slate-700">Coming in the next phase</p>
-                <p className="mt-1 text-sm text-slate-500">
-                    Your job queue, resume history, and the questions needing your answer will
-                    appear here. This phase establishes access control only.
-                </p>
+            <section>
+                <h2 className={sectionTitle}>What you can do here</h2>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {NEXT_STEPS.map(({ to, icon: Icon, title, body }) => (
+                        <Link key={to} to={to} className={`${cardInteractive} group flex gap-3.5 p-4`}>
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl
+                                             bg-brand-50 text-brand-600">
+                                <Icon className="h-[1.15rem] w-[1.15rem]" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                                <span className="flex items-center gap-1.5 font-display text-sm
+                                                 font-semibold text-slate-900">
+                                    {title}
+                                    <ArrowRight className="h-3.5 w-3.5 text-slate-300 transition-transform
+                                                           duration-150 group-hover:translate-x-0.5
+                                                           group-hover:text-brand-600" />
+                                </span>
+                                <span className="mt-1 block text-xs leading-relaxed text-slate-500">{body}</span>
+                            </span>
+                        </Link>
+                    ))}
+                </div>
+            </section>
+
+            <div className={`${card} flex items-start gap-3.5 border-dashed p-5`}>
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl
+                                 bg-surface-sunken text-slate-400">
+                    <Sparkles className="h-[1.15rem] w-[1.15rem]" />
+                </span>
+                <div>
+                    <p className="font-display text-sm font-semibold text-slate-800">Coming next</p>
+                    <p className="mt-1 text-sm leading-relaxed text-slate-500">
+                        Your live job queue and resume history will appear here. The desktop app is
+                        where applications are actually filled in and submitted.
+                    </p>
+                </div>
             </div>
         </div>
     );

@@ -10,7 +10,7 @@ import Pagination from '../../components/Pagination.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { badge, TONE } from '../../design/tokens.js';
+import { badge, TONE, pageTitle, pageSubtitle, btnSm, searchInput, searchIcon } from '../../design/tokens.js';
 
 /**
  * Consultant profiles.
@@ -66,17 +66,17 @@ const Consultants = () => {
         /* eslint-disable-next-line */
     }, [search]);
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!rows) return <PageLoader />;
 
     const isRecruiter = user?.role === 'RECRUITER';
 
     return (
         <div>
-            <h1 className="text-xl font-semibold text-slate-900">
+            <h1 className={pageTitle}>
                 {isRecruiter ? 'My consultants' : 'Consultants'}
             </h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className={pageSubtitle}>
                 {isRecruiter
                     ? 'Consultants currently assigned to you. Open one to view their profile and resume.'
                     : 'Every consultant in this organization. Open one to view their profile and resume.'}
@@ -85,12 +85,12 @@ const Consultants = () => {
             {/* ── search + filters ─────────────────────────────── */}
             <div className="mt-5 flex flex-wrap items-center gap-3">
                 <div className="relative flex-1 sm:max-w-xs">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Search className={searchIcon} />
                     <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search by name or email…"
-                        className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                        className={searchInput}
                     />
                 </div>
                 <div className="flex gap-1">
@@ -113,7 +113,7 @@ const Consultants = () => {
                 <button
                     type="button"
                     onClick={() => setShowAll((v) => !v)}
-                    className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                    className={`${btnSm.secondary} ml-auto`}
                 >
                     {showAll ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     {showAll ? 'Show active only' : 'Show all consultants'}
@@ -131,7 +131,7 @@ const Consultants = () => {
                     />
                 )}
             >
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Consultant</th>
                             <th className="px-4 py-3">Location</th>
@@ -143,7 +143,7 @@ const Consultants = () => {
                             <th className="w-10 px-3 py-3" />
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {rows.length === 0 && (
                             <tr>
                                 <td colSpan={8} className="px-4 py-12 text-center">
@@ -180,7 +180,7 @@ const Consultants = () => {
                                 </td>
                                 <td className="px-4 py-3">
                                     {c.base_resume_artifact_id ? (
-                                        <span className="inline-flex items-center gap-1.5 text-xs text-emerald-700">
+                                        <span className="inline-flex items-center gap-1.5 text-xs text-success-700">
                                             <FileText className="h-3.5 w-3.5" /> Uploaded
                                         </span>
                                     ) : (

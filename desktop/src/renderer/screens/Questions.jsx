@@ -42,7 +42,7 @@ const Row = ({ q, onAnswered }) => {
     return (
         <div className="card stack">
             <div>
-                <p style={{ fontWeight: 550 }}>{q.asked_as}</p>
+                <p className="lead">{q.asked_as}</p>
                 <p className="muted" style={{ marginTop: 3 }}>
                     <strong>{q.waiting_jobs}</strong>
                     {q.waiting_jobs === 1 ? ' application is' : ' applications are'} waiting

@@ -5,10 +5,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
-import {
-    card, cardPad, inputBase, fieldLabel, btn, btnSm, badge, sectionTitle,
-    TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btn, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
 
 const STATUS_TONE = {
     PENDING: 'info',
@@ -127,7 +124,7 @@ const MyAnswers = () => {
                 )}
 
                 {a.review_note && (
-                    <div className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>
+                    <div className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>
                         <strong>Reviewer note:</strong> {a.review_note}
                     </div>
                 )}
@@ -163,7 +160,7 @@ const MyAnswers = () => {
                 applications on your behalf — but only after they are approved.
             </p>
 
-            <div className={`mt-5 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.info}`}>
+            <div className={`mt-5 ${alertShell} ${TONE_ALERT.info}`}>
                 <Lock className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                     Nothing you write here is used until a reviewer approves it. Pay and
@@ -257,14 +254,14 @@ const MyAnswers = () => {
                     )}
                 >
                     {saveError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{saveError}</span>
                         </div>
                     )}
 
                     {editing.current?.review_note && (
-                        <div className={`mb-3 rounded-lg p-3 text-sm ${TONE_ALERT.warning}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.warning}`}>
                             <strong>What to change:</strong> {editing.current.review_note}
                         </div>
                     )}

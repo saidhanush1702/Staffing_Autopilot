@@ -15,10 +15,7 @@ import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import { RoleBadge } from '../../components/ui/Badge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useLookups } from '../../context/LookupContext.jsx';
-import {
-    card, cardPad, input, fieldLabel, fieldHint, btn, countPill, TONE, TONE_ALERT,
-    pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, input, fieldLabel, fieldHint, btn, countPill, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, btnSm, alertShellSm, alertShell } from '../../design/tokens.js';
 
 const EMPTY = { name: '', email: '', phone: '', role: 'CONSULTANT', password: '' };
 
@@ -118,7 +115,7 @@ const Users = () => {
         }
     };
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!users) return <PageLoader />;
 
     // Counts cover the whole organisation, not just the fetched page.
@@ -151,7 +148,7 @@ const Users = () => {
             {showForm && (
                 <form onSubmit={handleCreate} className={`mt-5 ${card} ${cardPad}`}>
                     {formError && (
-                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                         </div>
                     )}
@@ -245,7 +242,7 @@ const Users = () => {
                 <button
                     type="button"
                     onClick={() => setShowAll((v) => !v)}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                    className={btnSm.secondary}
                 >
                     {showAll ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     {showAll ? 'Show active only' : `Show all ${activeLabel}`}
@@ -258,7 +255,7 @@ const Users = () => {
                 minWidth={860}
                 footer={<Pagination page={page} onChange={(p) => load(p)} />}
             >
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Name</th>
                             <th className="px-4 py-3">Email</th>
@@ -268,7 +265,7 @@ const Users = () => {
                             <th className="px-4 py-3" />
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {visible.length === 0 && (
                             <tr>
                                 <td colSpan={6} className="px-4 py-12 text-center">
@@ -324,7 +321,7 @@ const Users = () => {
                     </tbody>
             </TableShell>
 
-            <div className={`mt-4 flex items-start gap-2 rounded-lg border border-warning-200 p-3 text-xs ${TONE_ALERT.warning}`}>
+            <div className={`mt-4 ${alertShellSm} ${TONE_ALERT.warning}`}>
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                     Passwords are stored with reversible encryption, so they can be shown here.
@@ -356,7 +353,7 @@ const Users = () => {
                     )}
                 >
                     {resetError && (
-                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{resetError}
                         </div>
                     )}

@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Search, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
-import {
-    card, cardPad, badge, sectionTitle, TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, sectionTitle, TONE, TONE_ALERT, alertShell, alertShellSm } from '../../design/tokens.js';
 
 /**
  * ── WHAT A RUN WILL ACTUALLY ASK FOR ──────────────────────────────────
@@ -41,7 +39,7 @@ const SearchPlanPanel = () => {
 
     if (error) {
         return (
-            <div className={`${card} ${cardPad} flex items-start gap-2 text-sm ${TONE_ALERT.danger}`}>
+            <div className={`${cardPad} rounded-xl ${alertShell} ${TONE_ALERT.danger}`}>
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>{error}</span>
             </div>
@@ -91,7 +89,7 @@ const SearchPlanPanel = () => {
                                 {queries.map((q) => (
                                     <div
                                         key={q.q}
-                                        className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 pb-1.5"
+                                        className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line-soft pb-1.5"
                                     >
                                         <span className="font-mono text-sm text-slate-800">
                                             {q.q}
@@ -155,7 +153,7 @@ const SearchPlanPanel = () => {
                                     </div>
                                 ))}
                             </div>
-                            <p className={`mt-2 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                            <p className={`mt-2 ${alertShellSm} ${TONE_ALERT.warning}`}>
                                 These consultants will see fewer jobs than their criteria ask
                                 for. Each extra term costs {p.pagesPerTerm} credits per run.
                             </p>

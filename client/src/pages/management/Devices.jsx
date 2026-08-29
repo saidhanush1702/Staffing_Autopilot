@@ -9,11 +9,7 @@ import TableShell from '../../components/TableShell.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import {
-    card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel,
-    TONE, TONE_ALERT, pageTitle, pageSubtitle,
-    tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty, alertShellSm, alertShell } from '../../design/tokens.js';
 
 /** What each device state means, and how urgently it reads. */
 const STATE = {
@@ -134,7 +130,7 @@ const Devices = () => {
             </p>
 
             {error && (
-                <div className={`mt-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                <div className={`mt-4 ${alertShell} ${TONE_ALERT.danger}`}>
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{error}</span>
                 </div>
@@ -302,7 +298,7 @@ const Devices = () => {
                                         : <><Copy className="h-3.5 w-3.5" /> Copy</>}
                                 </button>
                             </div>
-                            <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                            <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.warning}`}>
                                 Expires {new Date(issued.expiresAt).toLocaleString()}, and works
                                 once. You can look it up again from the list if you lose it.
                             </p>
@@ -377,12 +373,12 @@ const Devices = () => {
                         a dead string and letting them discover it is worse than
                         showing nothing. */}
                     {showing.usable ? (
-                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.success}`}>
+                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.success}`}>
                             Still usable. Expires {new Date(showing.expiresAt).toLocaleString()},
                             and works once.
                         </p>
                     ) : (
-                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.warning}`}>
                             {showing.state === 'ALREADY_USED'
                                 && 'This code has already been used to set up a device, so it '
                                    + 'will not activate another. Issue a new one if they need '

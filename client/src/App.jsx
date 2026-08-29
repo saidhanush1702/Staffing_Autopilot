@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { LookupProvider } from './context/LookupContext.jsx';
+import { ThemeProvider } from './context/ThemeContext.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import PageLoader from './components/PageLoader.jsx';
 import Layout from './components/layout/Layout.jsx';
@@ -47,6 +48,9 @@ const CONSULTANT = ['CONSULTANT'];
 
 const App = () => (
     <BrowserRouter>
+        {/* Outermost: the theme has to be settled before anything paints, and
+            it is the one piece of state that survives signing out. */}
+        <ThemeProvider>
         <AuthProvider>
             {/* Inside AuthProvider: reference data is fetched once a session
                 exists, and dropped again on sign-out. */}
@@ -84,6 +88,7 @@ const App = () => (
             </Routes>
             </LookupProvider>
         </AuthProvider>
+        </ThemeProvider>
     </BrowserRouter>
 );
 

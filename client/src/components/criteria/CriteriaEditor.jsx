@@ -9,10 +9,7 @@ import LocationEditor from './LocationEditor.jsx';
 import VersionHistory from './VersionHistory.jsx';
 import CriteriaView from './CriteriaView.jsx';
 import AuditLogPanel from '../layout/AuditLogPanel.jsx';
-import {
-    card, cardPad, input, inputBase, fieldLabel, fieldHint, btn, badge, sectionTitle,
-    TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, input, inputBase, fieldLabel, fieldHint, btn, badge, sectionTitle, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
 
 const PAY_UNITS = [
@@ -227,7 +224,7 @@ const CriteriaEditor = ({ consultantId }) => {
                                     aria-pressed={on}
                                     className={`${badge} border ${on
                                         ? 'border-brand-600 bg-brand-50 text-brand-700'
-                                        : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}
+                                        : 'border-slate-300 bg-surface text-slate-600 hover:bg-slate-50'}`}
                                 >
                                     {w.label}
                                 </button>
@@ -284,9 +281,9 @@ const CriteriaEditor = ({ consultantId }) => {
                 />
 
                 {/* save */}
-                <div className="border-t border-slate-200 pt-5">
+                <div className="border-t border-line pt-5">
                     {saveError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{saveError}</span>
                         </div>

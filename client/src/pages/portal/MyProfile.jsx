@@ -6,7 +6,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import ProfileField from '../../components/ProfileField.jsx';
-import { TONE_ALERT, card, cardPad, cardPadRoomy } from '../../design/tokens.js';
+import { TONE_ALERT, card, cardPad, cardPadRoomy, pageTitle, pageSubtitle, btn, alertShell } from '../../design/tokens.js';
 
 /**
  * Consultant self-service profile.
@@ -71,7 +71,7 @@ const MyProfile = () => {
         }
     };
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!data || !schema || !lookups) return <PageLoader />;
 
     const { profile, recruiter, missingFields, isComplete, pendingRequest, lastReviewed } = data;
@@ -85,15 +85,15 @@ const MyProfile = () => {
 
     return (
         <div className="max-w-4xl">
-            <h1 className="text-xl font-semibold text-slate-900">My profile</h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <h1 className={pageTitle}>My profile</h1>
+            <p className={pageSubtitle}>
                 Keep this up to date — it is used on every job application submitted for you.
                 Changes are reviewed by your recruiter before they take effect.
             </p>
 
             {/* ── incomplete banner ─────────────────────────────── */}
             {!isComplete && !locked && (
-                <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning-200 bg-warning-50 p-3 text-sm text-warning-800">
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
                         <strong>Your profile is incomplete.</strong> Still needed:{' '}
@@ -103,7 +103,7 @@ const MyProfile = () => {
             )}
 
             {isComplete && !locked && (
-                <div className="mt-4 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+                <div className="mt-4 flex items-start gap-2 rounded-lg border border-success-200 bg-success-50 p-3 text-sm text-success-800">
                     <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>Your profile is complete and approved.</span>
                 </div>
@@ -111,18 +111,18 @@ const MyProfile = () => {
 
             {/* ── pending banner ────────────────────────────────── */}
             {locked && (
-                <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 p-4">
+                <div className="mt-4 rounded-lg border border-info-200 bg-info-50 p-4">
                     <div className="flex items-start gap-2">
-                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-sky-700" />
+                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-info-700" />
                         <div className="flex-1">
-                            <p className="text-sm font-medium text-sky-900">Changes awaiting approval</p>
-                            <p className="mt-0.5 text-xs text-sky-700">
+                            <p className="text-sm font-medium text-info-900">Changes awaiting approval</p>
+                            <p className="mt-0.5 text-xs text-info-700">
                                 Submitted {new Date(pendingRequest.submitted_at).toLocaleString()}
                                 {recruiter && ` · waiting on ${recruiter.name}`}
                             </p>
                             <ul className="mt-2 space-y-1">
                                 {pendingRequest.fields.map((f) => (
-                                    <li key={f.field_name} className="text-xs text-sky-800">
+                                    <li key={f.field_name} className="text-xs text-info-800">
                                         <span className="font-medium">{fieldLabel(f.field_name)}</span>
                                         {' → '}{f.new_display ?? '(cleared)'}
                                     </li>
@@ -131,7 +131,7 @@ const MyProfile = () => {
                             <button
                                 type="button"
                                 onClick={withdraw}
-                                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-xs text-sky-800 hover:bg-sky-50"
+                                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-info-300 bg-surface px-3 py-1.5 text-xs text-info-800 hover:bg-info-50"
                             >
                                 <Undo2 className="h-3.5 w-3.5" /> Withdraw and edit again
                             </button>
@@ -145,10 +145,10 @@ const MyProfile = () => {
                 const anyRejected = lastReviewed.rejected_count > 0;
                 const allApproved = lastReviewed.rejected_count === 0;
                 const tone = allApproved
-                    ? { border: 'border-emerald-200', bg: 'bg-emerald-50', head: 'text-emerald-900', body: 'text-emerald-800', icon: CheckCircle2, iconCls: 'text-emerald-600' }
+                    ? { border: 'border-success-200', bg: 'bg-success-50', head: 'text-success-900', body: 'text-success-800', icon: CheckCircle2, iconCls: 'text-success-600' }
                     : anyRejected && lastReviewed.approved_count === 0
-                        ? { border: 'border-red-200', bg: 'bg-red-50', head: 'text-red-900', body: 'text-red-800', icon: XCircle, iconCls: 'text-red-600' }
-                        : { border: 'border-sky-200', bg: 'bg-sky-50', head: 'text-sky-900', body: 'text-sky-800', icon: MinusCircle, iconCls: 'text-sky-600' };
+                        ? { border: 'border-danger-200', bg: 'bg-danger-50', head: 'text-danger-900', body: 'text-danger-800', icon: XCircle, iconCls: 'text-danger-600' }
+                        : { border: 'border-info-200', bg: 'bg-info-50', head: 'text-info-900', body: 'text-info-800', icon: MinusCircle, iconCls: 'text-info-600' };
                 const Icon = tone.icon;
 
                 return (
@@ -167,7 +167,7 @@ const MyProfile = () => {
                                 <p className={`mt-0.5 text-xs ${tone.body}`}>
                                     Reviewed by <strong>{lastReviewed.reviewed_by_name ?? 'your agency'}</strong>
                                     {lastReviewed.reviewed_by_role && (
-                                        <span className="ml-1 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-medium">
+                                        <span className="ml-1 rounded bg-surface/70 px-1.5 py-0.5 text-[10px] font-medium">
                                             {lastReviewed.reviewed_by_role.replace('_', ' ')}
                                         </span>
                                     )}
@@ -180,8 +180,8 @@ const MyProfile = () => {
                                     {lastReviewed.fields.map((f) => (
                                         <li key={f.field_name} className={`text-xs ${tone.body}`}>
                                             {f.status === 'APPROVED'
-                                                ? <Check className="mr-1 inline h-3 w-3 text-emerald-600" />
-                                                : <X className="mr-1 inline h-3 w-3 text-red-600" />}
+                                                ? <Check className="mr-1 inline h-3 w-3 text-success-600" />
+                                                : <X className="mr-1 inline h-3 w-3 text-danger-600" />}
                                             <span className="font-medium">{fieldLabel(f.field_name)}</span>
                                             {' → '}{f.new_display ?? '(cleared)'}
                                             {f.review_note && <> — <em>{f.review_note}</em></>}
@@ -203,7 +203,7 @@ const MyProfile = () => {
             {/* ── editable form ─────────────────────────────────── */}
             <form onSubmit={submit} className={`mt-6 ${card} ${cardPadRoomy}`}>
                 {formError && (
-                    <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                    <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                     </div>
                 )}
@@ -228,7 +228,7 @@ const MyProfile = () => {
                         type="submit"
                         disabled={saving || !dirty}
                         title={!dirty ? 'Change something first' : undefined}
-                        className="mt-6 flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={`mt-6 ${btn.primary}`}
                     >
                         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                         Submit for approval
@@ -255,8 +255,8 @@ const MyProfile = () => {
                             <dt className="text-slate-500">Consent on file</dt>
                             <dd className="text-slate-800">
                                 {profile.consent_on_file
-                                    ? <CheckCircle2 className="inline h-4 w-4 text-emerald-600" />
-                                    : <span className="text-amber-600">Not yet</span>}
+                                    ? <CheckCircle2 className="inline h-4 w-4 text-success-600" />
+                                    : <span className="text-warning-600">Not yet</span>}
                             </dd>
                         </div>
                     </dl>

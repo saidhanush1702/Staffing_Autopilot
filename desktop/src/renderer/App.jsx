@@ -8,16 +8,22 @@ import Applied from './screens/Applied.jsx';
 import Activity from './screens/Activity.jsx';
 import StatusPill from './screens/StatusPill.jsx';
 import Attention from './screens/Attention.jsx';
+import ThemeButton from './screens/ThemeButton.jsx';
+import {
+    Mark, IconWork, IconQuestion, IconAnswers, IconBoards, IconApplied, IconActivity,
+} from './icons.jsx';
 
 /**
  * ── THE SHELL ─────────────────────────────────────────────────────────
  *
- * Four tabs, one job each:
+ * Six tabs, one job each:
  *
- *   Work      what is happening now, and anything waiting on you
- *   Boards    each job board's own state and story
- *   Applied   what has actually gone out
- *   Activity  the raw log, for when something looks wrong
+ *   Work       what is happening now, and anything waiting on you
+ *   Questions  applications held up because nobody has answered something
+ *   Answers    the approved answer bank, for reference
+ *   Boards     each job board's own state and story
+ *   Applied    what has actually gone out
+ *   Activity   the raw log, for when something looks wrong
  *
  * ── WHY TABS RATHER THAN ONE PAGE ─────────────────────────────────────
  *
@@ -29,16 +35,23 @@ import Attention from './screens/Attention.jsx';
  * The split follows how often each is needed. Work is where the app opens and
  * where most people never leave; Activity exists for the day something breaks.
  *
+ * ── WHY THE TABS CARRY ICONS ──────────────────────────────────────────
+ *
+ * Six text labels in a row are six words to read every time. A glyph beside
+ * each gives the row a shape that is recognised rather than read, which is
+ * what makes returning to the same tab all day cheap. The labels stay: an
+ * icon-only tab bar is a quiz.
+ *
  * All state still arrives from the main process. This component fetches
  * nothing, because the renderer has no network access at all.
  */
 const TABS = [
-    { id: 'work', label: 'Work' },
-    { id: 'questions', label: 'Questions' },
-    { id: 'answers', label: 'Answers' },
-    { id: 'boards', label: 'Boards' },
-    { id: 'applied', label: 'Applied' },
-    { id: 'activity', label: 'Activity' },
+    { id: 'work', label: 'Work', icon: IconWork },
+    { id: 'questions', label: 'Questions', icon: IconQuestion },
+    { id: 'answers', label: 'Answers', icon: IconAnswers },
+    { id: 'boards', label: 'Boards', icon: IconBoards },
+    { id: 'applied', label: 'Applied', icon: IconApplied },
+    { id: 'activity', label: 'Activity', icon: IconActivity },
 ];
 
 const App = () => {
@@ -70,6 +83,7 @@ const App = () => {
         return (
             <div className="centred">
                 <div className="centred-inner empty">
+                    <span className="mark" style={{ margin: '0 auto 14px' }}><Mark /></span>
                     <p className="value">Starting…</p>
                 </div>
             </div>
@@ -82,14 +96,19 @@ const App = () => {
         return (
             <div className="centred">
                 <div className="centred-inner">
-                    <h1>Access removed</h1>
-                    <p className="sub">
-                        {snap.detail || 'An administrator revoked this device.'}
-                    </p>
-                    <div className="note stop" style={{ marginTop: 16 }}>
-                        Everything this app held on your machine has been deleted, including
-                        saved sign-ins. Ask your administrator for a new activation code if
-                        you should still have access.
+                    <div className="card stack">
+                        <div className="row">
+                            <h1>Access removed</h1>
+                            <span className="pill stop">Revoked</span>
+                        </div>
+                        <p className="sub" style={{ marginTop: 0 }}>
+                            {snap.detail || 'An administrator revoked this device.'}
+                        </p>
+                        <div className="note stop">
+                            Everything this app held on your machine has been deleted, including
+                            saved sign-ins. Ask your administrator for a new activation code if
+                            you should still have access.
+                        </div>
                     </div>
                 </div>
             </div>
@@ -115,43 +134,49 @@ const App = () => {
     return (
         <div className="app">
             <header className="topbar">
+                <span className="mark"><Mark /></span>
                 <div>
                     <div className="brand">SmartApply</div>
                     <div className="brand-sub">{snap.consultant?.name ?? 'Consultant'}</div>
                 </div>
                 <div className="topbar-spacer" />
                 <StatusPill snap={snap} />
+                <ThemeButton />
             </header>
 
             <nav className="tabs" role="tablist">
-                {TABS.map((t) => (
-                    <button
-                        key={t.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={tab === t.id}
-                        className="tab"
-                        onClick={() => setTab(t.id)}
-                    >
-                        {t.label}
-                        {counts[t.id] > 0 && (
-                            <span
-                                className={`tab-count${['work', 'questions'].includes(t.id) ? ' alert' : ''}`}
-                            >
-                                {counts[t.id]}
-                            </span>
-                        )}
-                    </button>
-                ))}
+                {TABS.map((t) => {
+                    const Icon = t.icon;
+                    return (
+                        <button
+                            key={t.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={tab === t.id}
+                            className="tab"
+                            onClick={() => setTab(t.id)}
+                        >
+                            <Icon />
+                            {t.label}
+                            {counts[t.id] > 0 && (
+                                <span
+                                    className={`tab-count${['work', 'questions'].includes(t.id) ? ' alert' : ''}`}
+                                >
+                                    {counts[t.id]}
+                                </span>
+                            )}
+                        </button>
+                    );
+                })}
             </nav>
 
-            {/* Boards is a live browser page; it gets the whole window. The
-                reading tabs stay in a capped column. */}
             {/* Above the tabs, deliberately: the automation has STOPPED and is
                 waiting on a person, and that must not be something you have to
                 be on the right tab to discover. */}
             <Attention attention={snap.attention} onChanged={refresh} />
 
+            {/* Boards is a live browser page; it gets the whole window. The
+                reading tabs stay in a capped column. */}
             <main className={`screen${tab === 'boards' ? ' flush' : ''}`}>
                 <div className={`screen-inner${tab === 'boards' ? ' wide' : ''}`}>
                     {tab === 'work' && (

@@ -4,10 +4,7 @@ import {
     SkipForward, RotateCcw, Ban,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
-import {
-    card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel,
-    TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 
 /**
  * One queue item, everything known about it, and what may be done to it.
@@ -67,12 +64,12 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
     const allowed = data?.allowedTransitions ?? [];
 
     return (
-        <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex justify-end bg-overlay/50" onClick={onClose}>
             <aside
-                className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-xl"
+                className="h-full w-full max-w-xl overflow-y-auto bg-surface shadow-xl"
                 onClick={(e) => e.stopPropagation()}
             >
-                <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-slate-100 bg-white p-5">
+                <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-line-soft bg-surface p-5">
                     <div>
                         <h2 className={sectionTitle}>
                             {item ? item.title : 'Queue item'}
@@ -86,7 +83,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
 
                 <div className="p-5">
                     {error && (
-                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{error}</span>
                         </div>
@@ -151,7 +148,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                                 </dl>
 
                                 {item.match_reason && (
-                                    <p className="mt-3 border-t border-slate-100 pt-3 text-sm text-slate-600">
+                                    <p className="mt-3 border-t border-line-soft pt-3 text-sm text-slate-600">
                                         {item.match_reason}
                                     </p>
                                 )}
@@ -169,7 +166,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                             </div>
 
                             {item.parked_question && (
-                                <div className={`mt-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.warning}`}>
+                                <div className={`mt-4 ${alertShell} ${TONE_ALERT.warning}`}>
                                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                                     <span>
                                         Parked on an unanswered question:
@@ -244,7 +241,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                             </h3>
                             <ol className="mt-3 space-y-3">
                                 {data.history.map((h, i) => (
-                                    <li key={i} className="border-l-2 border-slate-200 pl-3">
+                                    <li key={i} className="border-l-2 border-line pl-3">
                                         <p className="text-sm text-slate-700">
                                             {h.from_label ? `${h.from_label} → ` : ''}
                                             <strong>{h.to_label}</strong>

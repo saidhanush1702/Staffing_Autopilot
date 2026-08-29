@@ -11,11 +11,7 @@ import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import SchedulePanel from '../../components/discovery/SchedulePanel.jsx';
 import SearchPlanPanel from '../../components/discovery/SearchPlanPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import {
-    card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT,
-    pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow,
-    tableCell,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShellSm, alertShell } from '../../design/tokens.js';
 
 /** The stage counters, in pipeline order, so a run reads left to right. */
 const STAGES = [
@@ -265,13 +261,13 @@ const JobDiscovery = () => {
                 </p>
 
                 {provider.lastError && (
-                    <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>
+                    <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>
                         {provider.lastError}
                     </p>
                 )}
 
                 {!provider.configured && (
-                    <div className={`mt-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.info}`}>
+                    <div className={`mt-3 ${alertShell} ${TONE_ALERT.info}`}>
                         <KeyRound className="mt-0.5 h-4 w-4 shrink-0" />
                         <span>
                             No API key is set. Add <code className="font-mono text-xs">SERPAPI_KEY</code>
@@ -292,7 +288,7 @@ const JobDiscovery = () => {
             </p>
 
             {acceptedCount === 0 && (
-                <div className={`mt-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.warning}`}>
+                <div className={`mt-3 ${alertShell} ${TONE_ALERT.warning}`}>
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
                         Every board is switched off, so a run will discard everything it
@@ -411,7 +407,7 @@ const JobDiscovery = () => {
                         </div>
 
                         {r.error && (
-                            <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>{r.error}</p>
+                            <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>{r.error}</p>
                         )}
                         {r.notes && (
                             <details className="mt-3">
@@ -448,7 +444,7 @@ const JobDiscovery = () => {
                         matches everything found against each active consultant&apos;s search
                         criteria.
                     </p>
-                    <p className={`mt-2 flex items-start gap-2 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                    <p className={`mt-2 ${alertShellSm} ${TONE_ALERT.warning}`}>
                         <Coins className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                         <span>
                             Costs up to <strong>{estimatedCredits} API credits</strong>. Two runs

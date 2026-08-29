@@ -4,9 +4,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
-import {
-    card, cardPad, badge, btnSm, sectionTitle, TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, btnSm, sectionTitle, TONE, TONE_ALERT, cardInteractive, alertShellSm } from '../../design/tokens.js';
 
 /**
  * One consultant's permanent application record.
@@ -75,7 +73,7 @@ const ConsultantApplications = ({ consultantId }) => {
                         tabIndex={0}
                         onClick={() => setOpen(a.id)}
                         onKeyDown={(e) => { if (e.key === 'Enter') setOpen(a.id); }}
-                        className={`${card} ${cardPad} cursor-pointer transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-500`}
+                        className={`${cardInteractive} ${cardPad}`}
                     >
                         <div className="flex flex-wrap items-start justify-between gap-2">
                             <div className="min-w-0">
@@ -112,12 +110,12 @@ const ConsultantApplications = ({ consultantId }) => {
 
             {/* ── the exact form, as it was filled ────────────────── */}
             {open && (
-                <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30" onClick={() => setOpen(null)}>
+                <div className="fixed inset-0 z-50 flex justify-end bg-overlay/50" onClick={() => setOpen(null)}>
                     <aside
-                        className="h-full w-full max-w-xl overflow-y-auto bg-white shadow-xl"
+                        className="h-full w-full max-w-xl overflow-y-auto bg-surface shadow-xl"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-slate-100 bg-white p-5">
+                        <div className="sticky top-0 flex items-start justify-between gap-3 border-b border-line-soft bg-surface p-5">
                             <div>
                                 <h3 className={sectionTitle}>
                                     {detail?.application.job_title ?? 'Application'}
@@ -148,7 +146,7 @@ const ConsultantApplications = ({ consultantId }) => {
                                     </div>
 
                                     {!detail.application.is_witnessed && (
-                                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.neutral}`}>
+                                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.neutral}`}>
                                             This was reported by a person rather than observed by the
                                             system, so the questions and answers below are as they
                                             were given to us.

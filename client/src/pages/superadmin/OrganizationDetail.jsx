@@ -9,7 +9,7 @@ import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import { RoleBadge } from '../../components/ui/Badge.jsx';
-import { badge, card, cardPad, TONE } from '../../design/tokens.js';
+import { badge, card, cardPad, TONE, pageTitle, pageSubtitle } from '../../design/tokens.js';
 
 const StatCard = ({ icon: Icon, label, value, sub }) => (
     <div className={`${card} ${cardPad}`}>
@@ -45,7 +45,7 @@ const OrganizationDetail = () => {
             .catch((err) => setError(errorMessage(err)));
     }, [id]);
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!data) return <PageLoader />;
 
     const { organization: org, counts, users } = data;
@@ -61,8 +61,8 @@ const OrganizationDetail = () => {
 
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className="text-xl font-semibold text-slate-900">{org.name}</h1>
-                    <p className="mt-1 text-sm text-slate-500">/{org.slug}</p>
+                    <h1 className={pageTitle}>{org.name}</h1>
+                    <p className={pageSubtitle}>/{org.slug}</p>
                 </div>
                 <span className={`${badge} ${org.is_active ? TONE.success : TONE.danger}`}>
                     {org.is_active ? 'Active' : 'Disabled'}
@@ -121,7 +121,7 @@ const OrganizationDetail = () => {
                 Users ({users.length})
             </h2>
             <TableShell className="mt-3" minWidth={820}>
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Name</th>
                             <th className="px-4 py-3">Email</th>
@@ -130,7 +130,7 @@ const OrganizationDetail = () => {
                             <th className="px-4 py-3">Last sign-in</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {users.length === 0 && (
                             <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">No users yet.</td></tr>
                         )}

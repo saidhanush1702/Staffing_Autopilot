@@ -10,7 +10,7 @@ import Pagination from '../../components/Pagination.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { badge, TONE } from '../../design/tokens.js';
+import { badge, TONE, pageTitle, pageSubtitle, btn } from '../../design/tokens.js';
 
 /**
  * Profile change approvals — ORG_ADMIN and RECRUITER.
@@ -21,10 +21,10 @@ import { badge, TONE } from '../../design/tokens.js';
  */
 
 const STATUS_STYLE = {
-    PENDING: { icon: Clock, cls: 'bg-amber-50 text-amber-700', text: 'Pending' },
-    APPROVED: { icon: CheckCircle2, cls: 'bg-emerald-50 text-emerald-700', text: 'Approved' },
-    PARTIALLY_APPROVED: { icon: MinusCircle, cls: 'bg-sky-50 text-sky-700', text: 'Partly approved' },
-    REJECTED: { icon: XCircle, cls: 'bg-red-50 text-red-700', text: 'Rejected' },
+    PENDING: { icon: Clock, cls: 'bg-warning-50 text-warning-700', text: 'Pending' },
+    APPROVED: { icon: CheckCircle2, cls: 'bg-success-50 text-success-700', text: 'Approved' },
+    PARTIALLY_APPROVED: { icon: MinusCircle, cls: 'bg-info-50 text-info-700', text: 'Partly approved' },
+    REJECTED: { icon: XCircle, cls: 'bg-danger-50 text-danger-700', text: 'Rejected' },
     WITHDRAWN: { icon: MinusCircle, cls: 'bg-slate-100 text-slate-600', text: 'Withdrawn' },
     // Nobody judged these values — the consultant was terminated, so the
     // request stopped being decidable. Distinct from Rejected on purpose.
@@ -125,7 +125,7 @@ const ProfileApprovals = () => {
         }
     };
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!requests || !schema) return <PageLoader />;
 
     const TABS = [
@@ -138,15 +138,15 @@ const ProfileApprovals = () => {
 
     return (
         <div>
-            <h1 className="text-xl font-semibold text-slate-900">Profile approvals</h1>
-            <p className="mt-1 text-sm text-slate-500">
+            <h1 className={pageTitle}>Profile approvals</h1>
+            <p className={pageSubtitle}>
                 {user?.role === 'RECRUITER'
                     ? 'Change requests from the consultants assigned to you.'
                     : 'Change requests from every consultant in this organization.'}
                 {' '}Nothing takes effect until approved.
             </p>
 
-            <div className="mt-6 border-b border-slate-200">
+            <div className="mt-6 border-b border-line">
                 <nav className="-mb-px flex gap-4 overflow-x-auto sm:gap-6">
                     {TABS.map((t) => (
                         <button
@@ -167,7 +167,7 @@ const ProfileApprovals = () => {
             </div>
 
             {requests.length === 0 ? (
-                <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white py-16">
+                <div className="mt-6 flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-surface py-16">
                     <Inbox className="h-8 w-8 text-slate-300" />
                     <p className="text-sm text-slate-500">Nothing here.</p>
                     {tab === 'PENDING' && (
@@ -182,7 +182,7 @@ const ProfileApprovals = () => {
                     minWidth={880}
                     footer={<Pagination page={page} onChange={(p) => load(tab, p)} />}
                 >
-                        <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                        <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                             <tr>
                                 <th className="w-10 px-3 py-3" />
                                 <th className="px-4 py-3">Consultant</th>
@@ -193,7 +193,7 @@ const ProfileApprovals = () => {
                                 <th className="px-4 py-3">Submitted</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="divide-y divide-line-soft">
                             {requests.map((req) => {
                                 const isOpen = Boolean(expanded[req.id]);
                                 const chosen = decisions[req.id] ?? {};
@@ -220,7 +220,7 @@ const ProfileApprovals = () => {
                                                 {req.consultant_employment_status === 'SUSPENDED' && (
                                                     <span
                                                         title="This consultant's access is suspended. Their changes can still be reviewed."
-                                                        className="mt-1 inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700"
+                                                        className="mt-1 inline-flex items-center gap-1 rounded bg-warning-50 px-2 py-0.5 text-xs font-medium text-warning-700"
                                                     >
                                                         <PauseCircle className="h-3 w-3" /> Suspended
                                                     </span>
@@ -246,11 +246,11 @@ const ProfileApprovals = () => {
                                                 {readOnly && (
                                                     <span className="ml-2 text-xs text-slate-500">
                                                         {req.approved_count > 0 && (
-                                                            <span className="text-emerald-600">{req.approved_count} ✓</span>
+                                                            <span className="text-success-600">{req.approved_count} ✓</span>
                                                         )}
                                                         {req.approved_count > 0 && req.rejected_count > 0 && ' · '}
                                                         {req.rejected_count > 0 && (
-                                                            <span className="text-red-600">{req.rejected_count} ✗</span>
+                                                            <span className="text-danger-600">{req.rejected_count} ✗</span>
                                                         )}
                                                     </span>
                                                 )}
@@ -273,10 +273,10 @@ const ProfileApprovals = () => {
 
                                         {/* ── expanded detail row ──────────────── */}
                                         {isOpen && (
-                                            <tr className="bg-slate-50/60">
+                                            <tr className="bg-surface-raised">
                                                 <td colSpan={7} className="px-0 py-0">
-                                                    <div className="border-y border-slate-200 bg-white">
-                                                        <div className="divide-y divide-slate-100">
+                                                    <div className="border-y border-line bg-surface">
+                                                        <div className="divide-y divide-line-soft">
                                                             {req.fields.map((f) => {
                                                                 const d = chosen[f.field_name]?.decision
                                                                     ?? (readOnly ? f.status : null);
@@ -297,7 +297,7 @@ const ProfileApprovals = () => {
                                                                             </span>
 
                                                                             {readOnly ? (
-                                                                                <span className={`rounded px-2 py-0.5 text-xs font-medium ${f.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                                                                                <span className={`rounded px-2 py-0.5 text-xs font-medium ${f.status === 'APPROVED' ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'}`}>
                                                                                     {f.status}
                                                                                 </span>
                                                                             ) : (
@@ -306,7 +306,7 @@ const ProfileApprovals = () => {
                                                                                         type="button"
                                                                                         onClick={() => decide(req.id, f.field_name, 'APPROVED')}
                                                                                         title="Approve this field"
-                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'APPROVED' ? 'border-emerald-600 bg-emerald-600 text-white' : 'border-slate-300 text-slate-500 hover:bg-emerald-50'}`}
+                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'APPROVED' ? 'border-success-500 bg-success-100 text-success-700' : 'border-slate-300 text-slate-500 hover:bg-success-50'}`}
                                                                                     >
                                                                                         <Check className="h-3.5 w-3.5" />
                                                                                     </button>
@@ -314,7 +314,7 @@ const ProfileApprovals = () => {
                                                                                         type="button"
                                                                                         onClick={() => decide(req.id, f.field_name, 'REJECTED')}
                                                                                         title="Reject this field"
-                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'REJECTED' ? 'border-red-600 bg-red-600 text-white' : 'border-slate-300 text-slate-500 hover:bg-red-50'}`}
+                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'REJECTED' ? 'border-danger-500 bg-danger-100 text-danger-700' : 'border-slate-300 text-slate-500 hover:bg-danger-50'}`}
                                                                                     >
                                                                                         <X className="h-3.5 w-3.5" />
                                                                                     </button>
@@ -327,7 +327,7 @@ const ProfileApprovals = () => {
                                                                                 value={chosen[f.field_name]?.note ?? ''}
                                                                                 onChange={(e) => setNote(req.id, f.field_name, e.target.value)}
                                                                                 placeholder="Why? The consultant will see this."
-                                                                                className="mt-2 w-full max-w-md rounded-lg border border-red-200 px-3 py-1.5 text-xs outline-none focus:border-red-400"
+                                                                                className="mt-2 w-full max-w-md rounded-lg border border-danger-200 px-3 py-1.5 text-xs outline-none focus:border-danger-400"
                                                                             />
                                                                         )}
                                                                         {readOnly && f.review_note && (
@@ -341,19 +341,19 @@ const ProfileApprovals = () => {
                                                         </div>
 
                                                         {!readOnly && (
-                                                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-6 py-3">
+                                                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-slate-50 px-6 py-3">
                                                                 <div className="flex gap-2">
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => decideAll(req, 'APPROVED')}
-                                                                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-emerald-50"
+                                                                        className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs text-slate-600 hover:bg-success-50"
                                                                     >
                                                                         Approve all
                                                                     </button>
                                                                     <button
                                                                         type="button"
                                                                         onClick={() => decideAll(req, 'REJECTED')}
-                                                                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-red-50"
+                                                                        className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs text-slate-600 hover:bg-danger-50"
                                                                     >
                                                                         Reject all
                                                                     </button>
@@ -362,7 +362,7 @@ const ProfileApprovals = () => {
                                                                     type="button"
                                                                     onClick={() => submit(req)}
                                                                     disabled={submitting === req.id}
-                                                                    className="flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-60"
+                                                                    className={btn.primary}
                                                                 >
                                                                     {submitting === req.id && <Loader2 className="h-4 w-4 animate-spin" />}
                                                                     Submit review
@@ -371,7 +371,7 @@ const ProfileApprovals = () => {
                                                         )}
 
                                                         {readOnly && req.reviewed_at && (
-                                                            <div className="border-t border-slate-200 bg-slate-50 px-6 py-3 text-xs text-slate-600">
+                                                            <div className="border-t border-line bg-slate-50 px-6 py-3 text-xs text-slate-600">
                                                                 Reviewed by <strong>{req.reviewed_by_name}</strong>
                                                                 {' '}({roleLabel(req.reviewed_by_role)}) on{' '}
                                                                 {new Date(req.reviewed_at).toLocaleString()}
@@ -380,7 +380,7 @@ const ProfileApprovals = () => {
                                                         )}
 
                                                         {rowError[req.id] && (
-                                                            <div className="flex items-start gap-2 border-t border-red-200 bg-red-50 px-6 py-2 text-xs text-red-700">
+                                                            <div className="flex items-start gap-2 border-t border-danger-200 bg-danger-50 px-6 py-2 text-xs text-danger-700">
                                                                 <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                                                                 {rowError[req.id]}
                                                             </div>

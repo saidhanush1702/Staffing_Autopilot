@@ -14,10 +14,7 @@ import ConsultantAnswers from '../../components/answers/ConsultantAnswers.jsx';
 import ConsultantQueue from '../../components/queue/ConsultantQueue.jsx';
 import ConsultantApplications from '../../components/queue/ConsultantApplications.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import {
-    card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle,
-    tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShell } from '../../design/tokens.js';
 
 /** Sub-tabs of one consultant's workspace. Phase 3 adds Search Criteria. */
 const TABS = [
@@ -70,7 +67,7 @@ const ConsultantDetail = () => {
                 <Link to="/management/consultants" className="mb-4 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800">
                     <ArrowLeft className="h-4 w-4" /> Back to consultants
                 </Link>
-                <p className="text-sm text-red-600">{error}</p>
+                <p className="text-sm text-danger-600">{error}</p>
             </div>
         );
     }
@@ -157,7 +154,7 @@ const ConsultantDetail = () => {
             ) : (
             <>
             {!isComplete && (
-                <div className={`mt-4 flex items-start gap-2 rounded-lg border border-warning-200 p-3 text-sm ${TONE_ALERT.warning}`}>
+                <div className={`mt-4 ${alertShell} ${TONE_ALERT.warning}`}>
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
                         Still needed: {missingFields.map(fieldLabel).join(', ')}.
@@ -171,7 +168,7 @@ const ConsultantDetail = () => {
                 <div className="space-y-4">
                     <div className={`${card} ${cardPad}`}>
                         <p className="text-sm font-medium text-slate-700">Contact</p>
-                        <div className="mt-2 divide-y divide-slate-100">
+                        <div className="mt-2 divide-y divide-line-soft">
                             <Row icon={Mail} label="Email" value={profile.email} />
                             <Row icon={Phone} label="Phone" value={profile.phone} muted={!profile.phone} />
                             <Row icon={MapPin} label="Location" value={location || null} muted={!location} />
@@ -187,7 +184,7 @@ const ConsultantDetail = () => {
 
                     <div className={`${card} ${cardPad}`}>
                         <p className="text-sm font-medium text-slate-700">Eligibility</p>
-                        <div className="mt-2 divide-y divide-slate-100">
+                        <div className="mt-2 divide-y divide-line-soft">
                             <Row
                                 icon={ShieldCheck} label="Work authorization"
                                 value={profile.work_auth_name} muted={!profile.work_auth_name}

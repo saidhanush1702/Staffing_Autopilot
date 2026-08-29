@@ -1,4 +1,5 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { btnSm, cardFooter } from '../design/tokens.js';
 
 /**
  * Server-side pagination controls.
@@ -11,30 +12,37 @@ const Pagination = ({ page, onChange }) => {
     const from = offset + 1;
     const to = Math.min(offset + limit, total);
 
-    const btn = 'flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40';
-
     return (
-        <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-3">
+        <div className={cardFooter}>
             <p className="text-xs text-slate-500">
-                Showing <strong>{from}–{to}</strong> of <strong>{total}</strong>
+                Showing <strong className="font-semibold text-slate-800">{from}–{to}</strong>
+                {' of '}
+                <strong className="font-semibold text-slate-800">{total}</strong>
             </p>
+
             <div className="flex items-center gap-2">
                 <button
-                    type="button" className={btn}
+                    type="button"
+                    className={btnSm.secondary}
                     disabled={currentPage <= 1}
                     onClick={() => onChange(currentPage - 1)}
                 >
-                    <ChevronLeft className="h-3.5 w-3.5" /> Previous
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Previous</span>
                 </button>
-                <span className="px-2 text-xs text-slate-500">
-                    Page {currentPage} of {pageCount}
+
+                <span className="px-1 text-xs tabular-nums text-slate-500">
+                    {currentPage} <span className="text-slate-400">/</span> {pageCount}
                 </span>
+
                 <button
-                    type="button" className={btn}
+                    type="button"
+                    className={btnSm.secondary}
                     disabled={currentPage >= pageCount}
                     onClick={() => onChange(currentPage + 1)}
                 >
-                    Next <ChevronRight className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Next</span>
+                    <ChevronRight className="h-3.5 w-3.5" />
                 </button>
             </div>
         </div>

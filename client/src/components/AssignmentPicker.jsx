@@ -1,9 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Search, AlertCircle, UserMinus } from 'lucide-react';
 import Modal, { ModalActions } from './ui/Modal.jsx';
-import {
-    inputBase, input, fieldLabel, badge, TONE, TONE_ALERT, MODAL_SECTION,
-} from '../design/tokens.js';
+import { inputBase, input, fieldLabel, badge, TONE, TONE_ALERT, MODAL_SECTION, alertShell } from '../design/tokens.js';
 
 /** Was this id already selected when the dialog opened? */
 const initialHas = (initial, id, isMulti) => (
@@ -99,7 +97,7 @@ const AssignmentPicker = ({
             footer={(
                 <>
                     {error && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{error}</span>
                         </div>
@@ -145,7 +143,7 @@ const AssignmentPicker = ({
             )}
         >
             {/* search */}
-            <div className={`border-b border-slate-200 ${MODAL_SECTION}`}>
+            <div className={`border-b border-line ${MODAL_SECTION}`}>
                 <div className="relative">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
@@ -172,7 +170,7 @@ const AssignmentPicker = ({
                     {/* Single mode needs an explicit way to say "nobody" —
                         otherwise unassigning would be impossible from here. */}
                     {!isMulti && options.length > 0 && !search.trim() && (
-                        <label className="flex cursor-pointer items-center gap-3 border-b border-slate-100 px-5 py-3 hover:bg-slate-50">
+                        <label className="flex cursor-pointer items-center gap-3 border-b border-line-soft px-5 py-3 hover:bg-slate-50">
                             <input
                                 type="radio"
                                 checked={selected === null}
@@ -189,7 +187,7 @@ const AssignmentPicker = ({
                     {visible.map((o) => (
                         <label
                             key={o.id}
-                            className="flex cursor-pointer items-center gap-3 border-b border-slate-100 px-5 py-3 hover:bg-slate-50"
+                            className="flex cursor-pointer items-center gap-3 border-b border-line-soft px-5 py-3 hover:bg-slate-50"
                         >
                             <input
                                 type={isMulti ? 'checkbox' : 'radio'}

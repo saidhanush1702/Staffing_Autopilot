@@ -5,10 +5,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
 import Modal, { ModalActions } from '../ui/Modal.jsx';
-import {
-    card, cardPad, inputBase, fieldLabel, btn, badge, sectionTitle,
-    TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btn, badge, sectionTitle, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
 
 const STATUS_TONE = {
@@ -175,7 +172,7 @@ const ConsultantAnswers = ({ consultantId }) => {
                     )}
                 >
                     {askError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{askError}</span>
                         </div>

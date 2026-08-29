@@ -3,11 +3,7 @@ import {
     Clock, Timer, AlertCircle, CalendarClock, Coins, Save, TriangleAlert,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
-import {
-    card, cardPad, badge, sectionTitle, TONE, TONE_ALERT, TONE_TEXT,
-    readout, readoutLarge, readoutLabel, btnSm, input, fieldLabel,
-    toggleTrack, toggleTrackOn, toggleTrackOff, toggleKnob, toggleKnobOn, toggleKnobOff,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, readout, readoutLarge, readoutLabel, btnSm, input, fieldLabel, toggleTrack, toggleTrackOn, toggleTrackOff, toggleKnob, toggleKnobOn, toggleKnobOff, alertShellSm, alertShell } from '../../design/tokens.js';
 
 const two = (n) => String(n).padStart(2, '0');
 
@@ -188,17 +184,17 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
             </div>
 
             {error && (
-                <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>{error}</p>
+                <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>{error}</p>
             )}
 
             {/* The switch is on but the process is not running the cron at all —
                 without this the screen would look armed and never fire. */}
             {on && !data.schedulerAvailable && (
-                <div className={`mt-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.warning}`}>
+                <div className={`mt-3 ${alertShell} ${TONE_ALERT.warning}`}>
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>
                         Saved, but the scheduler is not running on the server, so nothing will
-                        fire. Set <code className="rounded bg-white/60 px-1">DISCOVERY_ENABLED=true</code>
+                        fire. Set <code className="rounded bg-surface/60 px-1">DISCOVERY_ENABLED=true</code>
                         {' '}in the backend environment and restart it.
                     </span>
                 </div>
@@ -265,7 +261,7 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
             </div>
 
             {/* ── settings ───────────────────────────────────────── */}
-            <div className="mt-5 border-t border-slate-100 pt-4">
+            <div className="mt-5 border-t border-line-soft pt-4">
                 <div className="grid gap-4 sm:grid-cols-3">
                     <div>
                         <label className={fieldLabel} htmlFor="cycleHours">

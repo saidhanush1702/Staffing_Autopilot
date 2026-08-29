@@ -24,7 +24,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
 
     if (!artifactId) {
         return (
-            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white py-10">
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-surface py-10">
                 <FileText className="h-8 w-8 text-slate-300" />
                 <p className="text-sm text-slate-500">No resume uploaded yet</p>
             </div>
@@ -38,7 +38,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
     return (
         <>
             <div className={`overflow-hidden ${card}`}>
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-slate-50 px-4 py-2.5">
                     <div className="flex min-w-0 items-center gap-2">
                         <FileText className="h-4 w-4 shrink-0 text-slate-400" />
                         <div className="min-w-0">
@@ -90,7 +90,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
                     <iframe
                         src={src}
                         title={`Resume full screen — ${fileName}`}
-                        className="flex-1 rounded-lg border-0 bg-white"
+                        className="flex-1 rounded-lg border-0 bg-surface"
                     />
                 </Modal>
             )}

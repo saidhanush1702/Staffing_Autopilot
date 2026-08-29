@@ -5,10 +5,7 @@ import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import AssignmentPicker from '../../components/AssignmentPicker.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
-import {
-    card, cardPad, input, fieldLabel, btn, iconBtn, badge, countPill, TONE, TONE_ALERT,
-    pageTitle, pageSubtitle, sectionTitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, input, fieldLabel, btn, iconBtn, badge, countPill, TONE, TONE_ALERT, pageTitle, pageSubtitle, sectionTitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShell } from '../../design/tokens.js';
 
 const VIEWS = [
     { key: 'CONSULTANTS', label: 'By consultant', icon: UsersIcon },
@@ -90,7 +87,7 @@ const Assignments = () => {
         }
     };
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!assignments) return <PageLoader />;
 
     const current = assignments.filter((a) => !a.effective_to);
@@ -124,7 +121,7 @@ const Assignments = () => {
 
             <form onSubmit={handleAssign} className={`mt-5 ${card} ${cardPad}`}>
                 {formError && (
-                    <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                    <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                         <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                     </div>
                 )}
@@ -179,7 +176,7 @@ const Assignments = () => {
 
             {view === 'CONSULTANTS' ? (
                 <TableShell className="mt-3" minWidth={720}>
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Consultant</th>
                             <th className="px-4 py-3">Assigned recruiter</th>
@@ -187,7 +184,7 @@ const Assignments = () => {
                             <th className="px-4 py-3">Reason</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {consultantRows.length === 0 && (
                             <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">No consultants yet.</td></tr>
                         )}
@@ -227,14 +224,14 @@ const Assignments = () => {
                 </TableShell>
             ) : (
                 <TableShell className="mt-3" minWidth={720}>
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Recruiter</th>
                             <th className="px-4 py-3">Assigned consultants</th>
                             <th className="w-24 px-4 py-3">Count</th>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {recruiterRows.length === 0 && (
                             <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400">No recruiters yet.</td></tr>
                         )}
@@ -293,7 +290,7 @@ const Assignments = () => {
                 <>
                     <h2 className={`mt-8 ${sectionTitle}`}>History</h2>
                     <TableShell className="mt-3" minWidth={640}>
-                            <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                            <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                                 <tr>
                                     <th className="px-4 py-3">Consultant</th>
                                     <th className="px-4 py-3">Recruiter</th>
@@ -301,7 +298,7 @@ const Assignments = () => {
                                     <th className="px-4 py-3">To</th>
                                 </tr>
                             </thead>
-                            <tbody className="divide-y divide-slate-100">
+                            <tbody className="divide-y divide-line-soft">
                                 {history.map((a) => (
                                     <tr key={a.id} className="text-slate-500">
                                         <td className="px-4 py-3">{a.consultant_name}</td>

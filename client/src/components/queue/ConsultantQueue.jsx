@@ -6,9 +6,7 @@ import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
 import QueueItemDrawer from './QueueItemDrawer.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import {
-    card, cardPad, badge, sectionTitle, inputBase, TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, sectionTitle, inputBase, TONE, TONE_ALERT, cardInteractive, alertShellSm } from '../../design/tokens.js';
 
 /**
  * What the queue can be filtered to.
@@ -137,7 +135,7 @@ const ConsultantQueue = ({ consultantId }) => {
                             tabIndex={0}
                             onClick={() => setOpenItem(item.id)}
                             onKeyDown={(e) => { if (e.key === 'Enter') setOpenItem(item.id); }}
-                            className={`${card} ${cardPad} cursor-pointer transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-brand-500`}
+                            className={`${cardInteractive} ${cardPad}`}
                         >
                             <div className="flex flex-wrap items-start justify-between gap-2">
                                 <div className="min-w-0">
@@ -188,12 +186,12 @@ const ConsultantQueue = ({ consultantId }) => {
                             )}
 
                             {item.park_reason && (
-                                <p className={`mt-2 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                                <p className={`mt-2 ${alertShellSm} ${TONE_ALERT.warning}`}>
                                     Parked: {item.park_reason}
                                 </p>
                             )}
                             {item.skip_reason && (
-                                <p className={`mt-2 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>
+                                <p className={`mt-2 ${alertShellSm} ${TONE_ALERT.danger}`}>
                                     Skipped: {item.skip_reason}
                                 </p>
                             )}
@@ -222,7 +220,7 @@ const ConsultantQueue = ({ consultantId }) => {
                     <p className="mt-1 text-xs text-slate-500">
                         These become ready on the next discovery pass.
                     </p>
-                    <div className={`mt-2 ${card} divide-y divide-slate-100`}>
+                    <div className={`mt-2 ${card} divide-y divide-line-soft`}>
                         {held.map((h) => (
                             <div key={h.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
                                 <div className="min-w-0">

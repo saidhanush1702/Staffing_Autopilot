@@ -1,6 +1,7 @@
 import { Upload, FileText, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import api, { errorMessage } from '../api/axios.js';
+import { input, btnSm } from '../design/tokens.js';
 
 /**
  * Renders one profile field from the server's registry (GET /api/profile-schema).
@@ -13,7 +14,7 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
     const [uploadError, setUploadError] = useState('');
     const [uploadedName, setUploadedName] = useState('');
 
-    const base = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+    const base = input;
 
     const handleFile = async (e) => {
         const file = e.target.files?.[0];
@@ -38,7 +39,7 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
     const label = (
         <span className="text-sm font-medium text-slate-700">
             {field.label}
-            {field.required && <span className="ml-1 text-red-500">*</span>}
+            {field.required && <span className="ml-1 text-danger-500">*</span>}
         </span>
     );
 
@@ -53,11 +54,11 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
                             {uploadedName || currentFileName || 'No resume uploaded'}
                         </p>
                         {uploadedName && (
-                            <p className="text-xs text-amber-600">New file — submit to send for approval</p>
+                            <p className="text-xs text-warning-600">New file — submit to send for approval</p>
                         )}
-                        {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
+                        {uploadError && <p className="text-xs text-danger-600">{uploadError}</p>}
                     </div>
-                    <label className={`shrink-0 cursor-pointer rounded-lg border border-slate-300 px-3 py-1.5 text-xs ${disabled ? 'pointer-events-none opacity-50' : 'hover:bg-slate-50'}`}>
+                    <label className={`${btnSm.secondary} shrink-0 cursor-pointer ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
                         {uploading
                             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             : <span className="flex items-center gap-1.5"><Upload className="h-3.5 w-3.5" /> Choose file</span>}
@@ -134,10 +135,10 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
                 aria-invalid={invalid || undefined}
                 title={field.patternMessage}
                 onChange={(e) => onChange(name, e.target.value)}
-                className={`${base} ${invalid ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : ''}`}
+                className={`${base} ${invalid ? 'border-danger-400 focus:border-danger-500 focus:ring-danger-100' : ''}`}
             />
             {invalid && (
-                <span className="mt-1 block text-xs text-red-600">{field.patternMessage}</span>
+                <span className="mt-1 block text-xs text-danger-600">{field.patternMessage}</span>
             )}
         </label>
     );
