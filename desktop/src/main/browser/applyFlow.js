@@ -826,6 +826,46 @@ const runApplyFlow = async (page, board, fillOptions, {
         await waitForFields(page, recipe.dialog);
         let filled = await fillForm(page, { ...fillOptions, root: recipe.dialog });
 
+        // ── ONE ANSWER CAN CREATE THE NEXT QUESTION ───────────────────
+        //
+        // `fillForm` reads the whole step once and then acts, which is right
+        // for a form that holds still. Workday's does not: choosing a Country
+        // rebuilds the step with a State dropdown that did not exist a moment
+        // earlier, and "How did you hear about us?" grows a second dropdown
+        // once the first is answered. Those fields were invisible to the pass
+        // that caused them.
+        //
+        // So while a pass keeps finding NEW things to fill, go round again.
+        // Bounded at three because a form that changes on every pass is a form
+        // being misread, and looping on it would be worse than stopping.
+        for (let extra = 0; extra < 3; extra += 1) {
+            const grewSomething = filled.qa.some((q) => q.fieldType === 'dropdown'
+                || q.fieldType === 'select' || q.fieldType === 'radio');
+            if (!grewSomething) break;
+
+            await page.waitForTimeout(STEP_SETTLE_MS);
+            const again = await fillForm(page, { ...fillOptions, root: recipe.dialog });
+            // Nothing new answered and nothing new asked: the step has settled.
+            if (again.qa.length === 0 && again.unknown.length === 0) break;
+
+            // Only genuinely NEW answers are added. A field answered on the
+            // first pass reads back as already-filled on the second, so a
+            // plain concatenation reported "Country -> India" once per pass --
+            // four identical lines on the review screen for one answer. The
+            // first sighting is the real one; the rest are echoes.
+            const alreadyRecorded = new Set(filled.qa.map((q) => q.questionText));
+            filled = {
+                qa: [...filled.qa, ...again.qa.filter((q) => !alreadyRecorded.has(q.questionText))],
+                // Re-asked questions replace the earlier list rather than
+                // adding to it: a field that was unanswerable before the
+                // re-render may simply not exist any more.
+                unknown: again.unknown,
+                attachedResume: filled.attachedResume || again.attachedResume,
+                refusals: [...(filled.refusals ?? []), ...(again.refusals ?? [])],
+            };
+            if (again.qa.length === 0) break;
+        }
+
         // ── A STEP WITH NOTHING ON IT IS USUALLY HIDING SOMETHING ─────
         //
         // Nothing filled AND nothing unanswerable means the engine found no

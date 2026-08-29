@@ -33,7 +33,7 @@ const { describeFields, fillForm } = require('../src/main/browser/filler.js');
 const {
     CLOSED_SELECTOR, EXTERNAL_SELECTOR, APPLIED_SELECTOR, describeObstruction,
     destinationOf,
-    dismissUploadToast, whichAppears,
+    dismissUploadToast, whichAppears, runApplyFlow,
 } = require('../src/main/browser/applyFlow.js');
 
 let pass = 0; let fail = 0;
@@ -525,6 +525,333 @@ try {
     page = await load(browser, MY_INFORMATION);
     check('the real information step is never mistaken for the gate',
         await page.locator(WD_APPLY.accountWall).count(), 0);
+    section('Workday dropdowns, as measured on a live application');
+
+    /**
+     * Read off a real Workday "My Information" step. The accessible name runs
+     * the question, the current value and sometimes "Required" together, and
+     * the listbox is rendered in a portal at the end of <body> — not inside
+     * the control, and not inside the form.
+     */
+    const WORKDAY_DROPDOWNS = `
+      <div data-automation-id="applyFlowPage">
+        <button aria-haspopup="listbox" aria-label="Country India Required">India</button>
+        <button aria-haspopup="listbox" aria-label="State Select One">Select One</button>
+        <button aria-haspopup="listbox" aria-label="Phone Device Type Mobile Required">Mobile</button>
+        <label for="pc">Postal Code</label><input id="pc" value="502319">
+      </div>
+      <div id="portal"></div>
+      <script>
+        // What Workday does: open a listbox elsewhere in the document, and
+        // write the chosen option back onto the button.
+        const STATES = ['Select One', 'Andhra Pradesh', 'Assam', 'Delhi', 'Telangāna'];
+        document.querySelectorAll('button[aria-haspopup="listbox"]').forEach((b) => {
+          b.addEventListener('click', () => {
+            const portal = document.getElementById('portal');
+            portal.innerHTML = '';
+            const lb = document.createElement('div');
+            lb.setAttribute('role', 'listbox');
+            for (const t of STATES) {
+              const o = document.createElement('div');
+              o.setAttribute('role', 'option');
+              o.textContent = t;
+              o.addEventListener('click', () => {
+                b.textContent = t;
+                b.setAttribute('aria-label',
+                  b.getAttribute('aria-label').split(' ')[0] + ' ' + t);
+                portal.innerHTML = '';
+              });
+              lb.appendChild(o);
+            }
+            portal.appendChild(lb);
+          });
+        });
+      </script>`;
+
+    page = await load(browser, WORKDAY_DROPDOWNS);
+    const wdRoot = '[data-automation-id="applyFlowPage"]';
+    let wdFields = await describeFields(page, wdRoot);
+    const drops = wdFields.filter((f) => f.type === 'dropdown');
+
+    check('all three dropdowns are seen at all', drops.length, 3);
+    check('the question is peeled out of the accessible name',
+        drops.map((d) => d.label), ['Country', 'State', 'Phone Device Type']);
+    check('a chosen value reads as the value',
+        drops.find((d) => d.label === 'Country')?.value, 'India');
+    check('"Select One" reads as EMPTY, not as an answer',
+        drops.find((d) => d.label === 'State')?.hasValue, false);
+    check('  which is what stops it being skipped as already-answered',
+        drops.find((d) => d.label === 'State')?.value, '');
+    check('"Required" in the name makes it required',
+        drops.filter((d) => d.required).map((d) => d.label), ['Country', 'Phone Device Type']);
+
+    // Filling: the answered one is chosen, the unanswerable one is reported.
+    out = await fillForm(page, {
+        profile,
+        approvedAnswers: [{ question_text: 'State', answer_text: 'Telangāna', question_id: 'S1' }],
+        resumePath: null,
+        typing: NO_PAUSE,
+        root: wdRoot,
+    });
+
+    check('the dropdown with an answer is chosen from',
+        await page.locator('button[aria-label^="State"]').innerText(), 'Telangāna');
+    check('  and recorded as a real answer',
+        out.qa.find((q) => q.questionText === 'State')?.answerText, 'Telangāna');
+    check('a dropdown the portal already set is left alone, with its value shown',
+        out.qa.find((q) => q.questionText === 'Country')?.answerText, 'India');
+    // Already reading "Mobile", so the portal has answered it -- the same rule
+    // as any pre-filled field, and the reason it is recorded rather than asked.
+    check('a dropdown the portal set is recorded with its value',
+        out.qa.find((q) => q.questionText === 'Phone Device Type')?.answerText, 'Mobile');
+    check('  and left untouched',
+        await page.locator('button[aria-label^="Phone"]').innerText(), 'Mobile');
+
+    // An answer that matches nothing in the list must choose NOTHING — a wrong
+    // state on somebody's application is worse than an empty one.
+    page = await load(browser, WORKDAY_DROPDOWNS);
+    out = await fillForm(page, {
+        profile,
+        approvedAnswers: [{ question_text: 'State', answer_text: 'Atlantis', question_id: 'S2' }],
+        resumePath: null,
+        typing: NO_PAUSE,
+        root: wdRoot,
+    });
+    check('an answer matching no option chooses nothing',
+        await page.locator('button[aria-label^="State"]').innerText(), 'Select One');
+    check('  and is reported as unanswered instead',
+        out.unknown.some((u) => u.questionText === 'State'), true);
+
+    section('one answer creating the next question');
+
+    /**
+     * Workday's cascade: choosing a Country rebuilds the step with a State
+     * dropdown that did not exist before. The pass that caused it cannot see
+     * it, because `fillForm` reads the whole step once and then acts.
+     */
+    const CASCADE = `
+      <div data-automation-id="applyFlowPage">
+        <button id="c" aria-haspopup="listbox" aria-label="Country Select One">Select One</button>
+        <div id="grown"></div>
+        <button id="next">Save and Continue</button>
+      </div>
+      <div id="portal"></div>
+      <script>
+        const open = (btn, items, onPick) => btn.addEventListener('click', () => {
+          const portal = document.getElementById('portal');
+          portal.innerHTML = '';
+          const lb = document.createElement('div');
+          lb.setAttribute('role', 'listbox');
+          for (const t of items) {
+            const o = document.createElement('div');
+            o.setAttribute('role', 'option');
+            o.textContent = t;
+            o.addEventListener('click', () => {
+              btn.textContent = t;
+              btn.setAttribute('aria-label',
+                btn.getAttribute('aria-label').replace(/ .*$/, '') + ' ' + t);
+              portal.innerHTML = '';
+              onPick(t);
+            });
+            lb.appendChild(o);
+          }
+          portal.appendChild(lb);
+        });
+
+        open(document.getElementById('c'), ['Select One', 'India', 'Canada'], (picked) => {
+          // Answering Country GROWS the State dropdown.
+          if (picked !== 'India') return;
+          const grown = document.getElementById('grown');
+          grown.innerHTML =
+            '<button id="s" aria-haspopup="listbox" aria-label="State Select One">Select One</button>';
+          open(document.getElementById('s'), ['Select One', 'Telangāna', 'Delhi'], () => {});
+        });
+      </script>`;
+
+    page = await load(browser, CASCADE);
+    const cascadeRoot = '[data-automation-id="applyFlowPage"]';
+
+    // One pass sees only Country — the proof that a second pass is needed.
+    let onePass = await fillForm(page, {
+        profile,
+        approvedAnswers: [
+            { question_text: 'Country', answer_text: 'India', question_id: 'C1' },
+            { question_text: 'State', answer_text: 'Telangāna', question_id: 'S1' },
+        ],
+        resumePath: null, typing: NO_PAUSE, root: cascadeRoot,
+    });
+    check('a single pass answers only what was on screen when it started',
+        onePass.qa.map((q) => q.questionText), ['Country']);
+    check('  and the field it created is left unanswered',
+        await page.locator('#s').innerText(), 'Select One');
+
+    // The flow goes round again, so the grown field is answered too.
+    page = await load(browser, CASCADE);
+    const cascadeBoard = {
+        name: 'CASCADE',
+        label: 'Cascade Test',
+        apply: {
+            open: '#nothing', dialog: cascadeRoot,
+            next: '#next', submit: '#nothing-submits', maxSteps: 1,
+        },
+    };
+    // `runApplyFlow` expects to open the flow itself; this drives its step loop
+    // directly by pointing `open` at something already present.
+    cascadeBoard.apply.open = cascadeRoot;
+
+    const cascaded = await runApplyFlow(page, cascadeBoard, {
+        profile,
+        approvedAnswers: [
+            { question_text: 'Country', answer_text: 'India', question_id: 'C1' },
+            { question_text: 'State', answer_text: 'Telangāna', question_id: 'S1' },
+        ],
+        resumePath: null,
+    }, { canFill: true });
+
+    check('the flow re-reads the step and answers what appeared',
+        await page.locator('#s').innerText(), 'Telangāna');
+    check('  and both answers are recorded',
+        cascaded.qa.filter((q) => q.fieldType === 'dropdown').map((q) => q.answerText).sort(),
+        ['India', 'Telangāna']);
+
+    section('Workday\u2019s "How Did You Hear About Us?" prompt');
+
+    /**
+     * Measured on a live Syneos application. The control is an <input> with a
+     * "Search" placeholder inside a multiselect widget — so the filler used to
+     * TYPE into it, which filters the list and selects nothing. The widget then
+     * still reads "0 items selected" and the form refuses to move.
+     *
+     * Two levels deep: every category opens a list of specific sources.
+     */
+    const PROMPT = `
+      <div data-automation-id="applyFlowPage">
+        <div data-automation-id="formField-source">
+          <label for="source--source"><span>How Did You Hear About Us?<abbr>*</abbr></span></label>
+          <div data-automation-id="multiSelectContainer" data-uxi-widget-type="multiselect">
+            <div data-automation-id="multiselectInputContainer">
+              <input id="source--source" data-uxi-widget-type="selectinput"
+                     placeholder="Search" aria-required="true" value="">
+              <div data-automation-id="promptSelectionLabel"></div>
+              <div data-automation-id="promptAriaInstruction">0 items selected</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="portal"></div>
+      <script>
+        const SOURCES = {
+          'Employee Referral': ['A colleague', 'A friend'],
+          'Job Board': ['LinkedIn', 'Indeed', 'Built In'],
+          'Website': ['Careers site'],
+        };
+        const show = (items, onPick) => {
+          const portal = document.getElementById('portal');
+          portal.innerHTML = '';
+          const lb = document.createElement('div');
+          lb.setAttribute('role', 'listbox');
+          lb.setAttribute('data-automation-id', 'activeListContainer');
+          for (const t of items) {
+            const o = document.createElement('div');
+            o.setAttribute('role', 'option');
+            o.setAttribute('data-automation-id', 'menuItem');
+            o.textContent = t;
+            o.addEventListener('click', () => onPick(t));
+            lb.appendChild(o);
+          }
+          portal.appendChild(lb);
+        };
+        const input = document.getElementById('source--source');
+        const chosenLabel = document.querySelector('[data-automation-id="promptSelectionLabel"]');
+        input.addEventListener('click', () => {
+          show(Object.keys(SOURCES), (cat) => {
+            // A CATEGORY selects nothing on its own — it opens the next list.
+            show(SOURCES[cat], (leaf) => {
+              chosenLabel.textContent = cat + ' > ' + leaf;
+              document.getElementById('portal').innerHTML = '';
+            });
+          });
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') document.getElementById('portal').innerHTML = '';
+        });
+      </script>`;
+
+    page = await load(browser, PROMPT);
+    const promptRoot = '[data-automation-id="applyFlowPage"]';
+    let promptFields = await describeFields(page, promptRoot);
+    const prompt = promptFields.find((f) => f.label.startsWith('How Did You Hear'));
+
+    check('the search box is understood as a dropdown, not a text field',
+        prompt?.type, 'dropdown');
+    check('  its question comes straight from its own <label>',
+        prompt?.label, 'How Did You Hear About Us?*');
+    check('  nothing chosen reads as empty', prompt?.hasValue, false);
+    check('  and aria-required makes it required', prompt?.required, true);
+
+    // A one-level answer cannot finish a two-level prompt, and saying so is
+    // better than leaving a category selected that the form will reject.
+    out = await fillForm(page, {
+        profile,
+        approvedAnswers: [{
+            question_text: 'How Did You Hear About Us?', answer_text: 'Job Board', question_id: 'H1',
+        }],
+        resumePath: null, typing: NO_PAUSE, root: promptRoot,
+    });
+    check('a half-answer to a two-level prompt is reported, not left half-made',
+        out.unknown.some((u) => u.questionText.startsWith('How Did You Hear')), true);
+    check('  and nothing was left selected',
+        await page.locator('[data-automation-id="promptSelectionLabel"]').innerText(), '');
+
+    // The path form walks both levels.
+    page = await load(browser, PROMPT);
+    out = await fillForm(page, {
+        profile,
+        approvedAnswers: [{
+            question_text: 'How Did You Hear About Us?',
+            answer_text: 'Job Board > LinkedIn',
+            question_id: 'H2',
+        }],
+        resumePath: null, typing: NO_PAUSE, root: promptRoot,
+    });
+    check('an answer naming the path walks both lists',
+        await page.locator('[data-automation-id="promptSelectionLabel"]').innerText(),
+        'Job Board > LinkedIn');
+    check('  and is recorded as what was actually chosen',
+        out.qa.find((q) => q.questionText.startsWith('How Did You Hear'))?.answerText,
+        'Job Board > LinkedIn');
+    check('  with nothing left unanswered', out.unknown.length, 0);
+
+    // A path whose second step does not exist must choose nothing at all.
+    page = await load(browser, PROMPT);
+    out = await fillForm(page, {
+        profile,
+        approvedAnswers: [{
+            question_text: 'How Did You Hear About Us?',
+            answer_text: 'Job Board > Monster',
+            question_id: 'H3',
+        }],
+        resumePath: null, typing: NO_PAUSE, root: promptRoot,
+    });
+    check('a path that dead-ends selects nothing',
+        await page.locator('[data-automation-id="promptSelectionLabel"]').innerText(), '');
+    check('  and is reported as unanswered',
+        out.unknown.some((u) => u.questionText.startsWith('How Did You Hear')), true);
+
+    section('the review screen shows what was actually filled in');
+
+    page = await load(browser, `
+      <div id="app">
+        <label for="em">Email address</label><input id="em" value="sd@example.com">
+        <label for="pw">Password</label><input id="pw" type="password" value="hunter2">
+      </div>`);
+    out = await fillForm(page, {
+        profile: {}, approvedAnswers: [], resumePath: null, typing: NO_PAUSE, root: '#app',
+    });
+    check('a portal-filled field reports its VALUE, not a note about itself',
+        out.qa.find((q) => /email/i.test(q.questionText))?.answerText, 'sd@example.com');
+    check('and a password is still never carried anywhere (R-18)',
+        out.qa.some((q) => /hunter2/.test(q.answerText ?? '')), false);
 } finally {
     await browser.close();
 }

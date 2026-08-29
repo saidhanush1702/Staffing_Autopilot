@@ -29,8 +29,29 @@ const {
 } = require('./answers.js');
 const { TYPING } = require('../config.js');
 
-/** Every control we consider. Order here defines the index we act on. */
-const FIELD_SELECTOR = 'input, textarea, select';
+/**
+ * Every control we consider. Order here defines the index we act on.
+ *
+ * ── WHY A BUTTON IS IN THIS LIST ──────────────────────────────────────
+ *
+ * Workday does not use <select>. Its dropdowns are buttons that open a
+ * listbox:
+ *
+ *     <button aria-haspopup="listbox" aria-label="State Select One">
+ *       Select One
+ *     </button>
+ *
+ * Reading only inputs meant "State", "Country" and "Phone Device Type" were
+ * invisible to the filler — three REQUIRED fields it could neither fill nor
+ * report, so it pressed Save and Continue into a form that refused to move and
+ * had no idea why.
+ *
+ * `aria-haspopup="listbox"` is what makes this safe to widen: it is a promise
+ * about behaviour, not a guess at a class, and an ordinary button that does
+ * something else does not carry it.
+ */
+const DROPDOWN_SELECTOR = 'button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]';
+const FIELD_SELECTOR = `input, textarea, select, ${DROPDOWN_SELECTOR}`;
 
 const rand = (min, max) => min + Math.random() * (max - min);
 
@@ -55,6 +76,9 @@ const describeFields = (page, root = null) => page.$$eval(
     root ? `${root} ${FIELD_SELECTOR.split(', ').join(`, ${root} `)}` : FIELD_SELECTOR,
     (nodes) => {
     const text = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
+    /** What a dropdown says when nothing has been chosen. */
+    const PLACEHOLDER = /^(select one|select\.\.\.|select|choose one|choose|--+|none)$/i;
 
     /**
      * ── THE CONTROL THAT STANDS IN FOR THE REAL ONE ───────────────────
@@ -206,13 +230,72 @@ const describeFields = (page, root = null) => page.$$eval(
         return el.getAttribute('name') || `solo-${index}`;
     };
 
+    /**
+     * The question a Workday dropdown is asking.
+     *
+     * Its accessible name is the question, the current value and sometimes the
+     * word "Required", run together:
+     *
+     *     "State Select One"              -> State
+     *     "Country India Required"        -> Country
+     *     "Phone Device Type Mobile Required" -> Phone Device Type
+     *
+     * The visible text IS the current value, so peeling that off the end —
+     * along with "Required" — leaves the question. Anything unexpected falls
+     * back to the whole label, which is wrong but harmless: it becomes a
+     * question nobody has answered rather than a wrong answer.
+     */
+    const dropdownParts = (el) => {
+        const current = text(el);
+        let question = clean(el.getAttribute('aria-label') || '');
+        if (!question) return { question: current, current: '' };
+        question = question.replace(/\s*Required\s*$/i, '').trim();
+        if (current && question.toLowerCase().endsWith(current.toLowerCase())) {
+            question = question.slice(0, question.length - current.length).trim();
+        }
+        return { question: question || clean(el.getAttribute('aria-label')), current };
+    };
+
     return nodes.map((el, index) => {
         const tag = el.tagName.toLowerCase();
-        const type = (el.getAttribute('type') || (tag === 'select' ? 'select' : 'text'))
-            .toLowerCase();
+        // ── A SEARCH BOX THAT IS REALLY A DROPDOWN ────────────────
+        //
+        // Workday's "How Did You Hear About Us?" is an <input> with a
+        // placeholder of "Search", wrapped in a multiselect widget:
+        //
+        //   <div data-uxi-widget-type="multiselect">
+        //     <input data-uxi-widget-type="selectinput" placeholder="Search">
+        //     <div data-automation-id="promptSelectionLabel"></div>
+        //     <div data-automation-id="promptAriaInstruction">0 items selected</div>
+        //
+        // Being an input, it was typed into — which FILTERS the list and
+        // selects nothing. The box then still holds "0 items selected", the
+        // form rejects it, and nothing on the page says why.
+        //
+        // `data-uxi-widget-type` is Workday's own semantic attribute, the same
+        // family as `data-automation-id`, so this recognises the widget rather
+        // than guessing from a class or a placeholder.
+        const promptBox = el.closest('[data-uxi-widget-type="multiselect"]');
+        const isPrompt = Boolean(promptBox)
+            || el.getAttribute('data-uxi-widget-type') === 'selectinput';
+        const isDropdown = el.getAttribute('aria-haspopup') === 'listbox' || isPrompt;
+        const type = isDropdown ? 'dropdown'
+            : (el.getAttribute('type') || (tag === 'select' ? 'select' : 'text')).toLowerCase();
         const isOption = type === 'radio' || type === 'checkbox';
+        // A prompt widget already has a proper <label for>, so the question
+        // needs no unpicking — only the CHOSEN VALUE has to be found, and it
+        // lives in a sibling rather than in the input.
+        const promptChosen = promptBox
+            ? clean(promptBox.querySelector('[data-automation-id="promptSelectionLabel"]')?.textContent)
+            : '';
+        const drop = isDropdown
+            ? (isPrompt
+                ? { question: labelFor(el), current: promptChosen }
+                : dropdownParts(el))
+            : null;
         const style = window.getComputedStyle(el);
-        const label = isOption ? optionLabelFor(el) : labelFor(el);
+        const label = isDropdown ? drop.question
+            : (isOption ? optionLabelFor(el) : labelFor(el));
         const groupLabel = isOption ? groupLabelFor(el) : '';
         const box = isOption ? groupBoxFor(el) : null;
         const proxy = isOption ? proxyFor(el) : null;
@@ -231,6 +314,9 @@ const describeFields = (page, root = null) => page.$$eval(
             required: Boolean(
                 el.required || el.getAttribute('aria-required') === 'true'
                 || (box && box.getAttribute('aria-required') === 'true')
+                // Workday says so in the accessible name rather than with an
+                // attribute: "Country India Required".
+                || (isDropdown && /\brequired\b/i.test(el.getAttribute('aria-label') || ''))
                 || /\*/.test(label) || /\*/.test(groupLabel),
             ),
             disabled: el.disabled || el.readOnly,
@@ -258,9 +344,15 @@ const describeFields = (page, root = null) => page.$$eval(
             // only place that could read it, rather than being left to callers
             // to remember.
             value: type === 'password' || type === 'file' ? ''
-                : (isOption ? (el.checked ? (label || 'Yes') : '') : String(el.value ?? '')),
+                : (isDropdown ? (PLACEHOLDER.test(drop.current) ? '' : drop.current)
+                    : (isOption ? (el.checked ? (label || 'Yes') : '') : String(el.value ?? ''))),
             hasValue: Boolean(
-                isOption
+                isDropdown
+                    // "Select One" is Workday's word for empty. Treating it as
+                    // a value would mark every untouched dropdown as already
+                    // answered — the same mistake `value: "on"` made for radios.
+                    ? (drop.current && !PLACEHOLDER.test(drop.current))
+                    : isOption
                     ? (el.checked || (proxy && proxy.getAttribute('aria-checked') === 'true'))
                     : (tag === 'select'
                         ? (el.value && el.value !== '' && el.selectedIndex > -1
@@ -326,6 +418,145 @@ const checkControl = async (locator, field = {}) => {
 
     await locator.check({ force: true, timeout: 5_000 });
     return 'forced';
+};
+
+/** How long to give a listbox to open and populate. */
+const LISTBOX_WAIT_MS = 4_000;
+
+/**
+ * Choose a value from a dropdown that is not a <select>.
+ *
+ * ── WHAT THESE ARE ────────────────────────────────────────────────────
+ *
+ * Measured on a live Workday application:
+ *
+ *     <button aria-haspopup="listbox" aria-label="State Select One">
+ *       Select One
+ *     </button>
+ *
+ * Clicking it grows a `[role="listbox"]` somewhere in the document — NOT
+ * inside the button, and often not inside the form either, because these
+ * render in a portal at the end of <body>. That is why the options are looked
+ * for on the page rather than under the control.
+ *
+ * ── WHY THE OPTIONS ARE READ RATHER THAN GUESSED ──────────────────────
+ *
+ * 250 countries, 37 Indian states. The answer bank holds "Telangana"; the list
+ * holds "Telangāna" with a macron. `chooseOption` is the same strict matcher
+ * used everywhere else — exact first, then a unique prefix — so an ambiguous
+ * or absent match chooses NOTHING and the question is reported unanswered.
+ * A wrong state on somebody's application is worse than an empty one.
+ *
+ * @returns the option text chosen, or null when nothing matched
+ */
+const chooseFromDropdown = async (page, locator, answer, log = () => {}) => {
+    if (typeof page.locator !== 'function') return null;
+
+    await locator.click({ timeout: 5_000 }).catch(() => {});
+
+    // ── ANSWERS THAT DRILL DOWN ───────────────────────────────────────
+    //
+    // Workday's "How Did You Hear About Us?" is two levels deep: a category
+    // list (Employee Referral, Job Board, Social Network...) where every entry
+    // opens a second list of specific sources. One flat answer cannot say
+    // which of each, so an answer may name the path:
+    //
+    //     "Job Board > LinkedIn"
+    //
+    // A one-level dropdown ignores the separator entirely, because it only
+    // ever reaches the first part.
+    const steps = String(answer).split(/\s*(?:>|\u2192|\/)\s*/).filter(Boolean);
+    let chosen = null;
+
+    for (const [depth, want] of steps.entries()) {
+        const picked = await pickFromOpenList(page, want, log);
+        if (!picked) {
+            if (depth === 0) {
+                // Nothing at the top level matched: close up rather than
+                // leaving a list hanging over the rest of the form.
+                await page.keyboard.press('Escape').catch(() => {});
+                return null;
+            }
+            // The path was partly walked. Stop and report it unanswered
+            // rather than leaving a half-made choice standing.
+            log(`"${want}" was not in the list that opened`);
+            await page.keyboard.press('Escape').catch(() => {});
+            return null;
+        }
+        chosen = chosen ? `${chosen} > ${picked}` : picked;
+
+        // Workday re-renders after a choice — picking a country replaces the
+        // State list entirely — so let it settle before reading anything else.
+        await page.waitForTimeout(1_200);
+    }
+
+    // ── DID IT ACTUALLY TAKE? ─────────────────────────────────────────
+    //
+    // A category with a submenu selects NOTHING by itself: the widget still
+    // reads "0 items selected" and the form will refuse. If a list is still
+    // open and the answer had no further parts, the answer was incomplete —
+    // better reported as unanswered than left looking done.
+    const stillOpen = await page.locator('[role="listbox"] [role="option"]')
+        .count().catch(() => 0);
+    if (stillOpen > 0 && steps.length === 1) {
+        const settled = await locator.evaluate((el) => {
+            const box = el.closest('[data-uxi-widget-type="multiselect"]');
+            if (!box) return true;              // not a prompt; nothing to check
+            const label = box.querySelector('[data-automation-id="promptSelectionLabel"]');
+            return Boolean((label?.textContent ?? '').trim());
+        }).catch(() => true);
+
+        if (!settled) {
+            log(`"${chosen}" opened another list — the answer needs to say which one, `
+                + 'for example "Job Board > LinkedIn"');
+            await page.keyboard.press('Escape').catch(() => {});
+            return null;
+        }
+    }
+
+    await page.keyboard.press('Escape').catch(() => {});
+    return chosen;
+};
+
+/**
+ * Pick one entry from whichever list is currently open.
+ *
+ * The list is found on the PAGE rather than under the control: Workday renders
+ * these in a portal at the end of <body>, so they are nowhere near the field
+ * they belong to. Where several are open at once — a phone-code picker sits
+ * open beside the one being asked for — the one with the most options is the
+ * one that just appeared.
+ *
+ * @returns the option text clicked, or null when nothing matched
+ */
+const pickFromOpenList = async (page, want, log = () => {}) => {
+    const deadline = Date.now() + LISTBOX_WAIT_MS;
+    let options = null;
+    while (Date.now() < deadline) {
+        const found = page.locator('[role="listbox"] [role="option"]');
+        if (await found.count().catch(() => 0) > 0) { options = found; break; }
+        await page.waitForTimeout(250);
+    }
+    if (!options) {
+        log('the dropdown did not open');
+        return null;
+    }
+
+    const count = await options.count();
+    const texts = [];
+    for (let i = 0; i < Math.min(count, 400); i += 1) {
+        texts.push(((await options.nth(i).innerText().catch(() => '')) || '')
+            .replace(/\s+/g, ' ').trim());
+    }
+
+    // The same strict matcher used everywhere else: exact, then a unique
+    // prefix, then nothing. 250 countries and 37 states are exactly where a
+    // loose match would quietly put the wrong thing on an application.
+    const match = chooseOption(texts, want);
+    if (!match) return null;
+
+    await options.nth(texts.indexOf(match)).click({ timeout: 5_000 }).catch(() => {});
+    return match;
 };
 
 /** How long to give a typeahead to fetch and render its suggestions. */
@@ -487,8 +718,10 @@ const fillForm = async (page, {
             if (siblings.some((s) => s.hasValue)) {
                 qa.push({
                     questionText: question,
+                    // The option's own name — "vishwa_resume.pdf" — rather
+                    // than a note saying something was chosen.
                     answerText: siblings.find((s) => s.hasValue)?.label
-                        ?? '[already chosen by the portal]',
+                        || '[already chosen by the portal]',
                     fieldType: 'radio',
                     source: 'PORTAL',
                     questionId: null,
@@ -531,6 +764,53 @@ const fillForm = async (page, {
         const question = asAsked(f.label);
         if (!question) continue;
 
+        // ── A DROPDOWN THAT IS NOT A <select> ─────────────────────────
+        //
+        // Handled before the "already filled in" rule below, because for these
+        // "filled" means something specific: Workday shows "Select One" when
+        // nothing has been chosen, and that is emptiness wearing a value's
+        // clothes. `hasValue` already knows the difference.
+        if (f.type === 'dropdown') {
+            if (f.hasValue) {
+                qa.push({
+                    questionText: question,
+                    answerText: f.value,
+                    fieldType: 'dropdown',
+                    source: 'PORTAL',
+                    questionId: null,
+                });
+                continue;
+            }
+
+            const found = resolveAnswer(question, book);
+            if (!found) {
+                unknown.push({
+                    questionText: question, fieldType: 'dropdown', required: f.required,
+                });
+                continue;
+            }
+
+            const chosen = await chooseFromDropdown(page, el(locators, f), String(found.value));
+            if (!chosen) {
+                // Opened, read, and nothing matched. That is a question we
+                // cannot answer, not a field to leave silently blank.
+                unknown.push({
+                    questionText: question, fieldType: 'dropdown', required: f.required,
+                });
+                continue;
+            }
+
+            qa.push({
+                questionText: question,
+                answerText: chosen,
+                fieldType: 'dropdown',
+                source: found.source,
+                questionId: found.questionId,
+            });
+            await pause(typing.betweenFieldsMs[0], typing.betweenFieldsMs[1]);
+            continue;
+        }
+
         // ── LEAVE WHAT IS ALREADY THERE ───────────────────────────────
         //
         // A portal that has pre-filled a field knows something we do not: on
@@ -547,7 +827,15 @@ const fillForm = async (page, {
         if (f.hasValue) {
             qa.push({
                 questionText: question,
-                answerText: '[already filled in by the portal]',
+                // ── SHOW WHAT IT SAYS, NOT THAT IT SAYS SOMETHING ─────
+            //
+            // This used to read "[already filled in by the portal]", which
+            // told the consultant a field was handled without telling them
+            // WHAT it was handled with. On a review screen whose whole purpose
+            // is reading the application before it goes, that is the one thing
+            // worth showing. The value is only unavailable where it must be —
+            // a password is never carried at all (R-18).
+            answerText: f.value || '[already filled in by the portal]',
                 fieldType: f.type,
                 source: 'PORTAL',
                 questionId: null,
@@ -632,6 +920,6 @@ function el(locators, field) {
 }
 
 module.exports = {
-    fillForm, describeFields, checkControl, groupOf, asAsked,
-    FIELD_SELECTOR, IGNORED_TYPES,
+    fillForm, describeFields, checkControl, chooseFromDropdown, groupOf, asAsked,
+    FIELD_SELECTOR, DROPDOWN_SELECTOR, IGNORED_TYPES,
 };
