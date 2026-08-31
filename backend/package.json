@@ -19,7 +19,8 @@
     "test:tailoring": "node tests/tailoring.test.mjs",
     "test:contacts": "node tests/contacts.test.mjs",
     "test:e2e": "node tests/e2e.test.mjs",
-    "test:phase7": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs && node tests/contacts.test.mjs && node tests/e2e.test.mjs"
+    "test:phase7": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs && node tests/contacts.test.mjs && node tests/e2e.test.mjs",
+    "verify:llm": "node scripts/verify-llm.mjs"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

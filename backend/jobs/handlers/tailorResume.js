@@ -222,7 +222,29 @@ export const handle = async (job) => {
     const criteriaTerms = terms.map((t) => t.value);
 
     const jobText = postingText(item);
-    const before = scoreResume(baseText, jobText, criteriaTerms);
+
+    // ── SCORE BOTH SIDES IN THE SAME REPRESENTATION ───────────────────
+    //
+    // `before` is measured on the FLATTENED base sections, not on the raw PDF
+    // text, because `after` is measured on the flattened tailored sections and
+    // the delta is only meaningful if the two are comparable.
+    //
+    // Scoring the raw text here made every job look worse than it was. Raw PDF
+    // text carries page furniture, headers and every character the document
+    // had; the flattened form is a normalised reconstruction and is always
+    // shorter. On a real graduate CV the raw text scored 9 and the flattened
+    // base scored 7, so a tailoring that actually cost one point was reported
+    // as costing three — two of them purely for changing representation. The
+    // ATS delta exists to prove the tailoring did something (D12); measured
+    // that way it was proving the parser reformats.
+    //
+    // NOTE the deliberate asymmetry: `baseText` stays RAW everywhere else, and
+    // in particular it is what the fabrication checker compares against. That
+    // is correct and must not be "tidied" to match this line — a claim the
+    // consultant really wrote is legitimate even when the parser dropped it, so
+    // the checker has to see everything the document said, not a reconstruction
+    // of it.
+    const before = scoreResume(flattenResumeText(baseSections), jobText, criteriaTerms);
 
     /* ── 7 · tailor ────────────────────────────────────────────────── */
 

@@ -109,6 +109,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                                 <TailoringBadge
                                     state={item.tailoring_state}
                                     reason={item.tailoring_skip_reason}
+                                    status={item.status}
                                 />
                                 {item.is_overlap && (
                                     <span className={`${badge} ${TONE.warning}`}>

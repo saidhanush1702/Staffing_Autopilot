@@ -27,6 +27,21 @@
  */
 process.env.LLM_PROVIDER = 'mock';
 process.env.LLM_MODEL = 'mock-model';
+
+/*
+ * Clear any PER-STAGE overrides the developer's .env sets.
+ *
+ * `stageConfig` reads LLM_TAILOR_MODEL before falling back to LLM_MODEL, so a
+ * real .env pointing the tailor stage at a live model silently beat the two
+ * lines above and this suite recorded a real provider's model id against a mock
+ * call. It failed loudly on one assertion and would have passed quietly on the
+ * rest — a test that reads the machine it runs on is not a test.
+ */
+for (const stage of ['PARSE', 'TAILOR', 'CHECK']) {
+    delete process.env[`LLM_${stage}_PROVIDER`];
+    delete process.env[`LLM_${stage}_MODEL`];
+}
+
 process.env.APOLLO_API_KEY = 'test-key-not-real';
 process.env.CONTACT_REUSE_DAYS = '90';
 
@@ -291,6 +306,26 @@ const resetTransient = async () => {
 
 const cleanup = async () => {
     await resetTransient().catch(() => {});
+
+    // ── park the fixture where no scheduler will find it ──────────────
+    //
+    // `resetTransient` leaves the item at PREPARING, which is right at the
+    // START of a run and quietly expensive at the end of one. PREPARING is a
+    // live state: the maintenance sweep expires a stuck item back to QUEUED,
+    // `promoteToReady` then promotes it and enqueues a REAL tailoring job, and
+    // the worker spends real money tailoring a test fixture — every cycle,
+    // forever, on an installation nobody is watching.
+    //
+    // CANCELLED is terminal. Nothing sweeps it, nothing promotes it, and the
+    // next run resets it to PREPARING itself.
+    await query(
+        `UPDATE queue_items
+            SET status_id = (SELECT id FROM lkp_queue_statuses WHERE name = 'CANCELLED'),
+                cancel_reason = 'End-to-end test fixture — parked so no scheduler picks it up.'
+          WHERE id = $1`,
+        [made.itemId],
+    ).catch(() => {});
+
     if (made.providerRestore) {
         await query(
             `UPDATE organization_providers op

@@ -180,8 +180,26 @@ check('an unexpected field is stripped, not fatal',
         validateResume({ ...minimal, madeUpField: 'whatever' }).value,
         'madeUpField',
     ), false);
-check('the JSON schema we send providers requires the same three things',
-    RESUME_JSON_SCHEMA.required, ['contact', 'sectionOrder', 'experience']);
+// Every section must be REQUIRED, and this assertion is the guard on a bug
+// that cost a real consultant their whole resume.
+//
+// A structured-output model treats an optional property as one it may simply
+// not emit. With only three fields required, Gemini parsed a real graduate CV
+// and returned the contact block, the section order and an empty experience
+// array — dropping the education, projects, skills and certifications that
+// were plainly in the text. It validated (an absent optional array is legal),
+// was cached, and every job tailored from it was built from a summary alone.
+//
+// An empty array is still a valid answer, so nothing is invented to fill a
+// section the consultant does not have.
+check('every resume section is required, so a model cannot omit one',
+    [...RESUME_JSON_SCHEMA.required].sort(),
+    ['additional', 'certifications', 'contact', 'education', 'experience',
+        'projects', 'sectionOrder', 'skills', 'summary']);
+check('an empty section is still an acceptable answer',
+    validateResume({
+        ...minimal, education: [], projects: [], certifications: [],
+    }).ok, true);
 
 /* ── the structural gate ──────────────────────────────────────────────── */
 

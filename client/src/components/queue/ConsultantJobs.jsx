@@ -170,6 +170,7 @@ const JobDetail = ({ job, scope, onManage }) => {
                         <TailoringBadge
                             state={job.tailoring_state}
                             reason={job.tailoring_skip_reason}
+                            status={job.status_name}
                         />
 
                         {job.tailoring_state === 'NOT_TAILORED' && (
@@ -485,6 +486,7 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
                                                 <TailoringBadge
                                                     state={job.tailoring_state}
                                                     reason={job.tailoring_skip_reason}
+                                                    status={job.status_name}
                                                 />
                                                 {job.score != null && (
                                                     <span className={`${badge} ${

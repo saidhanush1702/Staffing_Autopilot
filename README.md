@@ -831,3 +831,35 @@ npm run test:phase7
 | `test:tailoring` | parse → tailor → check → PDF, and all five skip outcomes |
 | `test:contacts` | the contact waterfall, the 90-day store, and do-not-contact |
 | `test:e2e` | match → tailor → check → review → apply → contact, in one run |
+
+### Changing the model provider or the API key
+
+The suites above run on the mock, so they prove the pipeline and nothing about
+your vendor. One command covers that gap:
+
+```bash
+npm run verify:llm
+```
+
+It makes one real call per stage — parse, tailor, and the fabrication check run
+twice, on an honest resume and an invented one — and fails loudly if the
+checker is silent on the invented one. Three small calls, well under a cent.
+
+When a new key arrives:
+
+1. Set `LLM_PROVIDER`, `LLM_MODEL` and the matching `*_API_KEY` in `.env`.
+2. **Add the model to `PRICING` in `config/llmModels.js`.** Without a row the
+   ledger stores `NULL`, spend counts as zero, and the per-organisation monthly
+   ceiling can never fire. The cost screen shows an "unpriced runs" warning when
+   this has been missed.
+3. Run `npm run verify:llm`.
+4. Restart the server so the worker picks up the new settings.
+
+Nothing else changes. The model id is recorded on every artifact and every
+ledger row, so a switch is visible in the history rather than being a silent
+change in output quality.
+
+> **Do not trust a vendor's model list.** Google's `ListModels` advertises
+> models a given key may not call: the Gemini 2.5 family answers *"no longer
+> available to new users"* on recently issued keys, and Pro models answer `429`
+> on the free tier. `verify:llm` is what tells you the truth.

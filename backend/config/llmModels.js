@@ -52,8 +52,30 @@ export const PRICING = {
     'openai:gpt-4o-mini':           { in: 0.15, cachedIn: 0.075, out: 0.60 },
 
     // ── Google ────────────────────────────────────────────────────────
+    //
+    // The 2.5 family is kept for installations whose keys still reach it. Keys
+    // issued now do not: the API answers "no longer available to new users" and
+    // names a 3.x model instead, which is why the 3.x rows below exist.
     'gemini:gemini-2.5-pro':        { in: 1.25, cachedIn: 0.31, out: 10.00 },
     'gemini:gemini-2.5-flash':      { in: 0.30, cachedIn: 0.075, out: 2.50 },
+
+    // Checked against ai.google.dev/gemini-api/docs/pricing on 2026-08-31.
+    //
+    // Note the ordering, which is not what the version numbers suggest: 3.6 and
+    // 3.7 Flash are HALF the price of 3.5 Flash, so "newer" is also "cheaper"
+    // here and there is no reason to stay on 3.5 for cost.
+    //
+    // Google has published an increase for 3.6/3.7 Flash from 1 January 2027
+    // ($1.50 in / $7.50 out). These rows carry today's price; when that date
+    // passes, the ledger silently halves the real spend until they are updated.
+    'gemini:gemini-3.7-flash':      { in: 0.75, cachedIn: 0.075, out: 3.75 },
+    'gemini:gemini-3.6-flash':      { in: 0.75, cachedIn: 0.075, out: 3.75 },
+    'gemini:gemini-3.5-flash':      { in: 1.50, cachedIn: 0.15, out: 9.00 },
+    'gemini:gemini-3.5-flash-lite': { in: 0.30, cachedIn: 0.03, out: 2.50 },
+    // Pro is metered in two bands by prompt size; this is the <= 200k rate,
+    // which is every call this pipeline makes — a resume plus a job description
+    // is a few thousand tokens.
+    'gemini:gemini-3.1-pro-preview': { in: 2.00, cachedIn: 0.20, out: 12.00 },
 
     // ── OpenAI-compatible third parties ───────────────────────────────
     'deepseek:deepseek-chat':       { in: 0.27, cachedIn: 0.07, out: 1.10 },

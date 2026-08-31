@@ -67,12 +67,34 @@ export const SKIP_REASONS = {
     AI_FAILED: 'the AI stage did not complete',
 };
 
-const TailoringBadge = ({ state, reason, className = '' }) => {
+/**
+ * @param status  the queue status NAME (`PREPARING`, `READY`, …), when the
+ *                caller has it. See the PENDING rule below — without it the
+ *                badge cannot tell "being prepared" from "predates the feature".
+ */
+const TailoringBadge = ({ state, reason, status = null, className = '' }) => {
     const spec = STATES[state];
     // An item from before this feature existed has no state at all. Showing
     // nothing is honest; showing "Not tailored" would claim a decision that was
     // never made.
     if (!spec) return null;
+
+    // ── PENDING does not mean "in progress" ───────────────────────────
+    //
+    // `tailoring_state` defaults to PENDING for EVERY queue item, including the
+    // hundreds created before this feature existed. Those items are long since
+    // READY or SUBMITTED and will never be tailored — `promoteToReady` only
+    // ever picks up QUEUED items, so nothing will revisit them.
+    //
+    // Rendering PENDING as a spinning "Preparing" told the opposite story: an
+    // owner opening the jobs screen saw a wall of items apparently mid-flight,
+    // with a spinner implying an AI stage was running and money was being spent.
+    // Nothing was running. The badge was the only thing moving.
+    //
+    // So "Preparing" is claimed ONLY while the item is genuinely at that stage.
+    // Anywhere else, PENDING means "the AI stage never ran for this job", and
+    // the honest rendering of that is nothing at all.
+    if (state === 'PENDING' && status !== null && status !== 'PREPARING') return null;
 
     const { tone, icon: Icon, label, title } = spec;
     const explained = state === 'NOT_TAILORED' && SKIP_REASONS[reason];

@@ -48,7 +48,34 @@ const strOrNull = { type: ['string', 'null'] };
 export const RESUME_JSON_SCHEMA = {
     type: 'object',
     additionalProperties: false,
-    required: ['contact', 'sectionOrder', 'experience'],
+
+    // ── EVERY SECTION IS REQUIRED, AND THAT IS NOT PEDANTRY ───────────
+    //
+    // "Required" here means the KEY must be present. An empty array is still a
+    // valid answer, so a candidate with no employment history returns
+    // `experience: []` and nothing is invented to fill it.
+    //
+    // It has to be spelled out because a structured-output model treats an
+    // optional property as one it may simply not emit. Asked to parse a real
+    // graduate CV — 3,400 characters with education, three projects, two skill
+    // groups and three certifications — Gemini returned exactly the three
+    // fields that were required and omitted every other section. The result
+    // passed validation (an absent optional array is legal), was cached as that
+    // consultant's parsed resume, and every job tailored from it was built from
+    // a summary and nothing else. The tailored resume came out at 44% of the
+    // length of the real one and its ATS score went DOWN.
+    //
+    // Nothing in the pipeline could catch that: no schema rule was broken and
+    // no claim was fabricated. Listing the sections here is what makes the
+    // model answer the question it was asked.
+    //
+    // It also matches OpenAI's strict structured-output mode, which requires
+    // every property to appear in `required`, so this is the more portable
+    // shape as well as the correct one.
+    required: [
+        'contact', 'sectionOrder', 'summary', 'skills', 'experience',
+        'projects', 'education', 'certifications', 'additional',
+    ],
     properties: {
         contact: {
             type: 'object',

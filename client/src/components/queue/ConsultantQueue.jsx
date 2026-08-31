@@ -148,6 +148,7 @@ const ConsultantQueue = ({ consultantId }) => {
                                     <TailoringBadge
                                         state={item.tailoring_state}
                                         reason={item.tailoring_skip_reason}
+                                        status={item.status_name}
                                     />
                                     {item.score != null && (
                                         <span className={`${badge} ${item.score >= 70 ? TONE.success : TONE.warning}`}>

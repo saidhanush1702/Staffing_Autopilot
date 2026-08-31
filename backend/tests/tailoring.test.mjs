@@ -22,6 +22,21 @@
 process.env.LLM_PROVIDER = 'mock';
 process.env.LLM_MODEL = 'mock-model';
 
+/*
+ * Clear any PER-STAGE overrides the developer's .env sets.
+ *
+ * `stageConfig` reads LLM_TAILOR_MODEL before falling back to LLM_MODEL, so a
+ * real .env pointing the tailor stage at a live model silently beat the two
+ * lines above and this suite recorded a real provider's model id against a mock
+ * call. It failed loudly on one assertion and would have passed quietly on the
+ * rest — a test that reads the machine it runs on is not a test.
+ */
+for (const stage of ['PARSE', 'TAILOR', 'CHECK']) {
+    delete process.env[`LLM_${stage}_PROVIDER`];
+    delete process.env[`LLM_${stage}_MODEL`];
+}
+
+
 import fs from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { query, pool } from '../db.js';
