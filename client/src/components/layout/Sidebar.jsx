@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
-    PanelLeftClose, PanelLeftOpen,
+    PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -80,6 +80,10 @@ const NAV_GROUPS = [
                 to: '/management/answers', label: 'Answer approvals', icon: MessageSquare,
                 roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'answers',
             },
+            {
+                to: '/management/resume-reviews', label: 'Resume review', icon: ShieldAlert,
+                roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'resumeReviews',
+            },
         ],
     },
     {
@@ -88,6 +92,7 @@ const NAV_GROUPS = [
         items: [
             { to: '/management/postings', label: 'Job Postings', icon: Briefcase, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/discovery', label: 'Job Discovery', icon: Radar, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            { to: '/management/contacts', label: 'Contacts', icon: UserSearch, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },
     {
@@ -95,6 +100,7 @@ const NAV_GROUPS = [
         roles: ['ORG_ADMIN', 'RECRUITER'],
         items: [
             { to: '/management/devices', label: 'Desktop Access', icon: Laptop, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            { to: '/management/costs', label: 'Running Costs', icon: Coins, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },
     {
@@ -105,11 +111,18 @@ const NAV_GROUPS = [
                 to: '/portal/profile', label: 'My Profile', icon: UserCircle,
                 roles: ['CONSULTANT'], badge: 'incomplete',
             },
+            // Every job matched to them, and what happened to it. The same
+            // screen their recruiter sees, minus the management actions.
+            { to: '/portal/jobs', label: 'My Jobs', icon: ListChecks, roles: ['CONSULTANT'] },
             // Read-only for the consultant — their recruiter owns the criteria (R-23).
             { to: '/portal/criteria', label: 'My Search Criteria', icon: Search, roles: ['CONSULTANT'] },
             {
                 to: '/portal/answers', label: 'My Answers', icon: MessageSquare,
                 roles: ['CONSULTANT'], badge: 'unanswered',
+            },
+            {
+                to: '/portal/resume-reviews', label: 'Resume Review', icon: ShieldAlert,
+                roles: ['CONSULTANT'], badge: 'myResumeReviews',
             },
         ],
     },
@@ -137,7 +150,10 @@ const COLLAPSE_KEY = 'smartapply.nav.collapsed';
 const Sidebar = ({ open = false, onClose = () => {} }) => {
     const { user } = useAuth();
     const location = useLocation();
-    const [badges, setBadges] = useState({ approvals: 0, incomplete: 0, answers: 0, unanswered: 0 });
+    const [badges, setBadges] = useState({
+        approvals: 0, incomplete: 0, answers: 0, unanswered: 0,
+        resumeReviews: 0, myResumeReviews: 0,
+    });
     const [collapsed, setCollapsed] = useState(() => {
         try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
     });
@@ -152,13 +168,17 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
         if (!user) return;
         try {
             if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
-                const [changes, answers] = await Promise.all([
+                const [changes, answers, reviews] = await Promise.all([
                     api.get('/management/profile-changes/count'),
                     api.get('/management/answers/count'),
+                    api.get('/management/resume-reviews/count'),
                 ]);
                 setBadges((b) => ({
                     ...b,
                     approvals: changes.data.pending,
+                    // Flagged resumes hold an application at RESUME_REVIEW, so
+                    // this count is work that is actively blocked, not a backlog.
+                    resumeReviews: reviews.data.count,
                     // `pending` counts only what THIS reviewer can act on. A
                     // recruiter's badge deliberately excludes locked sensitive
                     // items — sending them to an inbox where nothing is
@@ -166,14 +186,16 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
                     answers: answers.data.pending,
                 }));
             } else if (user.role === 'CONSULTANT') {
-                const [me, unanswered] = await Promise.all([
+                const [me, unanswered, reviews] = await Promise.all([
                     api.get('/portal/me'),
                     api.get('/portal/answers/count'),
+                    api.get('/portal/resume-reviews/count'),
                 ]);
                 setBadges((b) => ({
                     ...b,
                     incomplete: me.data.missingFields.length,
                     unanswered: unanswered.data.outstanding,
+                    myResumeReviews: reviews.data.count,
                 }));
             }
         } catch { /* a stale badge must never break the shell */ }

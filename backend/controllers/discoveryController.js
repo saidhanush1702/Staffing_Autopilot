@@ -57,6 +57,8 @@ import {
     clampCycleHours, runsPerDay, MIN_CYCLE_HOURS, MAX_CYCLE_HOURS,
 } from '../config/discoverySchedule.js';
 import { logAction } from './auditLogController.js';
+import { enqueueOnce } from '../jobs/worker.js';
+import { KIND as TAILOR_KIND } from '../jobs/handlers/tailorResume.js';
 
 /**
  * Share of the monthly budget scheduled runs may not touch.
@@ -389,12 +391,23 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
  * at creation would let a failed preparation consume a consultant's whole day
  * without a single application going out.
  *
- * ── WHERE THE AI STAGE WILL SIT ───────────────────────────────────────
+ * ── WHERE THE AI STAGE SITS ───────────────────────────────────────────
  *
- * Exactly here, between QUEUED and READY. Today the step attaches nothing and
- * marks the item ready; when resume tailoring arrives it does its work first
- * and this becomes its final act. The four-hour cycle still never calls a
- * model, because this runs outside it.
+ * Exactly here, between QUEUED and READY — and as of Phase 7 it is real. This
+ * function no longer marks anything READY itself. It moves waiting items to
+ * PREPARING and queues one background job each; the worker parses the base
+ * resume, tailors it against the job description, checks the result for
+ * fabrication, renders the PDF, and only then moves the item to READY — or to
+ * RESUME_REVIEW, when a claim needs a person to look at it first.
+ *
+ * The four-hour discovery cycle still never calls a model. It queues work and
+ * returns; every paid call happens on the worker, outside this cycle, where a
+ * slow provider cannot hold up discovery.
+ *
+ * NOTHING IS LOST IF THE WORKER IS OFF. An item left at PREPARING is swept back
+ * to QUEUED by expireUnprepared() after the organisation's
+ * unprepared_expiry_hours, so a deployment that never switched the worker on
+ * accumulates queued work rather than losing it.
  *
  * ── "TODAY" IS THE AGENCY'S DAY ───────────────────────────────────────
  *
@@ -438,28 +451,52 @@ export const promoteToReady = async (orgId) => {
         );
 
         for (const row of waiting) {
+            // The move and the job are written in ONE transaction on purpose.
+            // An item at PREPARING with no job queued for it is invisible work
+            // that sits there until a sweep eventually returns it; a job queued
+            // for an item that never moved would be picked up, find the item
+            // still QUEUED, and decline to touch it. Neither half is any use
+            // without the other.
             await withTransaction(async (client) => {
-                await client.query(
+                const { rowCount } = await client.query(
                     `UPDATE queue_items
-                        SET status_id = $2, prepared_at = now(), became_ready_at = now()
+                        SET status_id = $2, tailoring_state = 'PENDING',
+                            tailoring_skip_reason = NULL, preparation_error = NULL
                       WHERE id = $1 AND status_id = $3`,
-                    [row.id, statusId.READY, statusId.QUEUED],
+                    [row.id, statusId.PREPARING, statusId.QUEUED],
                 );
+                // Somebody moved it between the SELECT and here. Not an error —
+                // just not ours to prepare.
+                if (rowCount === 0) return;
+
                 await client.query(
                     `INSERT INTO queue_item_transitions
                         (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
                      VALUES ($1,$2,$3,$4,$5,$6)`,
-                    [uuidv4(), orgId, row.id, statusId.QUEUED, statusId.READY,
-                        'Prepared and made ready'],
+                    [uuidv4(), orgId, row.id, statusId.QUEUED, statusId.PREPARING,
+                        'Queued for resume tailoring'],
                 );
+
+                await enqueueOnce({
+                    orgId,
+                    kind: TAILOR_KIND,
+                    payload: { queueItemId: row.id },
+                    dedupeOn: 'queueItemId',
+                }, client);
+
+                promoted += 1;
             });
-            promoted += 1;
         }
     }
 
-    // heldByCap is always 0 now. It is still returned because callers and the
-    // run record read it, and a field that exists and is always zero is easier
-    // to follow than one that vanishes from half the call sites.
+    // `promoted` now counts items sent INTO preparation rather than items made
+    // ready. The name is kept because the discovery run record and the
+    // maintenance sweep both read it, and the quantity it measures — work
+    // released on this pass — is the same one either way.
+    //
+    // heldByCap is always 0, and has been since the daily cap was removed. It
+    // stays because callers read it, and a field that exists and is always zero
+    // is easier to follow than one that vanishes from half the call sites.
     return { promoted, heldByCap: 0 };
 };
 

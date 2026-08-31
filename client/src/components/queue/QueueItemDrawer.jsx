@@ -4,6 +4,8 @@ import {
     SkipForward, RotateCcw, Ban,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
+import TailoringBadge from './TailoringBadge.jsx';
+import ContactPanel from '../contacts/ContactPanel.jsx';
 import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 
 /**
@@ -104,6 +106,10 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                                         ? <><Bot className="h-3.5 w-3.5" /> Desktop app</>
                                         : <><User className="h-3.5 w-3.5" /> Applies manually</>}
                                 </span>
+                                <TailoringBadge
+                                    state={item.tailoring_state}
+                                    reason={item.tailoring_skip_reason}
+                                />
                                 {item.is_overlap && (
                                     <span className={`${badge} ${TONE.warning}`}>
                                         Also in another queue
@@ -234,6 +240,21 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                                     )}
                                 </div>
                             )}
+
+                            {/* ── who to follow up with ────────────────── */}
+                            {/*
+                                Management may also BUY a contact here, before
+                                the application goes out — the pipeline only
+                                looks one up afterwards, and a recruiter who
+                                wants to reach somebody first should not have to
+                                submit an application to do it.
+                            */}
+                            <div className="mt-6">
+                                <ContactPanel
+                                    endpoint={`/management/queue/${itemId}/contacts`}
+                                    lookupEndpoint={canEdit ? `/management/queue/${itemId}/find-contact` : null}
+                                />
+                            </div>
 
                             {/* ── history ──────────────────────────────── */}
                             <h3 className={`mt-6 flex items-center gap-1.5 ${sectionTitle}`}>

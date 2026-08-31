@@ -22,16 +22,24 @@
  * ── THE PIPELINE ──────────────────────────────────────────────────────
  *
  *   QUEUED ──► PREPARING ──► READY ──► FILLING ──► AWAITING_REVIEW ──► SUBMITTED
- *      │           │           ▲          │               │
- *      │           └───────────┘          └──► PARKED_UNKNOWN
- *      │        (retry / release)                    │
- *      │                                            ─┘  (answer approved)
+ *      │           │  │        ▲          │               │
+ *      │           │  ▼        │          └──► PARKED_UNKNOWN
+ *      │           │ RESUME_REVIEW ──┘                │
+ *      │           └───────────┘                     ─┘  (answer approved)
+ *      │        (retry / release)
  *      └──► SKIPPED ──► QUEUED        CANCELLED reachable from anywhere live
+ *
+ * RESUME_REVIEW is the AI stage's human gate. The fabrication check found a
+ * claim it could not trace back to the base resume, so the item waits on a
+ * person instead of going out. It is NOT a failure state — a failure attaches
+ * the base resume and continues to READY. This is specifically "a human should
+ * look at this before it is sent in someone's name".
  */
 
 export const QUEUE_STATES = {
     QUEUED: 'QUEUED',
     PREPARING: 'PREPARING',
+    RESUME_REVIEW: 'RESUME_REVIEW',
     READY: 'READY',
     FILLING: 'FILLING',
     PARKED_UNKNOWN: 'PARKED_UNKNOWN',
@@ -51,7 +59,7 @@ export const TERMINAL = new Set(['SUBMITTED', 'CANCELLED']);
  * reached an employer cannot be un-sent, and pretending otherwise would put a
  * lie in the permanent record.
  */
-const CANCELLABLE = ['QUEUED', 'PREPARING', 'READY', 'FILLING',
+const CANCELLABLE = ['QUEUED', 'PREPARING', 'RESUME_REVIEW', 'READY', 'FILLING',
     'PARKED_UNKNOWN', 'AWAITING_REVIEW', 'SKIPPED'];
 
 const TRANSITIONS = {
@@ -61,7 +69,17 @@ const TRANSITIONS = {
     // sweep. Straight to READY is the fallback after too many failures — the
     // base resume is attached and the job goes on rather than being lost to an
     // AI outage.
-    PREPARING: ['READY', 'QUEUED', 'SKIPPED'],
+    PREPARING: ['READY', 'RESUME_REVIEW', 'QUEUED', 'SKIPPED'],
+
+    // The fabrication gate. Every way out of it is a decision somebody made:
+    //   READY      a reviewer accepted the tailored resume
+    //   PREPARING  a reviewer asked for another attempt
+    //   QUEUED     the review expired and it goes round again
+    //   SKIPPED    the job was declined while it sat here
+    // There is deliberately no path to FILLING: nothing may be applied to
+    // straight out of review without passing through READY, which is the state
+    // the desktop app and the cap both key on.
+    RESUME_REVIEW: ['READY', 'PREPARING', 'QUEUED', 'SKIPPED'],
 
     // FILLING is the desktop app taking it. SUBMITTED direct from READY is the
     // HUMAN lane: nothing filled the form, the consultant applied themselves

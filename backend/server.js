@@ -81,6 +81,12 @@ import {
 } from './controllers/deviceController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
 import { startQueueMaintenance } from './jobs/queueMaintenance.js';
+import { startWorker } from './jobs/worker.js';
+// Importing the handler modules is what registers them with the worker.
+// Without this line the worker starts, claims a tailoring job, finds no
+// handler for its kind, and dead-letters it — which looks exactly like a
+// broken pipeline rather than a missing import.
+import './jobs/handlers/index.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -94,6 +100,16 @@ import {
     submitChangeSchema, reviewSchema,
 } from './controllers/profileChangeController.js';
 import { uploadResume, downloadResume, listResumes } from './controllers/resumeController.js';
+import {
+    listReviews, reviewCount, getReview, approveReview, rejectReview, retryReview,
+    reviewDecisionSchema,
+} from './controllers/resumeReviewController.js';
+import {
+    listContacts, queueItemContacts, applicationContacts, deviceQueueContacts,
+    findContactNow, setDoNotContact, contactUsage, dncSchema,
+} from './controllers/contactController.js';
+import { aiUsage } from './controllers/aiUsageController.js';
+import { listConsultantJobs } from './controllers/consultantJobsController.js';
 import { resumeUpload } from './utils/upload.js';
 
 const app = express();
@@ -346,10 +362,60 @@ app.post('/api/management/queue/:id/transition',
 // one, and the database refuses it regardless of who asks.
 app.get('/api/management/consultants/:id/applications',
     [verifyToken, isManagement], listApplications);
+// Every job for one consultant, queued and submitted alike, on one screen.
+// The consultant reaches the same view through /api/portal/jobs below.
+app.get('/api/management/consultants/:id/jobs',
+    [verifyToken, isManagement], listConsultantJobs);
 app.get('/api/management/applications/:id', [verifyToken, isManagement], getApplication);
 
 app.post('/api/management/queue/:id/cancel',
     [verifyToken, isOrgAdmin, validate(transitionSchema)], cancelItem);
+
+/* ──────────── the fabrication review gate (Phase 7) ────────────── */
+//
+// A tailored resume whose independent check found a claim it could not trace
+// back to the base resume stops here instead of going out.
+//
+// isManagement, not isOrgAdmin: a recruiter reviews their own consultants'
+// resumes, narrowed inside the controller by canAccessConsultant — the same
+// split profile changes and the answer bank already use.
+//
+// Approving is management's. The consultant gets the parallel portal routes
+// below, where they can see every flag and REJECT, but not approve: the person
+// whose name is on the document may refuse what was written under it, and the
+// reviewer is somebody else, exactly as with every other approval here.
+
+app.get('/api/management/resume-reviews', [verifyToken, isManagement], listReviews);
+app.get('/api/management/resume-reviews/count', [verifyToken, isManagement], reviewCount);
+app.get('/api/management/resume-reviews/:itemId', [verifyToken, isManagement], getReview);
+app.post('/api/management/resume-reviews/:itemId/approve',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], approveReview);
+app.post('/api/management/resume-reviews/:itemId/reject',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], rejectReview);
+app.post('/api/management/resume-reviews/:itemId/retry',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], retryReview);
+
+/* ─────────────────────────── contacts ───────────────────────────── */
+//
+// Every read here writes an audit row, and there is deliberately no route that
+// returns the whole store in one call — see controllers/contactController.js.
+// `/usage` is declared before `/:id` so that "usage" is not read as an id.
+
+// What the AI stage cost this month, and whether caching and the flag rate
+// are where they should be. Read-only — the budget itself is an org setting.
+app.get('/api/management/ai-usage', [verifyToken, isManagement], aiUsage);
+
+app.get('/api/management/contacts', [verifyToken, isManagement], listContacts);
+app.get('/api/management/contacts/usage', [verifyToken, isManagement], contactUsage);
+app.post('/api/management/contacts/:id/do-not-contact',
+    [verifyToken, isManagement, validate(dncSchema)], setDoNotContact);
+app.get('/api/management/queue/:id/contacts', [verifyToken, isManagement], queueItemContacts);
+app.get('/api/management/applications/:id/contacts',
+    [verifyToken, isManagement], applicationContacts);
+// The on-demand lookup: one job, one credit, for a recruiter who wants the
+// contact before the application goes out rather than after it.
+app.post('/api/management/queue/:id/find-contact',
+    [verifyToken, isManagement], findContactNow);
 
 /* ─────────────── consultant desktop app (device auth) ──────────── */
 //
@@ -382,6 +448,10 @@ app.post('/api/device/queue/:id/lease', [verifyDevice], leaseItem);
 // Per job, never in bulk (spec §6) — the queue item is part of the path, and
 // every delivery is audited with the device that asked.
 app.get('/api/device/queue/:id/resume', [verifyDevice], deviceResume);
+// Same rule as the resume: one job per call, audited with the device that
+// asked. The device identity is a single consultant, so there is nothing wider
+// this could reach.
+app.get('/api/device/queue/:id/contacts', [verifyDevice], deviceQueueContacts);
 app.post('/api/device/queue/:id/filled', [verifyDevice, validate(reportSchema)], reportFilled);
 // Raise the questions a form asked WITHOUT giving the job up. The device
 // calls this the moment it meets one it cannot answer, shows the consultant a
@@ -420,6 +490,21 @@ app.get('/api/portal/answers/count', [verifyToken, isConsultant], myOutstandingC
 app.post('/api/portal/answers',
     [verifyToken, isConsultant, validate(submitAnswerSchema)], submitAnswer);
 app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
+// The consultant's own jobs. Same handler and same payload management gets —
+// the id is taken from the session, so there is nothing here to tamper with.
+app.get('/api/portal/jobs', [verifyToken, isConsultant], listConsultantJobs);
+
+// The consultant's own view of a flagged resume. Same payload the reviewer
+// sees, minus the ability to approve it.
+app.get('/api/portal/resume-reviews', [verifyToken, isConsultant], listReviews);
+app.get('/api/portal/resume-reviews/count', [verifyToken, isConsultant], reviewCount);
+app.get('/api/portal/resume-reviews/:itemId', [verifyToken, isConsultant], getReview);
+app.post('/api/portal/resume-reviews/:itemId/reject',
+    [verifyToken, isConsultant, validate(reviewDecisionSchema)], rejectReview);
+// One application at a time, their own only. There is no portal route that
+// lists the contact store — see controllers/contactController.js.
+app.get('/api/portal/applications/:id/contacts',
+    [verifyToken, isConsultant], applicationContacts);
 app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
 app.post('/api/portal/profile/change-request',
     [verifyToken, isConsultant, validate(submitChangeSchema)], submitChangeRequest);
@@ -452,6 +537,9 @@ const start = async () => {
     // or releasing a stale cap slot is repair work on state we already hold,
     // not a reason to reach out to a provider.
     startQueueMaintenance();
+    // The AI preparation and contact-discovery worker. Off unless
+    // WORKER_ENABLED=true, so a fresh checkout never spends money on its own.
+    startWorker();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);

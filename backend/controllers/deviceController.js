@@ -31,6 +31,8 @@ import { logAction } from './auditLogController.js';
 import { resolveStoredPath } from '../utils/upload.js';
 import { recordBlockers, outstandingForConsultant, releaseAnswered } from '../config/blockers.js';
 import { encryptPassword, decryptPassword } from '../utils/crypto.js';
+import { enqueue } from '../jobs/worker.js';
+import { KIND as CONTACT_KIND } from '../jobs/handlers/discoverContact.js';
 
 /* ── schemas ──────────────────────────────────────────────────────────── */
 
@@ -223,6 +225,10 @@ export const deviceQueue = async (req, res, next) => {
 
         const { rows } = await query(
             `SELECT q.id, q.channel, q.is_overlap, q.queued_at, q.became_ready_at,
+                    -- The app shows this beside each job so a consultant can see,
+                    -- before applying, whether the resume about to be attached was
+                    -- tailored for this posting or is their base one.
+                    q.tailoring_state, q.tailoring_skip_reason,
                     st.name AS status,
                     p.company, p.title, p.location_text, p.source_url,
                     p.pay_min, p.pay_max, p.pay_unit,
@@ -710,6 +716,24 @@ export const reportSubmitted = async (req, res, next) => {
                         qa[i].fieldType ?? null, qa[i].questionId ?? null],
                 );
             }
+
+            // Find out who to follow up with — later, on the worker.
+            //
+            // Enqueued INSIDE this transaction on purpose: a job written
+            // outside it would survive a rollback and point at an application
+            // record that no longer exists. Running it outside the request is
+            // the other half — an Apollo call is seconds of latency the
+            // consultant would otherwise wait through, and a provider outage
+            // must never be able to fail a submission that already happened.
+            await enqueue({
+                orgId: req.device.orgId,
+                kind: CONTACT_KIND,
+                payload: {
+                    postingId: item.posting_id,
+                    applicationId,
+                    queueItemId: item.id,
+                },
+            }, client);
         });
 
         return res.status(201).json({ ok: true, applicationId });

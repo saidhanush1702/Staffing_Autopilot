@@ -11,17 +11,25 @@ import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
 import CriteriaEditor from '../../components/criteria/CriteriaEditor.jsx';
 import ConsultantAnswers from '../../components/answers/ConsultantAnswers.jsx';
-import ConsultantQueue from '../../components/queue/ConsultantQueue.jsx';
+import ConsultantJobs from '../../components/queue/ConsultantJobs.jsx';
 import ConsultantApplications from '../../components/queue/ConsultantApplications.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShell } from '../../design/tokens.js';
 
 /** Sub-tabs of one consultant's workspace. Phase 3 adds Search Criteria. */
+/**
+ * `JOBS` replaced a "Job Queue" tab that showed only the un-submitted half of a
+ * consultant's jobs. The queue and the applications were two lists with no
+ * columns in common, so "what happened to that job?" needed both open at once.
+ * `JOBS` is the whole pipeline in one list; `APPLICATIONS` stays because it
+ * holds something the overview does not — the exact form, question by question,
+ * as the employer asked it.
+ */
 const TABS = [
+    { key: 'JOBS', label: 'Jobs', icon: ListChecks },
     { key: 'PROFILE', label: 'Profile', icon: UserCircle },
     { key: 'CRITERIA', label: 'Search Criteria', icon: Search },
     { key: 'ANSWERS', label: 'Answers', icon: MessageSquare },
-    { key: 'QUEUE', label: 'Job Queue', icon: ListChecks },
     { key: 'APPLICATIONS', label: 'Applications', icon: FileCheck2 },
 ];
 
@@ -50,7 +58,7 @@ const ConsultantDetail = () => {
     const [data, setData] = useState(null);
     const [schema, setSchema] = useState(null);
     const [error, setError] = useState('');
-    const [tab, setTab] = useState('PROFILE');
+    const [tab, setTab] = useState('JOBS');
 
     useEffect(() => {
         Promise.all([
@@ -147,9 +155,9 @@ const ConsultantDetail = () => {
                 <div className="mt-6">
                     <ConsultantApplications consultantId={id} />
                 </div>
-            ) : tab === 'QUEUE' ? (
+            ) : tab === 'JOBS' ? (
                 <div className="mt-6">
-                    <ConsultantQueue consultantId={id} />
+                    <ConsultantJobs consultantId={id} scope="management" />
                 </div>
             ) : (
             <>

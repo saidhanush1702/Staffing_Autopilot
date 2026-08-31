@@ -5,6 +5,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
 import QueueItemDrawer from './QueueItemDrawer.jsx';
+import TailoringBadge from './TailoringBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, sectionTitle, inputBase, TONE, TONE_ALERT, cardInteractive, alertShellSm } from '../../design/tokens.js';
 
@@ -144,6 +145,10 @@ const ConsultantQueue = ({ consultantId }) => {
                                 </div>
                                 <span className="flex flex-wrap items-center gap-1.5">
                                     <span className={`${badge} ${TONE.brand}`}>{item.status_label}</span>
+                                    <TailoringBadge
+                                        state={item.tailoring_state}
+                                        reason={item.tailoring_skip_reason}
+                                    />
                                     {item.score != null && (
                                         <span className={`${badge} ${item.score >= 70 ? TONE.success : TONE.warning}`}>
                                             score {item.score}

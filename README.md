@@ -29,6 +29,7 @@ diagrams. Everything after that is detail on one part.
 | 13 | [Security model](#13-security-model) |
 | 14 | [Data model](#14-data-model) |
 | 15 | [Technology stack](#15-technology-stack) |
+| 16 | [Configuration](#16-configuration) |
 
 ---
 
@@ -319,11 +320,11 @@ flowchart TD
 
     B --> C["<b>Tailor the resume</b><br/>reword and reorder true content<br/>for this specific job"]
     C --> D{"<b>Fabrication check</b><br/>second pass compares the tailored<br/>resume against the base resume"}
-    D -->|"Invented content found"| D1["<b>Rejected</b> — retried, then escalated.<br/>Never sent."]
+    D -->|"Invented content found"| D1["<b>Held at RESUME_REVIEW</b><br/>a person decides: approve, reject,<br/>or tailor it again. Never sent unreviewed."]
     D -->|"Clean"| E["<b>Score the fit</b><br/>how well this consultant<br/>matches this posting"]
 
     E --> F["<b>Gather the approved answers</b><br/>likely needed for this form"]
-    F --> G["Item marked <b>READY</b><br/><i>now, and only now, a daily cap slot is taken</i>"]
+    F --> G["Item marked <b>READY</b><br/><i>carrying the tailored resume</i>"]
 
     B --> X{"Preparation<br/>fails?"}
     X -->|"Retry with backoff"| B
@@ -340,9 +341,18 @@ flowchart TD
 **Tailoring may reword and reorder true content. It may never invent a skill, a
 tool, an employer, a date, or an accomplishment.**
 
-This is enforced twice: in the instruction set given to the model, and by a
-**second pass that compares the tailored resume against the base resume** and
-rejects anything that appears in one and not the other.
+This is enforced three times: in the instruction set given to the model; by a
+**mechanical comparison** that flags every number, figure and capitalised term
+appearing in the tailored resume and not in the base; and by an **independent
+second model** shown only the two resumes — never the job description, because a
+checker that can see the job talks itself into justifying an invention as
+"clearly relevant".
+
+Anything flagged **stops at `RESUME_REVIEW`** and waits for a person. Management
+approves; the consultant — whose name is on the document — can see every flagged
+claim and refuse, but cannot approve their own. Nothing sits there indefinitely:
+an expiry sweep releases a forgotten item with the base resume rather than
+letting the application quietly die.
 
 The instruction set lives in hub code only. **No portal user at any level — owner
 included — can view, edit or weaken it.**
@@ -350,14 +360,17 @@ included — can view, edit or weaken it.**
 ### Why preparation is a separate stage
 
 - **A model outage costs nothing.** Discovery keeps working; prepared items keep
-  being applied to; unprepared items retry.
-- **Cost is bounded by the daily cap**, because preparation only runs for items
-  that will actually be applied to.
-- **A slot is taken when an item becomes ready, not when it is queued.** A
-  failed preparation therefore never consumes a consultant's day.
-- **Scoring improves selection over time.** Jobs held back by the cap are scored
-  too, so the next cycle fills the queue best-first using what the AI learned —
-  without the four-hour cycle ever calling a model.
+  being applied to; unprepared items retry and then go out with the base resume.
+- **An application is never lost to the AI stage.** Every failure path — no base
+  resume, an unreadable `.doc`, an exhausted budget, a provider outage — ends
+  with the item at `READY` carrying the base resume and a visible marker saying
+  which of those happened. The marker is the point: sending the base resume
+  silently, while the product promises tailoring, is how a client finds out by
+  noticing their results got worse.
+- **Cost is bounded per organisation, not per day.** There is no daily cap;
+  every match is tailored. The monthly budget is what turns spend from an
+  unknown into a number the owner sets, and reaching it degrades to marked,
+  untailored applications rather than to no applications.
 
 ---
 
@@ -727,3 +740,94 @@ The hub stays deliberately light — it fetches, matches, prepares and records.
 **The browser work happens on consultant machines**, using their own logins and
 their own sessions, which is both what makes the applications genuinely theirs
 and what keeps the server small.
+
+---
+
+## 16. Configuration
+
+Copy `backend/.env.example` to `backend/.env` and fill it in. Every paid feature
+is **off by default**: a fresh checkout runs, serves the portal, and spends
+nothing until somebody deliberately switches something on.
+
+### The two paid features, and their off switches
+
+Both have **two** switches, and both must be on before a single call is made.
+
+| Feature | Environment | Per organisation |
+|---|---|---|
+| Resume tailoring | `WORKER_ENABLED=true`, plus a model provider and its key | `organizations.ai_monthly_budget_usd`, set in the hub |
+| Contact discovery | `WORKER_ENABLED=true`, plus `APOLLO_API_KEY` | the `APOLLO` row in `organization_providers`, disabled by migration `041` |
+
+The split is deliberate. The environment says what this *installation* is
+capable of; the database says what each *agency* has agreed to pay for. One
+installation serving several agencies cannot bill one of them for a feature
+another one enabled.
+
+### Background worker
+
+Nothing in stage 2 happens without it — resume tailoring and contact lookups
+both run here.
+
+```bash
+WORKER_ENABLED=false        # the master switch for everything paid
+WORKER_INTERVAL_MS=15000    # how often to look for work
+WORKER_BATCH_SIZE=5         # jobs claimed per tick
+WORKER_LEASE_MINUTES=10     # how long a crashed worker can hold a job
+```
+
+### The model
+
+The provider is deliberately not hard-coded. Leave `LLM_PROVIDER` empty and
+tailoring is simply off: items still reach `READY`, carrying the base resume and
+marked **Not tailored**. Nothing is held up and nothing breaks.
+
+```bash
+LLM_PROVIDER=               # anthropic | openai | gemini | mock | (empty = off)
+LLM_MODEL=
+LLM_TIMEOUT_MS=120000
+
+ANTHROPIC_API_KEY=
+LLM_OPENAI_API_KEY=
+GEMINI_API_KEY=
+```
+
+Each of the three stages — parse, tailor, check — can override the provider and
+model independently (`LLM_TAILOR_MODEL`, `LLM_CHECK_MODEL`, …), so the expensive
+model can do the writing while a cheap one does the checking. The model actually
+used is recorded on every artifact, so a model change is auditable after the
+fact rather than a mystery.
+
+The monthly spend ceiling is **per organisation** and set in the hub, not here.
+Reaching it never stops an application: the job goes out with the base resume,
+marked `NOT_TAILORED / BUDGET_EXHAUSTED`.
+
+### Contact discovery
+
+```bash
+APOLLO_API_KEY=
+APOLLO_BASE_URL=https://api.apollo.io
+APOLLO_TIMEOUT_MS=20000
+CONTACT_REUSE_DAYS=90       # lower this and the bill rises proportionally
+PHONE_PROVIDER=             # empty = use whatever phone Apollo returned
+```
+
+The key never enters the database. `organization_providers.credential_env` names
+the variable to read, which is the same arrangement the search provider already
+uses, and it means no operator can read a secret out of a settings screen.
+
+### Tests
+
+Every suite runs against the real database with the providers stubbed, so the
+whole path is verifiable without a single API key.
+
+```bash
+npm run test:phase7
+```
+
+| Suite | Proves |
+|---|---|
+| `test:llm` | the provider facade, its retries, and that it never throws |
+| `test:worker` | claim/lease/backoff, and that two workers never take one job |
+| `test:tailoring` | parse → tailor → check → PDF, and all five skip outcomes |
+| `test:contacts` | the contact waterfall, the 90-day store, and do-not-contact |
+| `test:e2e` | match → tailor → check → review → apply → contact, in one run |

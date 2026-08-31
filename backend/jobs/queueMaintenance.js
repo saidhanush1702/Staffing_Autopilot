@@ -8,8 +8,10 @@
  *   STALE PREPARATION an item that never prepared sits on a cap slot
  *   ABANDONED REVIEWS a filled application nobody looked at holds a slot
  *   DEAD POSTINGS     nothing ever set is_active back to false
+ *   STALE RESUME      a flagged tailored resume nobody reviewed holds the job
+ *   REVIEWS           behind a decision that is never coming
  *
- * All four run on the scheduler's ordinary tick and are per organisation,
+ * All of them run on the scheduler's ordinary tick and are per organisation,
  * because every interval is a per-agency setting.
  *
  * ── WHY THESE ARE SWEEPS AND NOT TRIGGERS ─────────────────────────────
@@ -115,6 +117,38 @@ export const expireReviews = async (orgId, statusIds, days) => {
 };
 
 /**
+ * A tailored resume that was flagged, and that nobody ever looked at.
+ *
+ * The application goes out with the CONSULTANT'S BASE RESUME rather than the
+ * flagged one — the flags were never cleared by a person, so the tailored file
+ * has not earned the right to be sent, but the job has waited long enough.
+ *
+ * Deliberately not the other way round. Holding a job indefinitely because a
+ * reviewer is on holiday costs the consultant an application they would
+ * certainly have wanted; sending the untailored resume costs them some keyword
+ * matching. The second is the smaller loss, and it is recorded.
+ */
+export const expireResumeReviews = async (orgId, statusIds, days) => {
+    const { rows } = await query(
+        `UPDATE queue_items
+            SET status_id = $2,
+                tailoring_state = 'NOT_TAILORED',
+                tailoring_skip_reason = 'REVIEW_EXPIRED',
+                became_ready_at = now()
+          WHERE organization_id = $1
+            AND status_id = $3
+            AND updated_at < now() - ($4 || ' days')::interval
+          RETURNING id`,
+        [orgId, statusIds.READY, statusIds.RESUME_REVIEW, String(days)],
+    );
+
+    await recordTransitions(orgId, rows, statusIds.RESUME_REVIEW, statusIds.READY,
+        `The flagged resume was not reviewed within ${days} days — `
+        + 'the base resume will be sent instead');
+    return rows.length;
+};
+
+/**
  * Postings no run has seen for a while.
  *
  * `is_active` existed from the start and nothing ever set it false, so queues
@@ -137,15 +171,17 @@ export const agePostings = async (orgId, staleDays) => {
     return rowCount;
 };
 
-/** All four, for one organisation. Never throws — housekeeping must not break a tick. */
+/** Every sweep, for one organisation. Never throws — housekeeping must not break a tick. */
 export const sweepOrganisation = async (org, statusIds) => {
     const result = {
-        leases: 0, unprepared: 0, reviews: 0, postings: 0, errors: [],
+        leases: 0, unprepared: 0, reviews: 0, resumeReviews: 0, postings: 0, errors: [],
     };
     const steps = [
         ['leases', () => expireLeases(org.id, statusIds, org.lease_expiry_minutes)],
         ['unprepared', () => expireUnprepared(org.id, statusIds, org.unprepared_expiry_hours)],
         ['reviews', () => expireReviews(org.id, statusIds, org.review_expiry_days)],
+        ['resumeReviews',
+            () => expireResumeReviews(org.id, statusIds, org.review_expiry_days)],
         ['postings', () => agePostings(org.id, org.posting_stale_days)],
     ];
 
@@ -153,8 +189,8 @@ export const sweepOrganisation = async (org, statusIds) => {
         try {
             result[name] = await run();
         } catch (err) {
-            // One failing sweep must not stop the other three, and must not
-            // stop the discovery tick it rides along with.
+            // One failing sweep must not stop the others, and must not stop the
+            // discovery tick it rides along with.
             result.errors.push(`${name}: ${err.message}`);
         }
     }
@@ -172,12 +208,12 @@ export const sweepAll = async () => {
     );
 
     const totals = {
-        leases: 0, unprepared: 0, reviews: 0, postings: 0, promoted: 0,
+        leases: 0, unprepared: 0, reviews: 0, resumeReviews: 0, postings: 0, promoted: 0,
     };
 
     for (const org of orgs) {
         const r = await sweepOrganisation(org, statusIds);
-        for (const k of ['leases', 'unprepared', 'reviews', 'postings']) totals[k] += r[k];
+        for (const k of ['leases', 'unprepared', 'reviews', 'resumeReviews', 'postings']) totals[k] += r[k];
         for (const e of r.errors) console.error(`[maintenance] ${org.name} ${e}`);
 
         // Promotion runs here as well as at the end of a discovery cycle.
@@ -194,8 +230,8 @@ export const sweepAll = async () => {
 
     if (Object.values(totals).some((n) => n > 0)) {
         console.log(`[maintenance] leases ${totals.leases}, unprepared ${totals.unprepared}, `
-            + `reviews ${totals.reviews}, postings aged ${totals.postings}, `
-            + `promoted ${totals.promoted}`);
+            + `reviews ${totals.reviews}, resume reviews ${totals.resumeReviews}, `
+            + `postings aged ${totals.postings}, promoted ${totals.promoted}`);
     }
     return totals;
 };

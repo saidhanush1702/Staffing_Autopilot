@@ -23,11 +23,16 @@ const AnswerInbox = lazy(() => import('./pages/management/AnswerInbox.jsx'));
 const JobDiscovery = lazy(() => import('./pages/management/JobDiscovery.jsx'));
 const Postings = lazy(() => import('./pages/management/Postings.jsx'));
 const Devices = lazy(() => import('./pages/management/Devices.jsx'));
+const ResumeReview = lazy(() => import('./pages/management/ResumeReview.jsx'));
+const Contacts = lazy(() => import('./pages/management/Contacts.jsx'));
+const AiCosts = lazy(() => import('./pages/management/AiCosts.jsx'));
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
 const MyProfile = lazy(() => import('./pages/portal/MyProfile.jsx'));
 const MyCriteria = lazy(() => import('./pages/portal/MyCriteria.jsx'));
 const MyAnswers = lazy(() => import('./pages/portal/MyAnswers.jsx'));
+const MyResumeReviews = lazy(() => import('./pages/portal/MyResumeReviews.jsx'));
+const MyJobs = lazy(() => import('./pages/portal/MyJobs.jsx'));
 
 /** Wrap a lazy page in its guard + layout + suspense boundary. */
 const route = (C, roles) => (
@@ -74,6 +79,9 @@ const App = () => (
                 <Route path="/management/consultants/:id" element={route(ConsultantDetail, MGMT)} />
                 <Route path="/management/approvals" element={route(ProfileApprovals, MGMT)} />
                 <Route path="/management/answers" element={route(AnswerInbox, MGMT)} />
+                <Route path="/management/resume-reviews" element={route(ResumeReview, MGMT)} />
+                <Route path="/management/contacts" element={route(Contacts, MGMT)} />
+                <Route path="/management/costs" element={route(AiCosts, MGMT)} />
                 <Route path="/management/discovery" element={route(JobDiscovery, MGMT)} />
                 <Route path="/management/postings" element={route(Postings, MGMT)} />
                 <Route path="/management/devices" element={route(Devices, MGMT)} />
@@ -82,7 +90,9 @@ const App = () => (
                 <Route path="/portal" element={route(ConsultantDashboard, CONSULTANT)} />
                 <Route path="/portal/profile" element={route(MyProfile, CONSULTANT)} />
                 <Route path="/portal/criteria" element={route(MyCriteria, CONSULTANT)} />
+                <Route path="/portal/jobs" element={route(MyJobs, CONSULTANT)} />
                 <Route path="/portal/answers" element={route(MyAnswers, CONSULTANT)} />
+                <Route path="/portal/resume-reviews" element={route(MyResumeReviews, CONSULTANT)} />
 
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

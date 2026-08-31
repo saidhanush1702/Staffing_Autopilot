@@ -129,6 +129,10 @@ export const listConsultantQueue = async (req, res, next) => {
         const [queue, held] = await Promise.all([
             query(
                 `SELECT q.id, q.is_overlap, q.queued_at, q.skip_reason, q.park_reason,
+                        -- Phase 7: whether this job went out with a tailored
+                        -- resume, and if not, why not. NOT_TAILORED is a normal
+                        -- outcome, so every screen showing a job shows it.
+                        q.tailoring_state, q.tailoring_skip_reason,
                         st.name AS status_name, st.label AS status_label,
                         p.id AS posting_id, p.company, p.title, p.location_text,
                         p.is_remote, p.source_url,
@@ -157,6 +161,7 @@ export const listConsultantQueue = async (req, res, next) => {
             // assuming discovery found nothing.
             query(
                 `SELECT q.id, q.queued_at AS matched_at, q.channel,
+                        q.tailoring_state, q.tailoring_skip_reason,
                         m.score, m.reason,
                         p.company, p.title, p.location_text, p.source_url
                    FROM queue_items q
