@@ -25,17 +25,51 @@ export const listPostings = async (req, res, next) => {
         const sourceId = req.query.sourceId ? Number(req.query.sourceId) : null;
         const limit = Math.min(Number(req.query.limit ?? 50), 200);
 
+        // ── WHERE DID THIS POSTING COME FROM, AND WHEN WAS IT PUBLISHED ──
+        //
+        // Three ingestion doors now write into this pool and they are NOT
+        // equivalent, so "which one found this" is a question the screen has to
+        // be able to answer:
+        //
+        //   SerpApi cycle    a scheduled run. `first_run_id` names it, and
+        //                    discovery_runs.lookup_id is the readable "#42".
+        //   JobsPipe poll    a run too, but in `jobspipe_poll_runs` — its
+        //                    sightings deliberately carry run_id = NULL so a
+        //                    webhook cannot race `uq_one_running_discovery`.
+        //   JobsPipe webhook pushed. There is no run by design.
+        //
+        // So a NULL run against a JOBSPIPE source is not missing data, it is
+        // the correct answer, and the client renders it as the door rather than
+        // as an absence.
+        //
+        // LATERAL for the FIRST sighting specifically: `times_seen` can be 40,
+        // and the question is which run found it first, not which touched it
+        // last. The (posting_id, seen_at) index makes it a cheap lookup.
         const { rows } = await query(
             `SELECT p.id, p.company, p.title, p.location_text, p.is_remote,
                     p.source_url, p.pay_min, p.pay_max, p.pay_unit, p.pay_currency,
                     p.first_seen_at, p.last_seen_at, p.times_seen, p.posted_at,
                     w.label AS work_type_label,
                     s.label AS source_label, s.name AS source_name,
+                    s.fetch_mode AS source_fetch_mode,
+                    p.origin_board,
+                    fs.run_id AS first_run_id,
+                    r.lookup_id  AS run_no,
+                    r.started_at AS run_started_at,
+                    r.trigger    AS run_trigger,
                     (SELECT COUNT(*)::int FROM queue_items q WHERE q.posting_id = p.id) AS queued_count,
                     (SELECT COUNT(*)::int FROM job_matches m WHERE m.posting_id = p.id) AS match_count
                FROM job_postings p
           LEFT JOIN lkp_work_types w  ON w.id = p.work_type_id
           LEFT JOIN lkp_job_sources s ON s.id = p.first_source_id
+          LEFT JOIN LATERAL (
+                    SELECT g.run_id
+                      FROM job_posting_sightings g
+                     WHERE g.posting_id = p.id
+                     ORDER BY g.seen_at ASC
+                     LIMIT 1
+                  ) fs ON TRUE
+          LEFT JOIN discovery_runs r ON r.id = fs.run_id
               WHERE p.organization_id = $1
                 AND ($2::text IS NULL OR p.company ILIKE '%' || $2 || '%'
                                       OR p.title   ILIKE '%' || $2 || '%')

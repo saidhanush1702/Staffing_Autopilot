@@ -139,6 +139,41 @@ const loadProviders = async (orgId) => {
 };
 
 /**
+ * Which search provider this organisation would actually use.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT AN INLINE `?? providers[0]` ────────
+ *
+ * It used to be inlined, identically, at three call sites:
+ *
+ *     providers.find((p) => p.is_enabled) ?? providers[0] ?? null
+ *
+ * When Apollo was registered with `fetch_mode = 'PROVIDER'` (migration 041) so
+ * it could reuse the per-agency budget machinery, it joined the very set this
+ * picks from. `loadProviders` orders `BY s.label`, "Apollo" sorts before
+ * "Google Jobs", and every organisation with no search provider switched on
+ * began reporting APOLLO as its search provider — with Apollo's budget and
+ * Apollo's credential — while SerpApi sat disabled and invisible.
+ *
+ * Migration 045 removes Apollo from the set, which fixes today's symptom. This
+ * function fixes the shape of the bug: the fallback now says out loud that it
+ * is a fallback, so a caller can tell "this is the provider we use" from "there
+ * is nothing enabled and this is merely the first row". A screen that cannot
+ * tell those apart is how a disabled provider came to look like a configured
+ * one for two weeks.
+ *
+ * @returns {{ provider, enabled, fellBack }}
+ *   provider  the row to read settings from, or null when there are none
+ *   enabled   whether that row is actually switched on
+ *   fellBack  true when nothing was enabled and the first row was taken
+ */
+const selectSearchProvider = (providers) => {
+    const live = providers.find((p) => p.is_enabled);
+    if (live) return { provider: live, enabled: true, fellBack: false };
+    const first = providers[0] ?? null;
+    return { provider: first, enabled: false, fellBack: first !== null };
+};
+
+/**
  * Credits already spent this calendar month, and what remains.
  *
  * Counted from `discovery_runs.provider_calls` rather than a separate ledger:
@@ -232,7 +267,13 @@ const forgetFilter = async (orgId, q, window) => {
  * matching them and filtering later would be an easy way to leak a job to
  * somebody who should not receive one.
  */
-const loadMatchableConsultants = async (orgId) => {
+// Exported for the JobsPipe push listener (controllers/jobspipeListener.js),
+// which must match a pushed job against the SAME bench, loaded the same way.
+// Nothing about the function changed — only its visibility. A second copy of
+// this query would drift from this one the first time criteria gain a field,
+// and the webhook would then quietly match against a stale idea of what a
+// consultant wants.
+export const loadMatchableConsultants = async (orgId) => {
     const { rows } = await query(
         `SELECT u.id, u.name,
                 sc.current_version_id AS version_id
@@ -325,7 +366,19 @@ const buildQueries = (consultants, limit = 6) => {
  * Insert a posting, or record a repeat sighting of one already known (R-15).
  * @returns {{ id, isNew }}
  */
-const upsertPosting = async (client, { orgId, sourceId, runId, posting, workTypeId, portalTypeId }) => {
+// Exported for the JobsPipe push listener. R-15 is one rule with one
+// implementation: a pushed job and the same job found by the cycle must land on
+// ONE fingerprint and one row, or a consultant applies to it twice. That
+// guarantee only holds while both paths call THIS function. Visibility is the
+// only thing that changed.
+export const upsertPosting = async (client, {
+    orgId, sourceId, runId, posting, workTypeId, portalTypeId,
+    // Which BOARD the job was listed on, when the caller knows it and the
+    // source row does not already say. SerpApi leaves this null — its board IS
+    // the source row. JobsPipe passes it, because its nine boards all share one
+    // source row by design (see migration 046).
+    originBoard = null,
+}) => {
     const fingerprint = fingerprintPosting(posting);
 
     const { rows: existing } = await client.query(
@@ -347,9 +400,14 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
         await client.query(
             `UPDATE job_postings
                 SET last_seen_at = now(), times_seen = times_seen + 1, is_active = TRUE,
-                    provider_job_id = COALESCE(provider_job_id, $2)
+                    provider_job_id = COALESCE(provider_job_id, $2),
+                    origin_board    = COALESCE(origin_board, $3)
               WHERE id = $1`,
-            [postingId, posting.providerJobId ?? null],
+            // Backfilled when missing, never overwritten — same rule as
+            // provider_job_id. The FIRST board we saw a job on is the honest
+            // answer to "where did this come from"; a later sighting on a
+            // second board is a re-listing, not a correction.
+            [postingId, posting.providerJobId ?? null, originBoard],
         );
     } else {
         postingId = uuidv4();
@@ -359,13 +417,14 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
                 (id, organization_id, company, title, location_text, is_remote,
                  description, source_url, work_type_id, portal_type_id,
                  pay_min, pay_max, pay_unit, pay_currency,
-                 fingerprint, first_source_id, posted_at, provider_job_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+                 fingerprint, first_source_id, posted_at, provider_job_id, origin_board)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
             [postingId, orgId, posting.company, posting.title, posting.locationText,
                 posting.isRemote, posting.description, posting.sourceUrl,
                 workTypeId, portalTypeId,
                 posting.payMin, posting.payMax, posting.payUnit, posting.payCurrency,
-                fingerprint, sourceId, posting.postedAt, posting.providerJobId ?? null],
+                fingerprint, sourceId, posting.postedAt, posting.providerJobId ?? null,
+                originBoard],
         );
     }
 
@@ -651,7 +710,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         // One provider today, several supported. The first enabled one is used;
         // adding a second is a row in organization_providers, not a code change.
         const orgProviders = await loadProviders(orgId);
-        const orgProvider = orgProviders.find((p) => p.is_enabled) ?? orgProviders[0] ?? null;
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
         const budget = await monthlyBudgetState(
             orgId, orgProvider?.monthly_budget ?? 0, trigger,
         );
@@ -1108,7 +1167,7 @@ export const listSources = async (req, res, next) => {
         const settings = await loadOrgSettings(req.user.orgId);
         const cycleHours = clampCycleHours(settings?.discovery_cycle_hours);
         const orgProviders = await loadProviders(req.user.orgId);
-        const orgProvider = orgProviders.find((p) => p.is_enabled) ?? orgProviders[0] ?? null;
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
         const spend = await monthlyBudgetState(
             req.user.orgId, orgProvider?.monthly_budget ?? 0, 'MANUAL',
         );
@@ -1225,7 +1284,7 @@ export const getSchedule = async (req, res, next) => {
         const lastRunAt = last[0]?.started_at ?? null;
         const cfg = providerConfig();
         const orgProviders = await loadProviders(req.user.orgId);
-        const orgProvider = orgProviders.find((p) => p.is_enabled) ?? orgProviders[0] ?? null;
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
         const spend = await monthlyBudgetState(
             req.user.orgId, orgProvider?.monthly_budget ?? 0, 'MANUAL',
         );
@@ -1281,7 +1340,7 @@ export const updateSchedule = async (req, res, next) => {
         if (!before) return res.status(404).json({ error: 'Organization not found.' });
 
         const providersBefore = await loadProviders(req.user.orgId);
-        const target = providersBefore.find((p) => p.is_enabled) ?? providersBefore[0] ?? null;
+        const { provider: target } = selectSearchProvider(providersBefore);
 
         // COALESCE so the screen can send one field without restating the rest.
         const { rows } = await query(
@@ -1398,7 +1457,7 @@ export const updateSchedule = async (req, res, next) => {
         );
         const lastRunAt = last[0]?.started_at ?? null;
         const providersAfter = await loadProviders(req.user.orgId);
-        const activeProvider = providersAfter.find((p) => p.is_enabled) ?? providersAfter[0] ?? null;
+        const { provider: activeProvider } = selectSearchProvider(providersAfter);
         const spend = await monthlyBudgetState(
             req.user.orgId, activeProvider?.monthly_budget ?? 0, 'MANUAL',
         );

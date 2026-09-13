@@ -34,6 +34,7 @@ const SECTION = {
     '/management/answers': ['Review', 'Answer approvals'],
     '/management/postings': ['Sourcing', 'Job postings'],
     '/management/discovery': ['Sourcing', 'Job discovery'],
+    '/management/jobspipe': ['Sourcing', 'JobsPipe feed'],
     '/management/devices': ['System', 'Desktop access'],
 
     '/portal': ['Workspace', 'Dashboard'],

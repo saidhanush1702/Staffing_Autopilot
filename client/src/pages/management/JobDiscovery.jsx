@@ -10,6 +10,7 @@ import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import SchedulePanel from '../../components/discovery/SchedulePanel.jsx';
 import SearchPlanPanel from '../../components/discovery/SearchPlanPanel.jsx';
+import JobsPipePullPanel from '../../components/discovery/JobsPipePullPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShellSm, alertShell } from '../../design/tokens.js';
 
@@ -278,6 +279,17 @@ const JobDiscovery = () => {
                     </div>
                 )}
             </div>
+
+            {/* ── the second ingestion door ──────────────────────── */}
+            {/*
+              Directly below the provider above, and laid out the same way, so
+              the two read as two of the same kind of thing. It has its OWN Run
+              button on purpose: the provider above bills per page of results
+              and a run makes several calls, while JobsPipe bills exactly one
+              credit per request. One button spanning both would spend two
+              separate metered allowances on a single press.
+            */}
+            <JobsPipePullPanel canEdit={isAdmin} />
 
             {/* ── boards ─────────────────────────────────────────── */}
             <h2 className={`mt-8 ${sectionTitle}`}>Job boards</h2>

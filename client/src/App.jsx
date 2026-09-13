@@ -22,6 +22,7 @@ const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.
 const AnswerInbox = lazy(() => import('./pages/management/AnswerInbox.jsx'));
 const JobDiscovery = lazy(() => import('./pages/management/JobDiscovery.jsx'));
 const Postings = lazy(() => import('./pages/management/Postings.jsx'));
+const JobsPipe = lazy(() => import('./pages/management/JobsPipe.jsx'));
 const Devices = lazy(() => import('./pages/management/Devices.jsx'));
 const ResumeReview = lazy(() => import('./pages/management/ResumeReview.jsx'));
 const Contacts = lazy(() => import('./pages/management/Contacts.jsx'));
@@ -84,6 +85,7 @@ const App = () => (
                 <Route path="/management/costs" element={route(AiCosts, MGMT)} />
                 <Route path="/management/discovery" element={route(JobDiscovery, MGMT)} />
                 <Route path="/management/postings" element={route(Postings, MGMT)} />
+                <Route path="/management/jobspipe" element={route(JobsPipe, MGMT)} />
                 <Route path="/management/devices" element={route(Devices, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}

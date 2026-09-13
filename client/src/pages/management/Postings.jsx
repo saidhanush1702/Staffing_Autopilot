@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-    Briefcase, Search, ExternalLink, Users, Eye, MapPin, Repeat,
+    Briefcase, Search, ExternalLink, Users, Eye, MapPin, Repeat, Clock,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -10,6 +10,60 @@ import {
     inputBase, badge, btnSm, sectionTitle, TONE, pageTitle, pageSubtitle,
     tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty,
 } from '../../design/tokens.js';
+
+/**
+ * How old the posting is, in the shortest form that is still honest.
+ *
+ * This is the column the JobsPipe trial exists to make visible: the whole
+ * complaint that started it was that SerpApi returns roles that were published
+ * a fortnight ago, and until now nothing on this screen said so — `posted_at`
+ * was fetched and thrown away.
+ *
+ * Null is left as "not stated" rather than filled in with `first_seen_at`.
+ * When we SAW a job is not when it was PUBLISHED, and quietly substituting one
+ * for the other would make every board look equally fresh, which is precisely
+ * the comparison this column is here to support.
+ */
+const postedAge = (iso) => {
+    if (!iso) return null;
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return null;
+
+    const hours = (Date.now() - then) / 3_600_000;
+    // A future date means the board sent a deadline rather than a publication
+    // date — measured at 44% of one JobsPipe page. Say so instead of rendering
+    // a negative age.
+    if (hours < 0) return { text: 'future-dated', tone: 'warning', hours };
+    if (hours < 1) return { text: `${Math.max(1, Math.round(hours * 60))}m ago`, tone: 'success', hours };
+    if (hours < 24) return { text: `${Math.round(hours)}h ago`, tone: 'success', hours };
+
+    const days = Math.round(hours / 24);
+    if (days <= 3) return { text: `${days}d ago`, tone: 'info', hours };
+    if (days <= 14) return { text: `${days}d ago`, tone: 'neutral', hours };
+    return { text: `${days}d ago`, tone: 'warning', hours };
+};
+
+/**
+ * Which door this posting came through, and which run — when there was one.
+ *
+ * A JobsPipe posting has no `discovery_runs` row BY DESIGN: the webhook and the
+ * poller both write `run_id = NULL` so they cannot race the scheduler's
+ * one-open-run constraint. So a missing run here is not missing data, and
+ * rendering it as "—" would read as a fault. It gets named for what it is.
+ */
+const originOf = (p) => {
+    if (p.run_no) {
+        return {
+            label: `Run #${p.run_no}`,
+            title: `${p.run_trigger === 'MANUAL' ? 'Manual' : 'Scheduled'} discovery run`
+                + (p.run_started_at ? ` · ${new Date(p.run_started_at).toLocaleString()}` : ''),
+        };
+    }
+    if (p.source_name === 'JOBSPIPE') {
+        return { label: 'pushed / polled', title: 'JobsPipe writes no discovery run by design' };
+    }
+    return { label: null, title: null };
+};
 
 /** "USD 60–75 / hour", or nothing if the board did not say. */
 const payText = (p) => {
@@ -87,13 +141,14 @@ const Postings = () => {
                 <button type="submit" className={btnSm.secondary}>Search</button>
             </form>
 
-            <TableShell className="mt-4" minWidth={900}>
+            <TableShell className="mt-4" minWidth={1060}>
                 <thead className={tableHead}>
                     <tr>
                         <th className={tableHeadCell}>Job</th>
                         <th className={tableHeadCell}>Location</th>
                         <th className={tableHeadCell}>Pay</th>
-                        <th className={tableHeadCell}>Source</th>
+                        <th className={tableHeadCell}>Posted</th>
+                        <th className={tableHeadCell}>Source &amp; run</th>
                         <th className={tableHeadCell}>Seen</th>
                         <th className={tableHeadCell}>Matched</th>
                         <th className={tableHeadCell} />
@@ -102,7 +157,7 @@ const Postings = () => {
                 <tbody className={tableBody}>
                     {postings.length === 0 && (
                         <tr>
-                            <td colSpan={7} className="px-4 py-12 text-center">
+                            <td colSpan={8} className="px-4 py-12 text-center">
                                 <Briefcase className="mx-auto h-8 w-8 text-slate-300" />
                                 <p className="mt-2 text-sm text-slate-500">
                                     {search ? 'No postings match that.' : 'No postings found yet.'}
@@ -132,7 +187,60 @@ const Postings = () => {
                             <td className={`${tableCell} whitespace-nowrap text-slate-600`}>
                                 {payText(p) ?? <span className="text-slate-300">not stated</span>}
                             </td>
-                            <td className={`${tableCell} text-xs text-slate-500`}>{p.source_label ?? '—'}</td>
+                            <td className={`${tableCell} whitespace-nowrap`}>
+                                {(() => {
+                                    const age = postedAge(p.posted_at);
+                                    if (!age) {
+                                        return <span className="text-xs text-slate-300">not stated</span>;
+                                    }
+                                    return (
+                                        <span
+                                            className={`${badge} ${TONE[age.tone]}`}
+                                            title={new Date(p.posted_at).toLocaleString()}
+                                        >
+                                            <Clock className="h-3 w-3" />
+                                            {age.text}
+                                        </span>
+                                    );
+                                })()}
+                            </td>
+                            <td className={`${tableCell} whitespace-nowrap`}>
+                                {(() => {
+                                    const origin = originOf(p);
+                                    return (
+                                        <>
+                                            <span className={`${badge} ${
+                                                p.source_name === 'JOBSPIPE' ? TONE.brand : TONE.neutral}`}
+                                            >
+                                                {p.source_name === 'JOBSPIPE' ? 'JobsPipe' : (p.source_label ?? '—')}
+                                            </span>
+                                            {/*
+                                              The BOARD, beside the door that delivered it.
+                                              SerpApi needs no such pairing — its board IS the
+                                              source row — but every JobsPipe posting shares one
+                                              source row, so without this a LinkedIn job and an
+                                              Indeed job are indistinguishable on this screen.
+                                            */}
+                                            {p.origin_board && (
+                                                <span
+                                                    className={`${badge} ${TONE.info} ml-1`}
+                                                    title={`Listed on ${p.origin_board}`}
+                                                >
+                                                    {p.origin_board}
+                                                </span>
+                                            )}
+                                            {origin.label && (
+                                                <span
+                                                    className="mt-0.5 block text-xs text-slate-400"
+                                                    title={origin.title ?? undefined}
+                                                >
+                                                    {origin.label}
+                                                </span>
+                                            )}
+                                        </>
+                                    );
+                                })()}
+                            </td>
                             <td className={tableCell}>
                                 <span className="flex items-center gap-1 text-xs text-slate-500">
                                     <Repeat className="h-3.5 w-3.5" /> {p.times_seen}×

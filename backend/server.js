@@ -79,9 +79,27 @@ import {
     deviceAnswers,
     revealActivationCode,
 } from './controllers/deviceController.js';
+import {
+    receiveWebhook as jobspipeWebhook,
+    getSettings as getJobsPipeSettings,
+    rotateToken as rotateJobsPipeToken,
+    revealToken as revealJobsPipeToken,
+    setEnabled as setJobsPipeEnabled,
+    listEvents as listJobsPipeEvents,
+    sendTestEvent as sendJobsPipeTest,
+    enabledSchema as jobspipeEnabledSchema,
+} from './controllers/jobspipeListener.js';
+import {
+    getPullStatus, previewPoll, runPollNow, setPullEnabled,
+    pollSchema, pullEnabledSchema,
+} from './controllers/jobspipePullController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
 import { startQueueMaintenance } from './jobs/queueMaintenance.js';
 import { startWorker } from './jobs/worker.js';
+// The JobsPipe PULL path (Phase 5c). A third ingestion door: the webhook needs
+// a paid plan, so the search API is the only JobsPipe surface that can be
+// trialled. Off unless JOBSPIPE_POLL_ENABLED=true — see jobs/jobspipePoller.js.
+import { startJobsPipePoller } from './jobs/jobspipePoller.js';
 // Importing the handler modules is what registers them with the worker.
 // Without this line the worker starts, claims a tailoring job, finds no
 // handler for its kind, and dead-letters it — which looks exactly like a
@@ -339,6 +357,61 @@ app.get('/api/management/discovery/schedule', [verifyToken, isManagement], getSc
 app.patch('/api/management/discovery/schedule',
     [verifyToken, isOrgAdmin, validate(scheduleSchema)], updateSchedule);
 
+/* ────── JobsPipe real-time push (Phase 5b — parallel trial) ────── */
+//
+// A SECOND ingestion path, beside the scheduled cycle above and changing
+// nothing about it. The cycle pulls on a heartbeat and pays per page; this is
+// pushed to as jobs are published and costs nothing per job. Both feed the same
+// pool through the same de-duplication, the same pre-filter and the same
+// preparation gate — see controllers/jobspipeListener.js.
+//
+// ── WHY THE WEBHOOK IS NOT BEHIND verifyToken ────────────────────────
+//
+// It is the one write route in this API with no user and no cookie: JobsPipe is
+// a server posting to a public URL. The per-agency shared secret in the header
+// is the identity, and it decides BOTH admission and which tenant's pool the
+// job lands in. That is why it sits outside the /api/management block rather
+// than being given a weaker guard inside it.
+//
+// It keeps the standard /api rate limit — a push feed that suddenly sends 300
+// deliveries a minute is a runaway sender or somebody else, and neither should
+// be absorbed silently.
+app.post('/api/webhooks/jobspipe', jobspipeWebhook);
+
+// The operator surface. Reading the funnel is management, because a recruiter
+// wondering why a queue is quiet should be able to see whether the feed is
+// arriving. Everything that changes the credential or turns the feed on is
+// ORG_ADMIN and audited, exactly as enabling a board is.
+app.get('/api/management/jobspipe', [verifyToken, isManagement], getJobsPipeSettings);
+app.get('/api/management/jobspipe/events', [verifyToken, isManagement], listJobsPipeEvents);
+app.post('/api/management/jobspipe/token', [verifyToken, isOrgAdmin], rotateJobsPipeToken);
+app.get('/api/management/jobspipe/token', [verifyToken, isOrgAdmin], revealJobsPipeToken);
+app.patch('/api/management/jobspipe',
+    [verifyToken, isOrgAdmin, validate(jobspipeEnabledSchema)], setJobsPipeEnabled);
+app.post('/api/management/jobspipe/test', [verifyToken, isOrgAdmin], sendJobsPipeTest);
+
+/* ────── JobsPipe PULL path (Phase 5c — the search API) ────────── */
+//
+// The third ingestion door, and the operator surface deliberately mirrors
+// SerpApi's so the two read the same way on the Job Discovery screen:
+//
+//   SerpApi    POST /api/management/discovery/run
+//   JobsPipe   POST /api/management/jobspipe/poll
+//
+// Both spend real money and both write into the same pool through the same
+// fingerprint and matcher, so both are ORG_ADMIN and both are audited.
+//
+// `/poll/preview` is declared BEFORE `/poll` would shadow it, and is GET
+// because it spends nothing: it answers "what would a run ask for" without
+// buying the answer. On a 100-credit month that distinction is the difference
+// between configuring this feed and paying to configure it.
+app.get('/api/management/jobspipe/pull', [verifyToken, isManagement], getPullStatus);
+app.get('/api/management/jobspipe/poll/preview', [verifyToken, isManagement], previewPoll);
+app.post('/api/management/jobspipe/poll',
+    [verifyToken, isOrgAdmin, validate(pollSchema)], runPollNow);
+app.patch('/api/management/jobspipe/pull',
+    [verifyToken, isOrgAdmin, validate(pullEnabledSchema)], setPullEnabled);
+
 app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
 app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
 app.get('/api/management/consultants/:id/queue', [verifyToken, isManagement], listConsultantQueue);
@@ -540,6 +613,10 @@ const start = async () => {
     // The AI preparation and contact-discovery worker. Off unless
     // WORKER_ENABLED=true, so a fresh checkout never spends money on its own.
     startWorker();
+    // The JobsPipe pull path. Off unless JOBSPIPE_POLL_ENABLED=true, for the
+    // same reason: 1 credit = 1 request on a 100-a-month plan, so a server
+    // that polls the moment it boots has spent somebody's allowance by lunch.
+    startJobsPipePoller();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);

@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
-    PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks,
+    PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks, Webhook,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -92,6 +92,11 @@ const NAV_GROUPS = [
         items: [
             { to: '/management/postings', label: 'Job Postings', icon: Briefcase, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/discovery', label: 'Job Discovery', icon: Radar, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            // The push feed, beside the scheduled cycle rather than inside it:
+            // they are two ingestion paths with separate settings, separate
+            // health and separate costs, and one screen showing both would
+            // hide which of them a quiet queue is the fault of.
+            { to: '/management/jobspipe', label: 'JobsPipe Feed', icon: Webhook, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/contacts', label: 'Contacts', icon: UserSearch, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },
