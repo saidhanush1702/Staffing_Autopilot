@@ -53,15 +53,36 @@ export const SEARCH_PATH = '/v1/jobs/search';
  * silently widens a search and returns the whole feed instead of this week's
  * React roles — is caught before a credit is spent on it.
  */
+//
+// The SDK's `_build_body` covers only a subset. This is the complete list from
+// JobsPipe's Filter reference (docs.jobspipe.dev/api-reference/filters).
+// `blur_company_data` is deliberately absent: it masks the employer, and the
+// company name is part of the fingerprint every posting is de-duplicated on.
 export const FILTERS = [
-    'limit', 'offset', 'page', 'include_total_results',
+    // pagination
+    'limit', 'offset', 'page', 'cursor', 'include_total_results',
+    // role
     'job_title_or', 'job_title_not',
     'description_or', 'description_not',
-    'employment_type_or', 'source_or',
+    'employment_type_or', 'include_unlabeled_employment_type',
+    'job_seniority_or', 'include_unlabeled_seniority',
+    'skills_or', 'esco_skill_id_or', 'occupation_code_or', 'isic_division_or',
+    // location
     'job_country_code_or', 'job_country_code_not',
+    'job_location_or', 'region_or', 'metro_code_or',
+    'remote', 'work_arrangement_or',
+    // dates and freshness
     'posted_at_max_age_days', 'posted_at_gte', 'posted_at_lte',
+    'discovered_at_gte', 'status', 'last_verified_max_age_days',
+    // company and source
     'company_name_or', 'company_name_partial_match_or',
-    'job_seniority_or', 'remote',
+    'min_employee_count', 'max_employee_count',
+    'source_or', 'source_not',
+    'employer_type_or', 'employer_type_not',
+    // pay, perks, quality
+    'min_salary_usd', 'visa_sponsorship_or', 'benefits_or', 'include_unknown',
+    'max_applicant_count', 'has_recruiter_email', 'max_ghost_score',
+    // lookups
     'job_id_or', 'job_ids',
 ];
 

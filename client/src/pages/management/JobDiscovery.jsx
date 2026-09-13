@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
     Radar, Play, Loader2, AlertCircle, CheckCircle2, XCircle, Power,
-    Clock, TriangleAlert, KeyRound, Coins, Star,
+    Clock, TriangleAlert, KeyRound, Coins, Star, Zap,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -12,7 +12,7 @@ import SchedulePanel from '../../components/discovery/SchedulePanel.jsx';
 import SearchPlanPanel from '../../components/discovery/SearchPlanPanel.jsx';
 import JobsPipePullPanel from '../../components/discovery/JobsPipePullPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShellSm, alertShell } from '../../design/tokens.js';
+import { card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShellSm, alertShell, tabBar, tabNav, tabItem, tabActive, tabIdle } from '../../design/tokens.js';
 
 /** The stage counters, in pipeline order, so a run reads left to right. */
 const STAGES = [
@@ -49,6 +49,16 @@ const RECENCY = {
  * are indistinguishable from a success flag alone — these numbers are the only
  * way to tell them apart.
  */
+/**
+ * One tab per ingestion door. Each has its own Run button, board list and run
+ * history, billed against its own allowance — stacking both on one page read as
+ * every section appearing twice.
+ */
+const SOURCE_TABS = [
+    { key: 'SERPAPI', label: 'SerpApi · Google Jobs', icon: Radar },
+    { key: 'JOBSPIPE', label: 'JobsPipe', icon: Zap },
+];
+
 const JobDiscovery = () => {
     const { user } = useAuth();
     const isAdmin = user?.role === 'ORG_ADMIN';
@@ -60,6 +70,7 @@ const JobDiscovery = () => {
     const [running, setRunning] = useState(false);
     const [confirmRun, setConfirmRun] = useState(false);
     const [banner, setBanner] = useState(null);
+    const [tab, setTab] = useState('SERPAPI');
 
     const load = useCallback(async () => {
         try {
@@ -158,6 +169,28 @@ const JobDiscovery = () => {
 
             <SchedulePanel canEdit={isAdmin} onCycleFired={load} />
 
+            {/* ── source tabs ────────────────────────────────────── */}
+            <div className={`mt-8 ${tabBar}`}>
+                <nav className={tabNav} aria-label="Discovery sources">
+                    {SOURCE_TABS.map((t) => (
+                        <button
+                            key={t.key}
+                            type="button"
+                            onClick={() => setTab(t.key)}
+                            aria-current={tab === t.key ? 'page' : undefined}
+                            className={`${tabItem} ${tab === t.key ? tabActive : tabIdle}`}
+                        >
+                            <t.icon className="h-4 w-4" />
+                            {t.label}
+                        </button>
+                    ))}
+                </nav>
+            </div>
+
+            {tab === 'JOBSPIPE' && <JobsPipePullPanel canEdit={isAdmin} />}
+
+            {tab === 'SERPAPI' && (
+            <>
             {/* ORG_ADMIN only: it exposes what the organization spends credits on. */}
             {isAdmin && (
                 <div className="mt-4">
@@ -279,17 +312,6 @@ const JobDiscovery = () => {
                     </div>
                 )}
             </div>
-
-            {/* ── the second ingestion door ──────────────────────── */}
-            {/*
-              Directly below the provider above, and laid out the same way, so
-              the two read as two of the same kind of thing. It has its OWN Run
-              button on purpose: the provider above bills per page of results
-              and a run makes several calls, while JobsPipe bills exactly one
-              credit per request. One button spanning both would spend two
-              separate metered allowances on a single press.
-            */}
-            <JobsPipePullPanel canEdit={isAdmin} />
 
             {/* ── boards ─────────────────────────────────────────── */}
             <h2 className={`mt-8 ${sectionTitle}`}>Job boards</h2>
@@ -464,6 +486,9 @@ const JobDiscovery = () => {
                         </span>
                     </p>
                 </Modal>
+            )}
+
+            </>
             )}
 
             <AuditLogPanel module="discovery" />

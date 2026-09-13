@@ -64,6 +64,86 @@ const benchTitles = (bench) => {
         .map(([title, count]) => ({ title, consultants: count }));
 };
 
+/* ── every other JobsPipe filter, under its own API name ──────────────── */
+//
+// Validated against the allowed values in JobsPipe's Filter reference
+// (docs.jobspipe.dev/api-reference/filters). A value outside those lists is
+// refused HERE rather than sent: the API does not reject an unknown enum, it
+// matches nothing — an empty page that still costs the credits.
+//
+// The filters the panel already exposes by friendlier names (titles,
+// countries, employmentTypes, sources, remote, maxAgeDays, limit) stay out of
+// this object so there is exactly one way to send each of them.
+
+export const JOBSPIPE_SOURCES = [
+    'greenhouse', 'lever', 'ashby', 'workable', 'smartrecruiters', 'workday',
+    'paylocity', 'linkedin', 'indeed', 'ycombinator',
+];
+const SENIORITY = ['entry_level', 'mid_level', 'senior', 'director', 'executive'];
+const EMPLOYER_TYPES = ['employer', 'agency', 'broker'];
+const WORK_ARRANGEMENTS = ['remote', 'hybrid', 'onsite'];
+const VISA = ['offers', 'no', 'citizenship_required'];
+const UNKNOWN_FIELDS = [
+    'employment_type', 'seniority', 'work_arrangement', 'location', 'occupation',
+    'industry', 'visa_sponsorship', 'benefits', 'company_size', 'salary',
+];
+const BENEFITS = [
+    'health_insurance', 'dental_insurance', 'vision_insurance', 'life_insurance',
+    'disability_insurance', 'paid_time_off', 'paid_holidays', '401k', '401k_matching',
+    'retirement_plan', 'tuition_reimbursement', 'parental_leave',
+    'flexible_spending_account', 'health_savings_account', 'employee_discount',
+    'commuter_assistance', 'employee_assistance_program', 'flexible_schedule', 'bonus',
+    'signing_bonus', 'profit_sharing', 'equity', 'paid_training',
+    'professional_development', 'free_parking', 'relocation_assistance',
+    'wellness_program', 'referral_program', 'childcare', 'loan_repayment',
+    'phone_reimbursement', 'work_from_home',
+];
+
+const textList = (max = 20) => Joi.array().items(Joi.string().trim().min(1).max(120)).max(max);
+const pick = (values) => Joi.array().items(Joi.string().valid(...values)).max(values.length);
+
+const apiFiltersSchema = Joi.object({
+    // role
+    job_title_not: textList(),
+    description_or: textList(),
+    description_not: textList(),
+    job_seniority_or: pick(SENIORITY),
+    include_unlabeled_seniority: Joi.boolean(),
+    include_unlabeled_employment_type: Joi.boolean(),
+    skills_or: textList(40),
+    esco_skill_id_or: textList(40),
+    occupation_code_or: Joi.array().items(Joi.string().pattern(/^\d{1,4}$/)).max(20),
+    isic_division_or: Joi.array().items(Joi.string().pattern(/^\d{2}$/)).max(20),
+    // location
+    job_country_code_not: Joi.array().items(Joi.string().trim().uppercase().length(2)).max(20),
+    job_location_or: textList(),
+    region_or: Joi.array().items(Joi.string().trim().uppercase().pattern(/^[A-Z]{2}-[A-Z0-9]{1,3}$/)).max(60),
+    metro_code_or: Joi.array().items(Joi.string().trim().pattern(/^\d{5}$/)).max(20),
+    work_arrangement_or: pick(WORK_ARRANGEMENTS),
+    // dates and freshness
+    posted_at_gte: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
+    posted_at_lte: Joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/),
+    discovered_at_gte: Joi.string().pattern(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/),
+    status: Joi.string().valid('active', 'closed', 'any'),
+    last_verified_max_age_days: Joi.number().integer().min(1).max(365),
+    // company and source
+    company_name_or: textList(),
+    company_name_partial_match_or: textList(),
+    min_employee_count: Joi.number().integer().min(0),
+    max_employee_count: Joi.number().integer().min(0),
+    source_not: pick(JOBSPIPE_SOURCES),
+    employer_type_or: pick(EMPLOYER_TYPES),
+    employer_type_not: pick(EMPLOYER_TYPES),
+    // pay, perks, quality
+    min_salary_usd: Joi.number().min(0).max(10_000_000),
+    visa_sponsorship_or: pick(VISA),
+    benefits_or: pick(BENEFITS),
+    include_unknown: pick(UNKNOWN_FIELDS),
+    max_applicant_count: Joi.number().integer().min(0),
+    has_recruiter_email: Joi.boolean(),
+    max_ghost_score: Joi.number().min(0).max(100),
+});
+
 /* ── the filter payload the Advanced panel sends ──────────────────────── */
 
 export const pollSchema = Joi.object({
@@ -78,6 +158,8 @@ export const pollSchema = Joi.object({
     // more is not refused by the API, it is silently truncated, which looks
     // like a thin feed rather than a plan limit.
     limit: Joi.number().integer().min(1).max(100),
+    // Everything else JobsPipe accepts, by its API name — see apiFiltersSchema.
+    filters: apiFiltersSchema,
 }).default({});
 
 export const pullEnabledSchema = Joi.object({
@@ -100,7 +182,8 @@ export const getPullStatus = async (req, res, next) => {
                     credits_spent, jobs_returned, unusable, new_postings,
                     duplicates, matches_created, queued_count,
                     preparation_enqueued, age_hours_min, age_hours_median,
-                    age_hours_max, posted_last_24h, duration_ms, error
+                    age_hours_max, posted_last_24h, duration_ms, error,
+                    board_breakdown
                FROM jobspipe_poll_runs
               WHERE organization_id = $1
               ORDER BY started_at DESC
@@ -116,6 +199,22 @@ export const getPullStatus = async (req, res, next) => {
                FROM job_postings p
                JOIN lkp_job_sources s ON s.id = p.first_source_id
               WHERE p.organization_id = $1 AND s.name = $2`,
+            [orgId, SOURCE_NAME],
+        );
+
+        // Per-board yield — the JobsPipe counterpart of the SerpApi board list.
+        // SerpApi can count by first_source_id because each board is a source
+        // row; every JobsPipe posting shares ONE source row (so pushed and
+        // polled jobs de-duplicate), so the board lives on origin_board instead
+        // (migration 046). NULL groups the postings ingested before the board
+        // was stored, kept visible rather than silently dropped.
+        const { rows: boardRows } = await query(
+            `SELECT p.origin_board AS board, COUNT(*)::int AS postings
+               FROM job_postings p
+               JOIN lkp_job_sources s ON s.id = p.first_source_id
+              WHERE p.organization_id = $1 AND s.name = $2
+              GROUP BY p.origin_board
+              ORDER BY postings DESC`,
             [orgId, SOURCE_NAME],
         );
 
@@ -140,6 +239,7 @@ export const getPullStatus = async (req, res, next) => {
             scheduleEnabled: process.env.JOBSPIPE_POLL_ENABLED === 'true',
             scheduleCron: process.env.JOBSPIPE_POLL_CRON ?? '0 */6 * * *',
             postings: yieldRows[0]?.postings ?? 0,
+            boards: boardRows,
             runs,
         });
     } catch (err) { return next(err); }
@@ -223,6 +323,7 @@ export const runPollNow = async (req, res, next) => {
             employmentTypes: body.employmentTypes ?? null,
             sources: body.sources ?? null,
             remote: typeof body.remote === 'boolean' ? body.remote : null,
+            filters: body.filters ?? null,
             ...(body.maxAgeDays ? { maxAgeDays: body.maxAgeDays } : {}),
             ...(body.limit ? { limit: body.limit } : {}),
         });

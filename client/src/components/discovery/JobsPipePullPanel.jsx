@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import {
+    Fragment, useCallback, useEffect, useState,
+} from 'react';
 import {
     Zap, Play, Loader2, Power, Coins, AlertCircle, CheckCircle2, Clock,
     TriangleAlert, KeyRound, SlidersHorizontal, Inbox, XCircle, Gauge,
+    ChevronDown, ChevronRight,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import Modal, { ModalActions } from '../ui/Modal.jsx';
@@ -86,9 +89,99 @@ const SOURCE_GROUPS = [
     },
     {
         label: 'Job boards — widest reach (hours)',
-        values: ['linkedin', 'indeed'],
+        values: ['linkedin', 'indeed', 'ycombinator'],
     },
 ];
+
+/* ── Advanced filter vocabularies ─────────────────────────────────────── */
+//
+// The allowed values from JobsPipe's Filter reference
+// (docs.jobspipe.dev/api-reference/filters), mirrored by the controller's
+// apiFiltersSchema. An unknown value is not an error to the API — it matches
+// nothing and still costs the credits — so only these can be picked.
+const EMPLOYMENT_TYPES = [
+    ['full_time', 'Full-time'], ['part_time', 'Part-time'], ['contract', 'Contract'],
+    ['temporary', 'Temporary'], ['internship', 'Internship'],
+];
+const SENIORITY = [
+    ['entry_level', 'Entry'], ['mid_level', 'Mid'], ['senior', 'Senior'],
+    ['director', 'Director / lead'], ['executive', 'Executive'],
+];
+const WORK_ARRANGEMENTS = [['remote', 'Remote'], ['hybrid', 'Hybrid'], ['onsite', 'On-site']];
+const EMPLOYER_TYPES = [['employer', 'Direct employer'], ['agency', 'Agency'], ['broker', 'Broker']];
+const VISA = [
+    ['offers', 'Offers sponsorship'], ['no', 'No sponsorship'],
+    ['citizenship_required', 'Citizenship required'],
+];
+const humanise = (v) => [v, v.replace(/_/g, ' ')];
+const UNKNOWN_FIELDS = [
+    'employment_type', 'seniority', 'work_arrangement', 'location', 'occupation',
+    'industry', 'visa_sponsorship', 'benefits', 'company_size', 'salary',
+].map(humanise);
+const BENEFITS = [
+    'health_insurance', 'dental_insurance', 'vision_insurance', 'life_insurance',
+    'disability_insurance', 'paid_time_off', 'paid_holidays', '401k', '401k_matching',
+    'retirement_plan', 'tuition_reimbursement', 'parental_leave',
+    'flexible_spending_account', 'health_savings_account', 'employee_discount',
+    'commuter_assistance', 'employee_assistance_program', 'flexible_schedule', 'bonus',
+    'signing_bonus', 'profit_sharing', 'equity', 'paid_training',
+    'professional_development', 'free_parking', 'relocation_assistance',
+    'wellness_program', 'referral_program', 'childcare', 'loan_repayment',
+    'phone_reimbursement', 'work_from_home',
+].map(humanise);
+const ALL_SOURCES = SOURCE_GROUPS.flatMap((g) => g.values).map((v) => [v, v]);
+
+// How each Advanced field is turned into the request (see buildBody).
+const LIST_KEYS = [
+    'job_title_not', 'description_or', 'description_not', 'skills_or', 'esco_skill_id_or',
+    'occupation_code_or', 'isic_division_or', 'job_country_code_not', 'job_location_or',
+    'region_or', 'metro_code_or', 'company_name_or', 'company_name_partial_match_or',
+];
+const UPPERCASE_LIST_KEYS = ['job_country_code_not', 'region_or'];
+const NUMBER_KEYS = [
+    'min_employee_count', 'max_employee_count', 'min_salary_usd', 'max_applicant_count',
+    'max_ghost_score', 'last_verified_max_age_days',
+];
+const CHIP_KEYS = [
+    'job_seniority_or', 'work_arrangement_or', 'employer_type_or', 'employer_type_not',
+    'visa_sponsorship_or', 'benefits_or', 'include_unknown',
+];
+const BOOL_KEYS = ['include_unlabeled_seniority', 'include_unlabeled_employment_type', 'has_recruiter_email'];
+
+const toggleIn = (list, v) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
+/** A row of toggle chips for a multi-value filter. */
+const Chips = ({ options, value = [], onToggle }) => (
+    <div className="mt-1 flex flex-wrap gap-1.5">
+        {options.map(([v, label]) => {
+            const on = value.includes(v);
+            return (
+                <button
+                    key={v}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => onToggle(v)}
+                    className={`rounded-md border px-2 py-1 text-xs ${on
+                        ? 'border-brand-400 bg-brand-50 text-brand-800'
+                        : 'border-slate-200 bg-white text-slate-600'}`}
+                >
+                    {label}
+                </button>
+            );
+        })}
+    </div>
+);
+
+/** A collapsible group, so ~40 filters stay scannable. */
+const FilterSection = ({ title, hint, children }) => (
+    <details className="mt-3 rounded-md border border-slate-200 bg-white p-3">
+        <summary className="cursor-pointer text-sm font-medium text-slate-800">
+            {title}
+            {hint && <span className="ml-2 text-xs font-normal text-slate-400">{hint}</span>}
+        </summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
+    </details>
+);
 
 const ageText = (h) => {
     if (h === null || h === undefined) return '—';
@@ -105,6 +198,8 @@ const JobsPipePullPanel = ({ canEdit }) => {
     const [busy, setBusy] = useState('');
     const [confirm, setConfirm] = useState(false);
     const [advanced, setAdvanced] = useState(false);
+    // Which poll row is expanded to show its per-board breakdown.
+    const [openRun, setOpenRun] = useState(null);
 
     /* ── the Advanced form ───────────────────────────────────────────── */
     //
@@ -115,10 +210,13 @@ const JobsPipePullPanel = ({ canEdit }) => {
         country: 'US',
         maxAgeDays: 1,
         limit: 25,
-        contractOnly: false,
         remoteOnly: false,
         sources: [],
+        excludeSources: [],
+        employmentTypes: [],
         titles: '',
+        // Every other filter, keyed by JobsPipe's own API name.
+        f: {},
     });
 
     const load = useCallback(async () => {
@@ -144,7 +242,15 @@ const JobsPipePullPanel = ({ canEdit }) => {
         return <div className={`mt-3 ${card} ${cardPad} text-sm text-slate-500`}>Loading JobsPipe…</div>;
     }
 
-    const { configured, enabled, budget, plan, runs, postings, scheduleEnabled, scheduleCron } = data;
+    const {
+        configured, enabled, budget, plan, runs, postings, scheduleEnabled, scheduleCron,
+        boards = [],
+    } = data;
+
+    // Every collectable board, including ones that have yielded nothing — a
+    // board at 0 is information, the same way the SerpApi list shows it.
+    const boardCount = Object.fromEntries(boards.filter((b) => b.board).map((b) => [b.board, b.postings]));
+    const unrecorded = boards.find((b) => !b.board)?.postings ?? 0;
     const outOfCredits = budget.remaining <= 0;
     const canRun = configured && enabled && !outOfCredits && plan.titles.length > 0;
 
@@ -180,11 +286,40 @@ const JobsPipePullPanel = ({ canEdit }) => {
         const titles = form.titles.split(',').map((t) => t.trim()).filter(Boolean);
         if (titles.length) body.titles = titles;
         if (form.country) body.countries = [form.country.toUpperCase()];
-        if (form.contractOnly) body.employmentTypes = ['contract'];
+        if (form.employmentTypes.length) body.employmentTypes = form.employmentTypes;
         if (form.remoteOnly) body.remote = true;
         if (form.sources.length) body.sources = form.sources;
         if (form.maxAgeDays) body.maxAgeDays = Number(form.maxAgeDays);
         if (form.limit) body.limit = Number(form.limit);
+
+        // Everything else, under JobsPipe's own names. Blank fields are left
+        // out entirely — only a filter somebody chose may narrow the page.
+        const filters = {};
+        for (const k of LIST_KEYS) {
+            const values = (form.f[k] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+            if (values.length) {
+                filters[k] = UPPERCASE_LIST_KEYS.includes(k) ? values.map((v) => v.toUpperCase()) : values;
+            }
+        }
+        for (const k of NUMBER_KEYS) {
+            if (form.f[k] !== undefined && form.f[k] !== '') filters[k] = Number(form.f[k]);
+        }
+        for (const k of CHIP_KEYS) {
+            if (form.f[k]?.length) filters[k] = form.f[k];
+        }
+        for (const k of BOOL_KEYS) {
+            if (form.f[k]) filters[k] = true;
+        }
+        if (form.f.posted_at_gte) filters.posted_at_gte = form.f.posted_at_gte;
+        if (form.f.posted_at_lte) filters.posted_at_lte = form.f.posted_at_lte;
+        // The API wants "YYYY-MM-DD HH:MM:SS"; a datetime input gives "YYYY-MM-DDTHH:MM".
+        if (form.f.discovered_at_gte) {
+            filters.discovered_at_gte = `${form.f.discovered_at_gte.replace('T', ' ')}:00`;
+        }
+        if (form.f.status) filters.status = form.f.status;
+        if (form.excludeSources.length) filters.source_not = form.excludeSources;
+        if (Object.keys(filters).length) body.filters = filters;
+
         return body;
     };
 
@@ -214,9 +349,67 @@ const JobsPipePullPanel = ({ canEdit }) => {
             : [...f.sources, value],
     }));
 
+    /* ── Advanced field renderers ────────────────────────────────────── */
+    // Plain functions rather than components, so typing never remounts an
+    // input and loses focus.
+    const setF = (key, value) => setForm((s) => ({ ...s, f: { ...s.f, [key]: value } }));
+
+    const textField = (key, label, placeholder, hint) => (
+        <div key={key}>
+            <label className={fieldLabel} htmlFor={`jp-${key}`}>{label}</label>
+            <input
+                id={`jp-${key}`}
+                className={input}
+                placeholder={placeholder}
+                value={form.f[key] ?? ''}
+                onChange={(e) => setF(key, e.target.value)}
+            />
+            {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+        </div>
+    );
+
+    const numberField = (key, label, { min = 0, max, hint } = {}) => (
+        <div key={key}>
+            <label className={fieldLabel} htmlFor={`jp-${key}`}>{label}</label>
+            <input
+                id={`jp-${key}`}
+                type="number"
+                min={min}
+                max={max}
+                className={input}
+                value={form.f[key] ?? ''}
+                onChange={(e) => setF(key, e.target.value)}
+            />
+            {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+        </div>
+    );
+
+    const chipField = (key, label, options, wide = false) => (
+        <div key={key} className={wide ? 'sm:col-span-2 lg:col-span-3' : ''}>
+            <p className={fieldLabel}>{label}</p>
+            <Chips
+                options={options}
+                value={form.f[key] ?? []}
+                onToggle={(v) => setF(key, toggleIn(form.f[key] ?? [], v))}
+            />
+        </div>
+    );
+
+    const checkField = (key, label) => (
+        <label key={key} className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+                type="checkbox"
+                className={checkbox}
+                checked={Boolean(form.f[key])}
+                onChange={(e) => setF(key, e.target.checked)}
+            />
+            {label}
+        </label>
+    );
+
     return (
         <>
-            <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
                 <h2 className={sectionTitle}>JobsPipe — real-time pull</h2>
                 {canEdit && (
                     <div className="flex flex-wrap items-center gap-2">
@@ -439,15 +632,6 @@ const JobsPipePullPanel = ({ canEdit }) => {
                                     <input
                                         type="checkbox"
                                         className={checkbox}
-                                        checked={form.contractOnly}
-                                        onChange={(e) => setForm((f) => ({ ...f, contractOnly: e.target.checked }))}
-                                    />
-                                    Contract roles
-                                </label>
-                                <label className="mt-1 flex items-center gap-2 text-sm text-slate-700">
-                                    <input
-                                        type="checkbox"
-                                        className={checkbox}
                                         checked={form.remoteOnly}
                                         onChange={(e) => setForm((f) => ({ ...f, remoteOnly: e.target.checked }))}
                                     />
@@ -471,7 +655,7 @@ const JobsPipePullPanel = ({ canEdit }) => {
                               credits. Saying so here is cheaper than finding out by running it.
                             */}
                             <p className="mb-2 text-xs text-slate-400">
-                                These nine are everything JobsPipe indexes. Glassdoor, iCIMS,
+                                These ten are everything JobsPipe indexes. Glassdoor, iCIMS,
                                 Taleo, BambooHR, Bullhorn, ZipRecruiter, Naukri and ~26 others
                                 appear on their site but are <strong>not collected</strong> —
                                 they need a different provider, not a tick box.
@@ -517,12 +701,171 @@ const JobsPipePullPanel = ({ canEdit }) => {
                                 onChange={(e) => setForm((f) => ({ ...f, titles: e.target.value }))}
                             />
                         </div>
+
+                        <div className="mt-4">
+                            <p className={fieldLabel}>Exclude boards</p>
+                            <p className="text-xs text-slate-500">
+                                Never pull from these, whatever is ticked above.
+                            </p>
+                            <Chips
+                                options={ALL_SOURCES}
+                                value={form.excludeSources}
+                                onToggle={(v) => setForm((s) => ({ ...s, excludeSources: toggleIn(s.excludeSources, v) }))}
+                            />
+                        </div>
+
+                        {/* ── every other JobsPipe filter, grouped ───────── */}
+                        <FilterSection title="Role" hint="type, seniority, keywords, skills">
+                            <div className="sm:col-span-2 lg:col-span-3">
+                                <p className={fieldLabel}>Employment type</p>
+                                <Chips
+                                    options={EMPLOYMENT_TYPES}
+                                    value={form.employmentTypes}
+                                    onToggle={(v) => setForm((s) => ({ ...s, employmentTypes: toggleIn(s.employmentTypes, v) }))}
+                                />
+                            </div>
+                            {chipField('job_seniority_or', 'Seniority', SENIORITY, true)}
+                            {textField('job_title_not', 'Exclude title words', 'intern, unpaid')}
+                            {textField('description_or', 'Description includes any', 'react, typescript')}
+                            {textField('description_not', 'Description excludes', 'clearance, relocation')}
+                            {textField('skills_or', 'Skills', 'python, kubernetes', 'JobsPipe skill slugs')}
+                            {checkField('include_unlabeled_employment_type', 'Keep jobs with no employment type')}
+                            {checkField('include_unlabeled_seniority', 'Keep jobs with no seniority')}
+                        </FilterSection>
+
+                        <FilterSection title="Location" hint="cities, states, metros, work arrangement">
+                            {chipField('work_arrangement_or', 'Work arrangement', WORK_ARRANGEMENTS, true)}
+                            {textField('job_location_or', 'Cities / regions', 'Austin, Dallas')}
+                            {textField('region_or', 'US states / CA provinces', 'US-TX, US-NY', 'ISO 3166-2 codes')}
+                            {textField('metro_code_or', 'US metro codes', '19100, 12420', 'CBSA codes')}
+                            {textField('job_country_code_not', 'Exclude countries', 'IN, GB')}
+                        </FilterSection>
+
+                        <FilterSection title="Company" hint="names, size, employer type">
+                            {textField('company_name_or', 'Company is exactly', 'Stripe, Datadog')}
+                            {textField('company_name_partial_match_or', 'Company name contains', 'bank, health')}
+                            {numberField('min_employee_count', 'Min employees')}
+                            {numberField('max_employee_count', 'Max employees')}
+                            {chipField('employer_type_or', 'Only employer types', EMPLOYER_TYPES)}
+                            {chipField('employer_type_not', 'Exclude employer types', EMPLOYER_TYPES)}
+                        </FilterSection>
+
+                        <FilterSection title="Pay, visa & benefits">
+                            {numberField('min_salary_usd', 'Min annual salary (USD)', { hint: 'Annual, in USD' })}
+                            {chipField('visa_sponsorship_or', 'Visa sponsorship', VISA, true)}
+                            {chipField('benefits_or', 'Benefits', BENEFITS, true)}
+                        </FilterSection>
+
+                        <FilterSection title="Dates & quality" hint="posted range, status, applicants, ghost jobs">
+                            <div>
+                                <label className={fieldLabel} htmlFor="jp-posted-gte">Posted on or after</label>
+                                <input
+                                    id="jp-posted-gte"
+                                    type="date"
+                                    className={input}
+                                    value={form.f.posted_at_gte ?? ''}
+                                    onChange={(e) => setF('posted_at_gte', e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label className={fieldLabel} htmlFor="jp-posted-lte">Posted on or before</label>
+                                <input
+                                    id="jp-posted-lte"
+                                    type="date"
+                                    className={input}
+                                    value={form.f.posted_at_lte ?? ''}
+                                    onChange={(e) => setF('posted_at_lte', e.target.value)}
+                                />
+                            </div>
+                            <div>
+                                <label className={fieldLabel} htmlFor="jp-discovered">Discovered since</label>
+                                <input
+                                    id="jp-discovered"
+                                    type="datetime-local"
+                                    className={input}
+                                    value={form.f.discovered_at_gte ?? ''}
+                                    onChange={(e) => setF('discovered_at_gte', e.target.value)}
+                                />
+                                <p className="mt-1 text-xs text-slate-500">Only jobs JobsPipe first saw after this.</p>
+                            </div>
+                            <div>
+                                <label className={fieldLabel} htmlFor="jp-status">Status</label>
+                                <select
+                                    id="jp-status"
+                                    className={input}
+                                    value={form.f.status ?? ''}
+                                    onChange={(e) => setF('status', e.target.value)}
+                                >
+                                    <option value="">Default (active)</option>
+                                    <option value="active">Active</option>
+                                    <option value="closed">Closed</option>
+                                    <option value="any">Any</option>
+                                </select>
+                            </div>
+                            {numberField('last_verified_max_age_days', 'Verified within (days)', { min: 1, max: 365 })}
+                            {numberField('max_applicant_count', 'Max applicants')}
+                            {numberField('max_ghost_score', 'Max ghost score', { max: 100, hint: '0–100; lower = less likely a fake listing' })}
+                            {checkField('has_recruiter_email', 'Has a recruiter email')}
+                        </FilterSection>
+
+                        <FilterSection title="Classification codes" hint="ISCO, ISIC, ESCO">
+                            {textField('occupation_code_or', 'Occupation (ISCO-08)', '2512, 2519', '1–4 digit codes')}
+                            {textField('isic_division_or', 'Industry (ISIC division)', '62, 64', '2-digit codes')}
+                            {textField('esco_skill_id_or', 'ESCO skill IDs', 'ESCO concept IDs')}
+                        </FilterSection>
+
+                        <FilterSection title="Missing values" hint="keep jobs where a field is unknown">
+                            {chipField('include_unknown', 'Include jobs with unknown', UNKNOWN_FIELDS, true)}
+                        </FilterSection>
                     </div>
                 )}
             </div>
 
+            {/* ── boards ───────────────────────────────────────────── */}
+            <h3 className={`mt-8 ${sectionTitle}`}>Job boards</h3>
+            <p className="mt-1 max-w-2xl text-xs text-slate-500">
+                Where JobsPipe postings were actually listed. Tick boards under
+                <strong> Advanced</strong> to pull from them only.
+            </p>
+
+            <div className={`mt-3 overflow-x-auto ${card}`}>
+                <table className="w-full min-w-[36rem] text-sm">
+                    <thead className={tableHead}>
+                        <tr>
+                            <th className={tableHeadCell}>Board</th>
+                            <th className={tableHeadCell}>Type</th>
+                            <th className={tableHeadCell}>Postings</th>
+                        </tr>
+                    </thead>
+                    <tbody className={tableBody}>
+                        {SOURCE_GROUPS.flatMap((group) => group.values.map((v) => (
+                            <tr key={v} className={tableRow}>
+                                <td className={`${tableCell} font-medium text-slate-900`}>{v}</td>
+                                <td className={`${tableCell} text-xs text-slate-500`}>
+                                    {group.label.split(' — ')[0]}
+                                </td>
+                                <td className={`${tableCell} tabular-nums`}>
+                                    {boardCount[v] > 0
+                                        ? <span className="text-slate-700">{boardCount[v]}</span>
+                                        : <span className="text-slate-300">0</span>}
+                                </td>
+                            </tr>
+                        )))}
+                        {unrecorded > 0 && (
+                            <tr className={tableRow}>
+                                <td className={`${tableCell} text-slate-500`}>Board not recorded</td>
+                                <td className={`${tableCell} text-xs text-slate-400`}>
+                                    ingested before boards were stored
+                                </td>
+                                <td className={`${tableCell} tabular-nums text-slate-500`}>{unrecorded}</td>
+                            </tr>
+                        )}
+                    </tbody>
+                </table>
+            </div>
+
             {/* ── run history ──────────────────────────────────────── */}
-            <h3 className={`mt-6 ${sectionTitle}`}>Recent JobsPipe polls</h3>
+            <h3 className={`mt-8 ${sectionTitle}`}>Recent JobsPipe polls</h3>
             <p className="mt-1 max-w-2xl text-xs text-slate-500">
                 Every poll, including the ones that spent nothing. <strong>Median age</strong> is
                 what the trial turns on — how old a posting was when we first saw it.
@@ -555,9 +898,22 @@ const JobsPipePullPanel = ({ canEdit }) => {
                         )}
                         {runs.map((r) => {
                             const o = OUTCOME[r.outcome] ?? OUTCOME.ERROR;
+                            const isOpen = openRun === r.id;
+                            const breakdown = Object.entries(r.board_breakdown ?? {})
+                                .sort((a, b) => b[1].returned - a[1].returned);
+                            let asked = [];
+                            try { asked = JSON.parse(r.filters ?? '{}').source_or ?? []; } catch { asked = []; }
                             return (
-                                <tr key={r.id} className={tableRow}>
+                                <Fragment key={r.id}>
+                                <tr
+                                    className={`${tableRow} cursor-pointer`}
+                                    onClick={() => setOpenRun(isOpen ? null : r.id)}
+                                    aria-expanded={isOpen}
+                                >
                                     <td className={tableCell}>
+                                        {isOpen
+                                            ? <ChevronDown className="mr-1 inline h-3.5 w-3.5 text-slate-400" />
+                                            : <ChevronRight className="mr-1 inline h-3.5 w-3.5 text-slate-400" />}
                                         {new Date(r.started_at).toLocaleString()}
                                         <span className="ml-1 text-xs text-slate-400">
                                             {r.trigger === 'MANUAL' ? 'manual' : 'scheduled'}
@@ -582,6 +938,55 @@ const JobsPipePullPanel = ({ canEdit }) => {
                                         {r.duration_ms ? `${(r.duration_ms / 1000).toFixed(1)}s` : '—'}
                                     </td>
                                 </tr>
+
+                                {/* ── this run, board by board ─────────────── */}
+                                {isOpen && (
+                                    <tr className="bg-slate-50">
+                                        <td colSpan={10} className="px-4 py-3">
+                                            <p className="text-xs text-slate-500">
+                                                Boards asked for:{' '}
+                                                <strong className="text-slate-700">
+                                                    {asked.length ? asked.join(', ') : 'all boards'}
+                                                </strong>
+                                            </p>
+                                            {breakdown.length === 0 ? (
+                                                <p className="mt-2 text-xs text-slate-400">
+                                                    {r.jobs_returned > 0
+                                                        ? 'No board breakdown — this poll ran before per-board counts were recorded.'
+                                                        : 'This poll returned no jobs.'}
+                                                </p>
+                                            ) : (
+                                                <table className="mt-2 w-full max-w-3xl text-xs">
+                                                    <thead>
+                                                        <tr className="text-left uppercase tracking-wide text-slate-400">
+                                                            <th className="py-1 pr-4 font-medium">Board</th>
+                                                            <th className="py-1 pr-4 font-medium">Returned</th>
+                                                            <th className="py-1 pr-4 font-medium">New</th>
+                                                            <th className="py-1 pr-4 font-medium">Already held</th>
+                                                            <th className="py-1 pr-4 font-medium">Unusable</th>
+                                                            <th className="py-1 pr-4 font-medium">Matched</th>
+                                                            <th className="py-1 font-medium">Queued</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-200">
+                                                        {breakdown.map(([board, c]) => (
+                                                            <tr key={board} className="tabular-nums text-slate-700">
+                                                                <td className="py-1.5 pr-4 font-medium text-slate-900">{board}</td>
+                                                                <td className="py-1.5 pr-4">{c.returned}</td>
+                                                                <td className="py-1.5 pr-4">{c.new}</td>
+                                                                <td className="py-1.5 pr-4">{c.duplicates}</td>
+                                                                <td className="py-1.5 pr-4">{c.unusable}</td>
+                                                                <td className="py-1.5 pr-4">{c.matched}</td>
+                                                                <td className="py-1.5">{c.queued}</td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                        </td>
+                                    </tr>
+                                )}
+                                </Fragment>
                             );
                         })}
                     </tbody>

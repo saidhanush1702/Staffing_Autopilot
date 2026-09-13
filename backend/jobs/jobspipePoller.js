@@ -172,6 +172,9 @@ export const runPoll = async (orgId, {
     employmentTypes = null,
     sources = null,
     remote = null,
+    // Any further JobsPipe filters, already under their API names and
+    // validated by the controller (apiFiltersSchema).
+    filters: extraFilters = null,
     dryRun = false,
 } = {}) => {
     const runId = uuidv4();
@@ -189,6 +192,8 @@ export const runPoll = async (orgId, {
         queued: 0,
         prepared: 0,
         age: { min: null, median: null, max: null, last24h: 0 },
+        // Per-board counts for this poll — see migration 047.
+        boards: {},
         error: null,
     };
 
@@ -199,14 +204,17 @@ export const runPoll = async (orgId, {
                  filters, credits_spent, jobs_returned, unusable, new_postings,
                  duplicates, matches_created, queued_count, preparation_enqueued,
                  age_hours_min, age_hours_median, age_hours_max, posted_last_24h,
-                 duration_ms, error)
+                 duration_ms, error, board_breakdown)
              VALUES ($1,$2,to_timestamp($3/1000.0),now(),$4,$5,$6,$7,$8,$9,$10,
-                     $11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+                     $11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
             [runId, orgId, startedAt, trigger, ledger.outcome, ledger.filters,
                 ledger.credits, ledger.returned, ledger.unusable, ledger.newPostings,
                 ledger.duplicates, ledger.matches, ledger.queued, ledger.prepared,
                 ledger.age.min, ledger.age.median, ledger.age.max, ledger.age.last24h,
-                Date.now() - startedAt, ledger.error?.slice(0, 500) ?? null],
+                Date.now() - startedAt, ledger.error?.slice(0, 500) ?? null,
+                // Only a poll that actually fetched has a breakdown; a skipped
+                // or budget-refused one stores NULL rather than an empty object.
+                Object.keys(ledger.boards).length ? JSON.stringify(ledger.boards) : null],
         );
         return { id: runId, ...ledger };
     };
@@ -277,6 +285,15 @@ export const runPoll = async (orgId, {
         if (sources?.length) filters.source_or = sources;
         if (remote === true || remote === false) filters.remote = remote;
 
+        // The rest of the Advanced panel. Empty arrays and blank values are
+        // dropped for the same reason as above: only a filter somebody chose
+        // may narrow the page.
+        for (const [key, value] of Object.entries(extraFilters ?? {})) {
+            if (value === null || value === undefined || value === '') continue;
+            if (Array.isArray(value) && value.length === 0) continue;
+            filters[key] = value;
+        }
+
         ledger.filters = JSON.stringify(filters);
 
         console.log(`[jobspipe-poll] ${orgId}: ${wanted.length} title(s), `
@@ -309,8 +326,19 @@ export const runPoll = async (orgId, {
         // is what turns a page of fifty into a slow job.
         for (const job of res.data) {
             const adapted = searchJobToPosting(job);
+
+            // Counted per board for the run's breakdown. An unusable job never
+            // adapts, so its board is read straight off the raw payload — it
+            // still came from somewhere, and that is part of the yield.
+            const boardKey = adapted?.originBoard ?? job?.sources?.[0]?.provider ?? 'unknown';
+            const board = ledger.boards[boardKey] ??= {
+                returned: 0, new: 0, duplicates: 0, unusable: 0, matched: 0, queued: 0,
+            };
+            board.returned += 1;
+
             if (!adapted) {
                 ledger.unusable += 1;
+                board.unusable += 1;
                 continue;
             }
 
@@ -320,15 +348,17 @@ export const runPoll = async (orgId, {
                     via: 'Polled from JobsPipe',
                 });
 
-                if (out.isNew) ledger.newPostings += 1;
-                else ledger.duplicates += 1;
+                if (out.isNew) { ledger.newPostings += 1; board.new += 1; } else { ledger.duplicates += 1; board.duplicates += 1; }
                 ledger.matches += out.matches ?? 0;
                 ledger.queued += out.queued ?? 0;
                 ledger.prepared += out.prepared ?? 0;
+                board.matched += out.matches ?? 0;
+                board.queued += out.queued ?? 0;
             } catch (err) {
                 // One bad job must not discard the rest of a page we paid for.
                 console.error(`[jobspipe-poll] job failed: ${redact(err.message)}`);
                 ledger.unusable += 1;
+                board.unusable += 1;
             }
         }
 
