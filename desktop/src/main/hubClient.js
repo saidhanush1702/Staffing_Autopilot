@@ -52,10 +52,11 @@ class HubClient {
         };
     }
 
-    async #call(method, path, body) {
+    async #call(method, path, body, { timeout } = {}) {
         try {
             const res = await this.http.request({
                 method, url: path, data: body, headers: this.#headers(),
+                ...(timeout ? { timeout } : {}),
             });
             return res.data;
         } catch (err) {
@@ -108,6 +109,25 @@ class HubClient {
     reclassify(id, body) { return this.#call('post', `/device/queue/${id}/reclassify`, body ?? {}); }
     submitted(id, body) { return this.#call('post', `/device/queue/${id}/submitted`, body); }
     boardStatus(body) { return this.#call('post', '/device/board-status', body); }
+
+    /*
+     * ── THE AI AGENT ──────────────────────────────────────────────────
+     *
+     * `start` asks whether the agent may try a job and opens a run. `step`
+     * sends one page description and gets one action back — it waits on a
+     * model, which can take far longer than the ordinary 20-second ceiling,
+     * so it carries its own. `finish` records how the run ended.
+     */
+    agentStart(id, body) { return this.#call('post', `/device/queue/${id}/agent/start`, body); }
+    agentStep(runId, body) {
+        return this.#call('post', `/device/agent/runs/${runId}/step`, body, { timeout: 150_000 });
+    }
+    agentFinish(runId, body) { return this.#call('post', `/device/agent/runs/${runId}/finish`, body); }
+
+    /** Existing answers that may already answer these questions, differently worded. */
+    questionSuggestions(body) {
+        return this.#call('post', '/device/questions/suggestions', body, { timeout: 90_000 });
+    }
 
     /**
      * Download the resume for ONE job into the work directory.

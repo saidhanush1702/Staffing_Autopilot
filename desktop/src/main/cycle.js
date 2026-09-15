@@ -46,7 +46,10 @@ const fs = require('node:fs');
 const { BOARDS, boardForPortal } = require('./browser/boards.js');
 const { fillForm, describeFields } = require('./browser/filler.js');
 const { runApplyFlow, pressSubmit } = require('./browser/applyFlow.js');
-const { tenantFor } = require('./browser/destinations.js');
+const { tenantFor, profileKey } = require('./browser/destinations.js');
+const { runAgent: runAgentDefault } = require('./agent/runAgent.js');
+const { pressAgentSubmit } = require('./agent/actions.js');
+const { stillAsksForPassword, stillChallenged } = require('./agent/observe.js');
 const { normaliseQuestion } = require('./browser/answers.js');
 const { WAIT_MS } = require('./attention.js');
 const {
@@ -55,6 +58,55 @@ const {
 
 /** The useful part of an error: Playwright appends a whole call log. */
 const firstLine = (message) => String(message ?? '').split(/\r?\n/)[0];
+
+/** Where a URL lives, without the www. Null for anything that is not a URL. */
+const hostOf = (url) => {
+    try {
+        return new URL(url).host.replace(/^www\./, '') || null;
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * What the AI agent reports under when a job has no board of its own — a job
+ * in the AGENT lane, found on a site nothing is coded for.
+ */
+const AGENT_BOARD = { name: 'AGENT', label: 'AI agent' };
+
+/**
+ * ── WHEN A RECIPE'S FAILURE IS THE AGENT'S WORK ───────────────────────
+ *
+ * The page was not what the recipe expected: no apply flow where one should
+ * be, a site it does not know, a form that refused to move. Those are exactly
+ * what reading the page afresh can fix.
+ *
+ * What is NOT here matters as much. A sign-in nobody completed, a captcha, a
+ * set of terms, a question nobody has answered — those belong to a PERSON, and
+ * an agent trying its hand at them is at best wasted money and at worst the
+ * thing R-22 exists to prevent.
+ */
+const AGENT_WORTHY = new Set(['NO_APPLY_FLOW', 'NOT_VERIFIED', 'LEFT_THE_BOARD', 'EXTERNAL_APPLY']);
+
+/**
+ * A browser session for a site nothing is coded for.
+ *
+ * Board-shaped, like a destination tenant, so sessions, sign-in waits and the
+ * review screen all work on it unchanged. One per host, for the same reason as
+ * Workday tenants: an account at one employer is nothing at the next.
+ */
+const agentSession = (host, url) => ({
+    name: profileKey('agent', host),
+    label: host,
+    host,
+    loginUrl: url,
+    sessionProbeUrl: url,
+    signedIn: { present: [], absent: [] },
+    botCheck: [],
+    botCheckWaitMs: 0,
+    neverAutoSubmit: false,
+    verified: false,
+});
 
 /** A pause a person would take, not a fixed delay a log can spot. */
 const humanPause = (min, max) => new Promise((r) => {
@@ -102,6 +154,10 @@ class CycleEngine {
         // five real minutes for a fake browser to be signed into.
         signInWaitMs = SIGNIN_WAIT_MS,
         signInPollMs = SIGNIN_POLL_MS,
+        // The AI agent's loop. Injectable for the same reason the browser is:
+        // the engine's decisions about WHEN to hand a job to the agent can be
+        // proven without a model or a page.
+        runAgent = runAgentDefault,
     }) {
         this.hub = hub;
         this.sessions = sessions;
@@ -113,6 +169,7 @@ class CycleEngine {
         this.signInWaitMs = signInWaitMs;
         this.signInPollMs = signInPollMs;
         this.attention = attention;
+        this.runAgent = runAgent;
         this.running = false;
         this.stopRequested = false;
     }
@@ -180,17 +237,22 @@ class CycleEngine {
             startedAt: new Date().toISOString(),
             pulled: 0, leased: 0, opened: 0,
             filled: 0, submitted: 0, parked: 0, handedToHuman: 0, skipped: 0, closed: 0,
+            agentTried: 0, agentFilled: 0,
             signInNeeded: [], botChecked: [], errors: [], outcomes: [],
         };
 
         /** Write one line of the ledger. */
-        const record = (item, board, result, reason) => {
+        const record = (item, board, result, reason, extra = {}) => {
             stats.outcomes.push({
                 company: item.company,
                 title: item.title,
                 board: board?.label ?? item.portal,
                 result,
                 reason: reason ? String(reason).slice(0, 300) : null,
+                // `filledBy: 'AGENT'` marks a job the AI agent handled, so the
+                // summary can say which applications a person should read
+                // most closely.
+                ...extra,
             });
         };
 
@@ -235,13 +297,35 @@ class CycleEngine {
 
                 const board = boardForPortal(item.portal);
                 if (!board) {
-                    // The hub thought this was ours; we have no recipe for it.
-                    // Hand it back rather than guessing.
+                    // ── NO RECIPE: THE AGENT'S LANE ───────────────────────
+                    //
+                    // An AGENT-lane job, or one the hub thought was ours that
+                    // we have no recipe for. The AI agent may try it; if it
+                    // may not, or cannot finish, it goes back to the
+                    // consultant exactly as it always did.
+                    let took = null;
+                    try {
+                        took = await this.#workWithAgentOnly(item, stats, {
+                            approvedAnswers, profile, record,
+                        });
+                    } catch (err) {
+                        if (err.name === 'Revoked') throw err;
+                        stats.errors.push(`${item.company} — ${err.message}`);
+                        this.activity(AGENT_BOARD.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
+                        took = { reason: `the AI agent hit a problem: ${firstLine(err.message)}` };
+                    }
+                    if (took === 'counted') {
+                        worked += 1;
+                        await humanPause(1500, 4000);
+                        continue;
+                    }
+
+                    const why = took?.reason ? ` — ${took.reason}` : '';
                     await this.#report(() => this.hub.reclassify(item.id, {
-                        reason: `No recipe for portal ${item.portal}`,
+                        reason: `No recipe for portal ${item.portal}${why}`.slice(0, 500),
                     }));
                     stats.handedToHuman += 1;
-                    record(item, null, 'HANDED_OVER', `the app has no recipe for ${item.portal}`);
+                    record(item, null, 'HANDED_OVER', `the app has no recipe for ${item.portal}${why}`);
                     continue;
                 }
 
@@ -514,7 +598,13 @@ class CycleEngine {
         );
 
         if (!stillOnBoard) {
-            const reason = `Applying happens on ${landedOn}, which the app does not fill`;
+            let reason = `Applying happens on ${landedOn}, which the app does not fill`;
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED', trigger: reason,
+                stats, record, approvedAnswers, profile,
+            });
+            if (agent === 'counted') return 'counted';
+            if (agent?.reason) reason = `${reason} — ${agent.reason}`;
             await this.#report(() => this.hub.reclassify(item.id, { reason }));
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
@@ -524,7 +614,13 @@ class CycleEngine {
 
         // No recipe and no permission to fill leaves nothing to try.
         if (!board.apply && !board.verified) {
-            const reason = `${board.label} form filling is not verified yet`;
+            let reason = `${board.label} form filling is not verified yet`;
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED', trigger: reason,
+                stats, record, approvedAnswers, profile,
+            });
+            if (agent === 'counted') return 'counted';
+            if (agent?.reason) reason = `${reason} — ${agent.reason}`;
             await this.#report(() => this.hub.reclassify(item.id, { reason }));
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
@@ -608,13 +704,15 @@ class CycleEngine {
                 }
             }
 
-            if (flow.outcome === 'NO_APPLY_FLOW'
-                || flow.outcome === 'EXTERNAL_APPLY'
-                || flow.outcome === 'NOT_VERIFIED'
-                || flow.outcome === 'LEFT_THE_BOARD') {
-                const reason = flow.outcome === 'EXTERNAL_APPLY'
+            if (AGENT_WORTHY.has(flow.outcome)) {
+                let reason = flow.outcome === 'EXTERNAL_APPLY'
                     ? `${flow.detail}, so it needs you`
                     : flow.detail;
+                const agent = await this.#agentForFlow({
+                    item, board, page, flow, stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) reason = `${reason} — ${agent.reason}`;
                 await this.#report(() => this.hub.reclassify(item.id, { reason }));
                 stats.handedToHuman += 1;
                 record(item, board, 'HANDED_OVER', reason);
@@ -635,8 +733,19 @@ class CycleEngine {
             // a known question. Hand it over rather than leaving a part-filled
             // application nobody knows about (R-26).
             if (flow.outcome === 'INCOMPLETE' && result.unknown.every((u) => !u.required)) {
+                // The recipe ran and the page was not what it expected -- the
+                // agent's case exactly. It carries on from where the recipe
+                // stopped, keeping every answer the recipe already put in.
+                const agent = await this.#tryAgent({
+                    item, board, page, entry: 'RECIPE_FAILED', trigger: flow.detail,
+                    stats, record, approvedAnswers, profile, resumePath,
+                    root: board.apply?.dialog ?? null,
+                    prior: { qa: flow.qa, attachedResume: flow.attachedResume },
+                });
+                if (agent === 'counted') return 'counted';
                 await this.#report(() => this.hub.reclassify(item.id, {
-                    reason: `The application could not be completed: ${flow.detail}`,
+                    reason: (`The application could not be completed: ${flow.detail}`
+                        + (agent?.reason ? ` — ${agent.reason}` : '')).slice(0, 500),
                 }));
                 stats.handedToHuman += 1;
                 record(item, board, 'HANDED_OVER', flow.detail);
@@ -721,9 +830,15 @@ class CycleEngine {
         // a search box and a language picker. The right answer there is the
         // same as for any job we cannot fill: hand it to the consultant.
         if (result.qa.length === 0) {
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED',
+                trigger: 'no application form was found on the page',
+                stats, record, approvedAnswers, profile, resumePath,
+            });
+            if (agent === 'counted') return 'counted';
             await this.#report(() => this.hub.reclassify(item.id, {
-                reason: 'No application form was found on the page — apply on the '
-                    + 'employer site instead',
+                reason: ('No application form was found on the page — apply on the '
+                    + `employer site instead${agent?.reason ? ` (${agent.reason})` : ''}`).slice(0, 500),
             }));
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', 'no application form was found on the page');
@@ -957,7 +1072,17 @@ class CycleEngine {
             return 'counted';
         }
 
+        let agentTried = false;
         if (inner.outcome !== 'READY_TO_SUBMIT' && inner.outcome !== 'INCOMPLETE') {
+            if (AGENT_WORTHY.has(inner.outcome)) {
+                const agent = await this.#tryAgent({
+                    item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                    trigger: `${tenant.label}: ${inner.detail}`,
+                    stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) return handOver(`${tenant.label}: ${inner.detail} — ${agent.reason}`);
+            }
             return handOver(`${tenant.label}: ${inner.detail}`);
         }
 
@@ -1006,7 +1131,35 @@ class CycleEngine {
             }
         }
 
+        // ── THE WIZARD STOPPED, AND NOTHING IS WAITING ON A PERSON ────
+        //
+        // Workday's step refused to advance -- a button dropdown the recipe
+        // could not drive, a flow it did not know. Without the agent this is
+        // filled as far as it went and left for the consultant, as before.
+        if (filled.outcome === 'INCOMPLETE' && !(filled.unknown ?? []).some((u) => u.required)) {
+            agentTried = true;
+            const agent = await this.#tryAgent({
+                item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                trigger: `${tenant.label}: ${filled.detail}`,
+                stats, record, approvedAnswers, profile, resumePath,
+                root: tenant.apply?.dialog ?? null,
+                prior: { qa: filled.qa, attachedResume: filled.attachedResume },
+            });
+            if (agent === 'counted') return 'counted';
+        }
+
         if ((filled.qa ?? []).length === 0) {
+            if (!agentTried) {
+                const agent = await this.#tryAgent({
+                    item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                    trigger: `${tenant.label}: nothing on the page could be filled`,
+                    stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) {
+                    return handOver(`${tenant.label}: nothing on the page could be filled — ${agent.reason}`);
+                }
+            }
             return handOver(`${tenant.label}: nothing on the page could be filled`);
         }
 
@@ -1025,6 +1178,397 @@ class CycleEngine {
         this.activity(board.name, 'READY_TO_SUBMIT',
             `${item.company}: filled on ${tenant.label} — waiting for you to submit`);
         return 'counted';
+    }
+
+    /*
+     * ════════════════════════════════════════════════════════════════════
+     *  THE AI AGENT
+     * ════════════════════════════════════════════════════════════════════
+     *
+     * Three lines, tried in order: the coded recipe, then the agent, then the
+     * consultant. Everything below is the middle line. It is called at the
+     * points where a recipe used to give a job straight to the consultant, and
+     * it answers in one of two ways:
+     *
+     *   'counted'    the agent dealt with the job; the caller is done
+     *   { reason }   it did not; the caller hands over as it always did,
+     *                with the agent's reason added so nobody wonders why
+     *
+     * It never throws for an operational problem. An agent that cannot run is
+     * the same as an agent that is switched off: the job goes to a person.
+     */
+
+    /**
+     * Ask the hub whether the agent may try this job.
+     *
+     * The ORGANISATION decides that (off, shadow, on), along with the budget
+     * and the limits. The consultant's own switch can only say no.
+     */
+    async #startAgent(item, { entry, host, trigger }) {
+        if (this.store.get('agentFallback') === false) return { ok: false };
+        if (typeof this.hub.agentStart !== 'function') return { ok: false };
+        try {
+            const res = await this.hub.agentStart(item.id, {
+                entry,
+                host: host ?? null,
+                trigger: String(trigger ?? '').slice(0, 500) || null,
+            });
+            if (!res?.ok) {
+                if (res?.reason) this.log(`AI agent not used for ${item.company}: ${res.reason}`);
+                return { ok: false };
+            }
+            return { ok: true, runId: res.runId, mode: res.mode, limits: res.limits ?? {} };
+        } catch (err) {
+            if (err.name === 'Revoked') throw err;
+            this.log(`AI agent unavailable for ${item.company}: ${firstLine(err.message)}`);
+            return { ok: false };
+        }
+    }
+
+    /** Record how a run ended. Best effort: the job's own outcome is already decided. */
+    async #finishAgent(started, { outcome, detail, actions = 0, refused = 0 }) {
+        if (!started?.runId || typeof this.hub.agentFinish !== 'function') return;
+        await this.hub.agentFinish(started.runId, {
+            outcome: String(outcome ?? 'UNKNOWN').slice(0, 30),
+            detail: String(detail ?? '').slice(0, 500) || null,
+            actions,
+            refusedActions: refused,
+        }).catch(() => {});
+    }
+
+    /** Let the agent try the page the recipe was on. */
+    async #tryAgent({
+        item, board, activityBoard = null, page, entry, trigger, stats, record,
+        approvedAnswers, profile, resumePath = null, root = null, prior = null,
+    }) {
+        const started = await this.#startAgent(item, {
+            entry, host: hostOf(page.url()), trigger,
+        });
+        if (!started.ok) return null;
+        return this.#runAgentOn({
+            item, board, activityBoard, page, started, stats, record,
+            approvedAnswers, profile, resumePath, root, prior,
+        });
+    }
+
+    /**
+     * A recipe's verdict, handed to the agent.
+     *
+     * An external apply link is followed into a session of its own -- the
+     * employer's site, which no recipe knows. Anything else is tried on the
+     * page the recipe was already looking at.
+     */
+    async #agentForFlow({
+        item, board, page, flow, stats, record, approvedAnswers, profile, resumePath,
+    }) {
+        if (flow.outcome === 'EXTERNAL_APPLY' && flow.externalUrl) {
+            const host = hostOf(flow.externalUrl);
+            if (!host) return null;
+            const started = await this.#startAgent(item, {
+                entry: 'RECIPE_FAILED', host, trigger: flow.detail,
+            });
+            if (!started.ok) return null;
+
+            const session = agentSession(host, flow.externalUrl);
+            this.activity(board.name, 'CONNECTING',
+                `${item.company}: the AI agent is following the apply link to ${host}`);
+            try {
+                await this.sessions.openJob(session.name, flow.externalUrl);
+            } catch (err) {
+                await this.#finishAgent(started, { outcome: 'NOT_OPENED', detail: firstLine(err.message) });
+                return { reason: `the AI agent could not open ${host}` };
+            }
+            const agentPage = await this.sessions.page(session.name);
+            return this.#runAgentOn({
+                item, board: session, activityBoard: board, page: agentPage, started, stats, record,
+                approvedAnswers, profile, resumePath, root: null, prior: null,
+            });
+        }
+
+        return this.#tryAgent({
+            item, board, page, entry: 'RECIPE_FAILED', trigger: flow.detail,
+            stats, record, approvedAnswers, profile, resumePath,
+            root: board.apply?.dialog ?? null,
+        });
+    }
+
+    /**
+     * A job no board owns: open it in its own session and let the agent work.
+     *
+     * The hub is asked BEFORE anything is leased or opened, so a switched-off
+     * agent costs one small request and never a browser window.
+     */
+    async #workWithAgentOnly(item, stats, { approvedAnswers, profile, record }) {
+        const host = hostOf(item.source_url);
+        if (!host) return { reason: 'the job has no web address the AI agent could open' };
+
+        const started = await this.#startAgent(item, {
+            entry: 'NO_RECIPE', host, trigger: `no recipe for ${item.portal ?? host}`,
+        });
+        if (!started.ok) return null;
+
+        const session = agentSession(host, item.source_url);
+        this.activity(AGENT_BOARD.name, 'CONNECTING', `Opening ${item.company} — ${item.title}`);
+
+        try {
+            await this.hub.lease(item.id);
+        } catch (err) {
+            await this.#finishAgent(started, { outcome: 'NOT_LEASED', detail: firstLine(err.message) });
+            throw err;
+        }
+        stats.leased += 1;
+
+        await this.sessions.openJob(session.name, item.source_url);
+        stats.opened += 1;
+        const page = await this.sessions.page(session.name);
+
+        return this.#runAgentOn({
+            item, board: session, activityBoard: AGENT_BOARD, page, started, stats, record,
+            approvedAnswers, profile, resumePath: null, root: null, prior: null,
+        });
+    }
+
+    /**
+     * Run the loop, answer anything it asks, and act on how it ends.
+     *
+     * @param board          where the page lives — the board, a tenant, or an
+     *                       agent session. Its `neverAutoSubmit` is honoured.
+     * @param activityBoard  which card on the Boards screen the progress shows
+     *                       on, when that is not `board`
+     */
+    async #runAgentOn({
+        item, board, activityBoard, page, started, stats, record,
+        approvedAnswers, profile, resumePath, root, prior,
+    }) {
+        const where = activityBoard ?? board ?? AGENT_BOARD;
+        const shadow = started.mode === 'SHADOW';
+        const say = (state, message) => this.activity(where.name, state, `${item.company}: ${message}`);
+
+        stats.agentTried += 1;
+        say('AGENT', shadow
+            ? 'the AI agent is looking at this one (shadow mode — it will not type)'
+            : 'the AI agent is taking over');
+        this.log(`${item.company}: AI agent ${shadow ? 'in shadow mode' : 'taking over'}`);
+
+        // The resume is fetched only when something may actually be uploaded.
+        // Every delivery is audited against this device (R-20).
+        let resume = resumePath;
+        if (!resume && !shadow) {
+            resume = await this.hub.resume(item.id, this.paths.work).catch(() => null);
+        }
+
+        const waitForHuman = async (p, message) => {
+            await p.bringToFront?.().catch(() => {});
+            say('SIGNED_OUT', message);
+            const said = await this.#askHuman({
+                kind: 'ACCOUNT_WALL',
+                board: where,
+                company: item.company,
+                title: item.title,
+                message,
+                waitMs: this.signInWaitMs,
+                check: async () => !(await stillAsksForPassword(p)),
+            });
+            if (said === 'done') await this.sessions.saveSession?.(board?.name ?? where.name);
+            return said === 'done';
+        };
+
+        const waitForBotCheck = async (p) => {
+            await p.bringToFront?.().catch(() => {});
+            say('STOPPED', 'the site is asking for a human check');
+            const said = await this.#askHuman({
+                kind: 'BOT_CHECK',
+                board: where,
+                company: item.company,
+                title: item.title,
+                message: 'This site is asking for a human check. Solve it in the browser window '
+                    + 'and the AI agent carries on.',
+                check: async () => !(await stillChallenged(p)),
+            });
+            return said === 'done';
+        };
+
+        let answers = approvedAnswers;
+        let carried = prior;
+        let result;
+        const totals = { actions: 0, refused: 0 };
+
+        // ── A QUESTION NOBODY HAS ANSWERED ────────────────────────────
+        //
+        // The agent may only pick from approved answers, so a genuinely new
+        // question comes to the consultant exactly as it does from a recipe:
+        // banked, a countdown, and the job held open. Once answered, the agent
+        // picks up where it stopped. Twice at most — a form that keeps asking
+        // new things is one to park, not to sit through.
+        for (let round = 0; ; round += 1) {
+            result = await this.runAgent(page, {
+                hub: this.hub,
+                runId: started.runId,
+                fillOptions: { profile, approvedAnswers: answers, resumePath: resume },
+                root,
+                log: this.log,
+                activity: (m) => say('AGENT', m),
+                waitForHuman,
+                waitForBotCheck,
+                shadow,
+                prior: carried,
+                maxActions: started.limits?.maxActions,
+            });
+            totals.actions += result.agent?.actions ?? 0;
+            totals.refused += result.agent?.refused ?? 0;
+
+            const blocking = (result.unknown ?? []).filter((u) => u.required !== false);
+            if (shadow || result.outcome !== 'INCOMPLETE' || blocking.length === 0 || round >= 2) break;
+
+            const said = await this.#askUnanswered({
+                item,
+                board: where,
+                page,
+                root: root ?? 'body',
+                blocking,
+                allUnknown: result.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') {
+                await this.#finishAgent(started, { outcome: 'PARKED', detail: result.detail, ...totals });
+                return 'counted';
+            }
+            const fresh = await this.hub.queue().catch(() => null);
+            answers = fresh?.approvedAnswers ?? answers;
+            carried = { qa: result.qa, attachedResume: result.attachedResume };
+        }
+
+        await this.#finishAgent(started, { outcome: result.outcome, detail: result.detail, ...totals });
+        this.log(`${item.company}: AI agent ${result.outcome} — ${result.detail}`);
+
+        switch (result.outcome) {
+        case 'READY_TO_SUBMIT':
+            return this.#finishAgentFill({
+                item, board, where, page, result, stats, record,
+                approvedAnswers: answers, profile, resumePath: resume,
+            });
+
+        case 'CLOSED':
+            await this.#report(() => this.hub.skipped(item.id, {
+                reason: 'This job is expired — the posting is no longer accepting applications.',
+            }));
+            stats.skipped += 1;
+            stats.closed += 1;
+            record(item, where, 'CLOSED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
+            say('CLOSED', result.detail);
+            return 'counted';
+
+        case 'ALREADY_APPLIED':
+            await this.#report(() => this.hub.skipped(item.id, {
+                reason: 'The site says this consultant has already applied.',
+            }));
+            stats.skipped += 1;
+            record(item, where, 'ALREADY_APPLIED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
+            return 'counted';
+
+        case 'SHADOW':
+            // Watched, not acted on. The job is handed over as if the agent
+            // did not exist, and the run's proposals are on the hub to review.
+            return { reason: null, shadow: true };
+
+        default:
+            say('HANDED_OVER', `the AI agent could not finish: ${result.detail}`);
+            return { reason: `the AI agent could not finish it: ${result.detail}` };
+        }
+    }
+
+    /**
+     * The agent filled the form. From here it is the same ending as a recipe.
+     *
+     * The consultant's autoSubmit choice applies — unless the board or site
+     * itself says it never submits, which beats the toggle for the agent
+     * exactly as it does for a recipe.
+     */
+    async #finishAgentFill({
+        item, board, where, page, result, stats, record, approvedAnswers, profile, resumePath,
+    }) {
+        const count = result.qa.length;
+        await this.#report(() => this.hub.filled(item.id));
+        this.#rememberForReview(item, where, { ...result, refusals: [], readyToSubmit: true }, {
+            profile,
+            approvedAnswers,
+            resumePath,
+            filledBy: 'AGENT',
+            session: board?.name ?? where.name,
+            pageUrl: page.url(),
+            submit: result.submit,
+        });
+        stats.filled += 1;
+        stats.agentFilled += 1;
+
+        const neverAuto = Boolean(board?.neverAutoSubmit || where?.neverAutoSubmit);
+        if (neverAuto && this.store.get('autoSubmit')) {
+            this.log(`${where.label}: filled by the AI agent and left for you — this site never submits by itself`);
+        }
+
+        if (this.store.get('autoSubmit') && !neverAuto) {
+            this.activity(where.name, 'SUBMITTING',
+                `${item.company}: submitting what the AI agent filled`);
+            const pressed = await pressAgentSubmit(page, result.submit, this.log);
+            if (pressed.ok) {
+                await this.reportSubmitted(item.id, {
+                    confirmed: pressed.confirmed,
+                    detail: pressed.detail,
+                });
+                stats.submitted += 1;
+                record(item, where, 'SUBMITTED', `AI agent: ${pressed.detail}`, { filledBy: 'AGENT' });
+                this.activity(where.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
+                return 'counted';
+            }
+            record(item, where, 'READY_TO_SUBMIT',
+                `the AI agent filled it, but it could not be submitted — ${pressed.error}`,
+                { filledBy: 'AGENT' });
+            this.activity(where.name, 'READY_TO_SUBMIT',
+                `${item.company}: could not submit — ${pressed.error}`);
+            return 'counted';
+        }
+
+        record(item, where, 'READY_TO_SUBMIT',
+            `the AI agent filled ${count} field(s) — waiting for you to submit`, { filledBy: 'AGENT' });
+        this.activity(where.name, 'READY_TO_SUBMIT',
+            `${item.company}: the AI agent filled ${count} field(s) — waiting for you to submit`);
+        return 'counted';
+    }
+
+    /**
+     * Submit an agent-filled application because the consultant asked.
+     *
+     * Only if the page the agent finished on is still the page on screen. There
+     * is no recipe to rebuild it with, and pressing a submit button on whatever
+     * page is there now would send a different application.
+     */
+    async #submitAgentFill(entry) {
+        const session = entry.session ?? entry.board;
+        const page = await this.sessions.page(session);
+        const parse = (u) => { try { return new URL(u); } catch { return null; } };
+        const here = parse(page.url());
+        const was = parse(entry.pageUrl ?? entry.url);
+        if (!here || !was || here.host !== was.host || here.pathname !== was.pathname) {
+            return {
+                ok: false,
+                error: 'The AI agent filled this application on a page that is no longer open. '
+                    + 'Open it in the browser, check it, and submit it there.',
+            };
+        }
+
+        this.activity(entry.board, 'SUBMITTING', `Submitting ${entry.company} — you asked for this`);
+        const pressed = await pressAgentSubmit(page, entry.submit, this.log);
+        if (!pressed.ok) {
+            this.activity(entry.board, 'ERROR', `${entry.company}: ${pressed.error}`);
+            return pressed;
+        }
+        this.activity(entry.board, 'SUBMITTED', `${entry.company}: ${pressed.detail}`);
+        const reported = await this.reportSubmitted(entry.itemId, {
+            confirmed: pressed.confirmed,
+            detail: pressed.detail,
+        });
+        return { ...reported, ...pressed };
     }
 
     /**
@@ -1239,6 +1783,12 @@ class CycleEngine {
             profile: context.profile ?? null,
             approvedAnswers: context.approvedAnswers ?? [],
             resumePath: context.resumePath ?? null,
+            // RECIPE or AGENT. An agent-filled form has no recipe to walk back
+            // to its submit step, so it is submitted where the agent left it.
+            filledBy: context.filledBy ?? 'RECIPE',
+            session: context.session ?? board.name,
+            pageUrl: context.pageUrl ?? null,
+            submit: context.submit ?? null,
         });
 
         this.store.set({ awaitingReview: waiting });
@@ -1294,6 +1844,10 @@ class CycleEngine {
         const waiting = this.store.get('awaitingReview') ?? [];
         const entry = waiting.find((w) => w.itemId === itemId);
         if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
+
+        // Filled by the AI agent: there is no recipe to walk back to the submit
+        // step, so it is pressed where the agent left it, or not at all.
+        if (entry.filledBy === 'AGENT') return this.#submitAgentFill(entry);
 
         const board = BOARDS[entry.board];
         if (!board?.apply?.submit) {
@@ -1387,9 +1941,13 @@ class CycleEngine {
             .find((w) => w.itemId === itemId);
         if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
 
-        const page = await this.sessions.page(entry.board);
-        if (page.url() !== entry.url) {
-            await this.sessions.openJob(entry.board, entry.url);
+        // An agent-filled form lives in its own session, on the page where the
+        // agent finished rather than the job's first page.
+        const session = entry.session ?? entry.board;
+        const url = entry.pageUrl ?? entry.url;
+        const page = await this.sessions.page(session);
+        if (page.url() !== url) {
+            await this.sessions.openJob(session, url);
         }
         await page.bringToFront();
         return { ok: true };

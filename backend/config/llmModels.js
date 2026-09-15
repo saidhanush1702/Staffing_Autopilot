@@ -141,4 +141,13 @@ export const isStageConfigured = (stage) => {
     return provider.length > 0 && model.length > 0;
 };
 
-export const STAGES = ['parse', 'tailor', 'check'];
+/**
+ * `agent` is the form-filling agent: one short call per page it works through,
+ * choosing a single action. Many small calls rather than one large one, so a
+ * fast model is usually the right choice — see config/agentProtocol.js.
+ *
+ * `match` proposes which approved answer a differently-worded question is
+ * really asking for. The consultant confirms it; nothing is typed on the
+ * strength of a match alone — see controllers/questionSuggestionController.js.
+ */
+export const STAGES = ['parse', 'tailor', 'check', 'agent', 'match'];

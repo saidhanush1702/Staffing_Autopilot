@@ -156,7 +156,7 @@ const boardsForDisplay = () => {
     const { BOARDS } = require('./browser/boards.js');
     const stalled = new Map((store?.get('pausedBoards') ?? []).map((b) => [b.board, b]));
 
-    return Object.values(BOARDS).map((b) => {
+    const rows = Object.values(BOARDS).map((b) => {
         const seen = boardActivity.get(b.name);
         const hold = stalled.get(b.name);
         return {
@@ -173,6 +173,22 @@ const boardsForDisplay = () => {
             lines: seen?.lines ?? [],
         };
     });
+
+    // The AI agent works jobs that belong to no board. It gets a card of its
+    // own once it has done something, so that work is not invisible.
+    const agent = boardActivity.get('AGENT');
+    if (agent) {
+        rows.push({
+            board: 'AGENT',
+            label: 'AI agent',
+            state: agent.state,
+            canFill: true,
+            until: null,
+            at: agent.at,
+            lines: agent.lines,
+        });
+    }
+    return rows;
 };
 
 const snapshot = () => ({
@@ -188,6 +204,7 @@ const snapshot = () => ({
     outstandingQuestions: store?.get('outstandingQuestions') ?? 0,
     automationOn: store?.get('automationOn') ?? false,
     autoSubmit: store?.get('autoSubmit') ?? false,
+    agentFallback: store?.get('agentFallback') ?? true,
     boards: boardsForDisplay(),
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
@@ -389,6 +406,9 @@ const registerIpc = () => {
         store.set({
             automationOn: true,
             autoSubmit: Boolean(options.autoSubmit),
+            // Decided on the way in, like autoSubmit. The organisation still
+            // has to allow the agent; this can only switch it off.
+            agentFallback: options.agentFallback !== false,
         });
         engine.allowStart();
         toRenderer('log',
@@ -530,6 +550,46 @@ const registerIpc = () => {
     ipcMain.handle('questions', async () => {
         try {
             return { ok: true, ...(await hub.questions()) };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+
+    /*
+     * ── "YOU MAY HAVE ANSWERED THIS ALREADY" ──────────────────────────
+     *
+     * Asked separately from the list, so the Questions tab never waits on a
+     * model to show what needs answering. Each question is asked about once
+     * per session, and "no suggestion" is remembered too — reopening the tab
+     * must not buy the same answer twice.
+     */
+    const suggestionCache = new Map();
+    ipcMain.handle('questionSuggestions', async () => {
+        try {
+            const { normaliseQuestion } = require('./browser/answers.js');
+            const { questions = [] } = await hub.questions();
+            const keyOf = (q) => normaliseQuestion(q.asked_as);
+
+            const fresh = questions.filter((q) => !suggestionCache.has(keyOf(q))).slice(0, 20);
+            if (fresh.length > 0) {
+                const res = await hub.questionSuggestions({
+                    questions: fresh.map((q) => ({ questionText: q.asked_as, questionId: q.question_id })),
+                }).catch(() => null);
+                // Unreachable is not the same as "no suggestion": leave those
+                // uncached so the next visit can try again.
+                if (res) {
+                    const found = new Map((res.suggestions ?? [])
+                        .map((s) => [normaliseQuestion(s.questionText), s]));
+                    for (const q of fresh) suggestionCache.set(keyOf(q), found.get(keyOf(q)) ?? null);
+                }
+            }
+
+            const suggestions = {};
+            for (const q of questions) {
+                const s = suggestionCache.get(keyOf(q));
+                if (s) suggestions[q.question_id] = s;
+            }
+            return { ok: true, suggestions };
         } catch (err) {
             return { ok: false, error: err.message };
         }

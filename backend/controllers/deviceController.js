@@ -215,9 +215,12 @@ export const heartbeat = async (req, res, next) => {
 /**
  * GET /api/device/queue
  *
- * Only READY items, only this consultant, only the BOT lane. The HUMAN lane
- * belongs to the portal — sending it here would put the same job in front of
- * the consultant twice with no indication of which one to act on.
+ * Only READY items, only this consultant, only the BOT and AGENT lanes. The
+ * HUMAN lane belongs to the portal — sending it here would put the same job in
+ * front of the consultant twice with no indication of which one to act on.
+ *
+ * AGENT items have no coded recipe; the app asks the hub before letting the AI
+ * agent try one, and hands it to HUMAN if the answer is no.
  */
 export const deviceQueue = async (req, res, next) => {
     try {
@@ -242,7 +245,7 @@ export const deviceQueue = async (req, res, next) => {
           LEFT JOIN job_matches m ON m.id = q.match_id
               WHERE q.consultant_id = $1
                 AND q.organization_id = $2
-                AND q.channel = 'BOT'
+                AND q.channel IN ('BOT', 'AGENT')
                 AND st.name IN ('READY', 'FILLING')
                 -- not already leased by somebody else, or the lease lapsed
                 AND (q.leased_by IS NULL OR q.leased_by = $3 OR q.leased_until < now())

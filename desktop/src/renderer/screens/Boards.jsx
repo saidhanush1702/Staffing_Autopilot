@@ -33,6 +33,7 @@ const TONE = {
     CONNECTING: ['brand', 'Opening'],
     WORKING: ['brand', 'Working'],
     FILLING: ['brand', 'Filling'],
+    AGENT: ['brand', 'AI agent working'],
     SUBMITTING: ['brand', 'Submitting'],
     SUBMITTED: ['ok', 'Submitted'],
     READY_TO_SUBMIT: ['warn', 'Waiting on you'],
@@ -45,7 +46,7 @@ const TONE = {
     ERROR: ['stop', 'Problem'],
 };
 
-const LIVE = ['CONNECTING', 'WORKING', 'FILLING', 'SUBMITTING'];
+const LIVE = ['CONNECTING', 'WORKING', 'FILLING', 'AGENT', 'SUBMITTING'];
 const time = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '');
 
 /** Count the queue by the board each job belongs to. */

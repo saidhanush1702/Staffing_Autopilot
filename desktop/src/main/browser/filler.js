@@ -919,7 +919,91 @@ function el(locators, field) {
     return locators.nth(field.index);
 }
 
+/**
+ * Put one value into one field, whatever kind of field it is.
+ *
+ * ── WHY THIS EXISTS BESIDE fillForm ───────────────────────────────────
+ *
+ * `fillForm` walks a whole page and decides for itself what each field wants.
+ * The AI agent decides that differently — one field at a time, with the value
+ * already chosen — and needs only the second half: given this control and this
+ * text, make the form hold it. The primitives are the same ones `fillForm`
+ * uses (the proxy-aware radio click, the Workday listbox, the typeahead pick,
+ * the strict option matcher), so the agent inherits every lesson learned the
+ * hard way on real forms instead of relearning them.
+ *
+ * `fillForm` itself is left exactly as it was. Every recipe runs through it,
+ * and nothing here is worth a risk to them.
+ *
+ * @param pageLike  the page, or a stand-in that looks for listboxes in a frame
+ * @param target    { locator, field } for one control, or
+ *                  { members: [{ locator, field }] } for a radio group
+ * @returns {{ ok: true, answerText } | { ok: false, error }}
+ */
+const fillValue = async (pageLike, target, value, { typing = TYPING, stateHint = null } = {}) => {
+    const text = String(value ?? '');
+
+    if (target.members) {
+        const labels = target.members.map((m) => m.field.label);
+        const match = chooseOption(labels, text);
+        if (!match) {
+            return {
+                ok: false,
+                error: `none of the options (${labels.filter(Boolean).slice(0, 8).join(', ')}) `
+                    + `matches "${text.slice(0, 60)}"`,
+            };
+        }
+        const chosen = target.members.find((m) => m.field.label === match);
+        await checkControl(chosen.locator, chosen.field);
+        return { ok: true, answerText: match };
+    }
+
+    const { locator, field } = target;
+
+    // R-18, again, at the lowest level: whatever called this, a password
+    // field gets nothing.
+    if (field.type === 'password') return { ok: false, error: 'password fields are never filled' };
+    if (field.type === 'file') return { ok: false, error: 'a file field takes the resume, not text' };
+
+    if (field.type === 'checkbox') {
+        if (!isAffirmative(text)) {
+            return { ok: false, error: `"${text.slice(0, 40)}" is not a yes, so the box stays unticked` };
+        }
+        await checkControl(locator, field);
+        return { ok: true, answerText: 'Yes' };
+    }
+
+    if (field.type === 'radio') {
+        await checkControl(locator, field);
+        return { ok: true, answerText: field.label || text };
+    }
+
+    if (field.type === 'dropdown') {
+        const chosen = await chooseFromDropdown(pageLike, locator, text);
+        return chosen
+            ? { ok: true, answerText: chosen }
+            : { ok: false, error: `"${text.slice(0, 60)}" is not one of the choices in that dropdown` };
+    }
+
+    if (field.tag === 'select') {
+        const match = chooseOption(field.options ?? [], text);
+        if (!match) {
+            return { ok: false, error: `"${text.slice(0, 60)}" is not one of the options in that list` };
+        }
+        await locator.selectOption({ label: match });
+        return { ok: true, answerText: match };
+    }
+
+    await locator.click();
+    await locator.fill('');
+    await locator.pressSequentially(text, {
+        delay: Math.round(rand(typing.minMs, typing.maxMs)),
+    });
+    const suggested = await pickSuggestion(pageLike, locator, text, stateHint);
+    return { ok: true, answerText: suggested ?? text };
+};
+
 module.exports = {
-    fillForm, describeFields, checkControl, chooseFromDropdown, groupOf, asAsked,
+    fillForm, fillValue, describeFields, checkControl, chooseFromDropdown, groupOf, asAsked,
     FIELD_SELECTOR, DROPDOWN_SELECTOR, IGNORED_TYPES,
 };

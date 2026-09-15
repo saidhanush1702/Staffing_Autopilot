@@ -57,6 +57,15 @@ const Application = ({ entry, onRefresh }) => {
                 <span className="pill warn">Waiting on you</span>
             </div>
 
+            {entry.filledBy === 'AGENT' && (
+                <p className="note warn">
+                    The AI agent filled this one — the site is new to the app, or its
+                    automation broke. It used only your profile and approved answers, but it
+                    matched them to the questions by meaning, so read each answer before you
+                    submit.
+                </p>
+            )}
+
             {!entry.attachedResume && (
                 <p className="note warn">
                     No resume was attached — the form had nowhere to put one, or you have
@@ -82,7 +91,14 @@ const Application = ({ entry, onRefresh }) => {
                             <div className="qa" key={i}>
                                 <p className="qa-q">{q.questionText}</p>
                                 <p className="qa-a">{q.answerText}</p>
-                                {SOURCE[q.source] && <p className="muted">{SOURCE[q.source]}</p>}
+                                {SOURCE[q.source] && (
+                                    <p className="muted">
+                                        {SOURCE[q.source]}
+                                        {q.matchedBy === 'AGENT' && q.source === 'ANSWER'
+                                            ? ' · matched to this question by the AI agent'
+                                            : ''}
+                                    </p>
+                                )}
                             </div>
                         ))}
                     </div>

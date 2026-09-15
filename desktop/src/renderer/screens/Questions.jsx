@@ -24,7 +24,7 @@ import { useCallback, useEffect, useState } from 'react';
  * chore; knowing that this particular chore sends four applications is the
  * difference between doing it now and closing the laptop.
  */
-const Row = ({ q, onAnswered }) => {
+const Row = ({ q, suggestion, onAnswered }) => {
     const [text, setText] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -50,6 +50,29 @@ const Row = ({ q, onAnswered }) => {
                     {q.is_required ? '' : ' · optional'}
                 </p>
             </div>
+
+            {/*
+                An answer the consultant already gave to a differently-worded
+                question. Offered, never applied: "Use this answer" only fills
+                the box, and nothing is saved until they press Save.
+            */}
+            {suggestion && !text && (
+                <div className="note">
+                    <p>
+                        You have answered a question like this before:{' '}
+                        <strong>&ldquo;{suggestion.fromQuestion}&rdquo;</strong>
+                    </p>
+                    <p className="qa-a" style={{ marginTop: 4 }}>{suggestion.suggestedAnswer}</p>
+                    <button
+                        type="button"
+                        className="secondary"
+                        style={{ marginTop: 6 }}
+                        onClick={() => setText(suggestion.suggestedAnswer)}
+                    >
+                        Use this answer
+                    </button>
+                </div>
+            )}
 
             <textarea
                 className="answer"
@@ -85,10 +108,18 @@ const Row = ({ q, onAnswered }) => {
 const Questions = ({ onChanged }) => {
     const [state, setState] = useState({ loading: true });
     const [freed, setFreed] = useState(0);
+    const [suggestions, setSuggestions] = useState({});
 
     const load = useCallback(async () => {
         const res = await window.smartapply.questions();
         setState(res?.ok ? { questions: res.questions ?? [] } : { error: res?.error });
+        // After the list, never before it: suggestions wait on a model, and
+        // the questions themselves must not.
+        if (res?.ok && (res.questions ?? []).length > 0) {
+            window.smartapply.questionSuggestions?.()
+                .then((s) => { if (s?.ok) setSuggestions(s.suggestions ?? {}); })
+                .catch(() => {});
+        }
     }, []);
 
     useEffect(() => { load(); }, [load]);
@@ -128,7 +159,12 @@ const Questions = ({ onChanged }) => {
                         into the queue. Most-blocking first.
                     </p>
                     {questions.map((q) => (
-                        <Row key={q.question_id} q={q} onAnswered={answered} />
+                        <Row
+                            key={q.question_id}
+                            q={q}
+                            suggestion={suggestions[q.question_id] ?? null}
+                            onAnswered={answered}
+                        />
                     ))}
                 </>
             )}

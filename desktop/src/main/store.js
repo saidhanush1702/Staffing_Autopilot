@@ -51,6 +51,11 @@ const EMPTY = {
     // sent, with nothing on screen saying which.
     automationOn: false,
     autoSubmit: false,
+    // Whether the AI agent may take over a job the coded automation cannot
+    // finish, or one no automation exists for. On by default on the device,
+    // because the ORGANISATION decides whether the agent runs at all — a
+    // consultant only ever narrows that, never widens it.
+    agentFallback: true,
     // Last known settings from the hub.
     paused: false,
     pausedBoards: [],

@@ -1070,7 +1070,7 @@ const pressSubmit = async (page, board) => {
 };
 
 module.exports = {
-    runApplyFlow, pressSubmit, isSubmit, attachResume,
+    runApplyFlow, pressSubmit, isSubmit, attachResume, textOf,
     SUBMIT_WORDS, UPLOAD_WORDS, RESUME_WORDS, MAX_STEPS, STEP_SETTLE_MS,
     REVEAL_WORDS, NOT_REVEAL, findRevealControl,
     waitForFields,

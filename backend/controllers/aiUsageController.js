@@ -43,7 +43,7 @@ export const aiUsage = async (req, res, next) => {
     try {
         const orgId = req.user.orgId;
 
-        const [budget, stages, outcomes, states] = await Promise.all([
+        const [budget, stages, outcomes, states, agentRuns, agentOutcomes, agentHosts, agentStage] = await Promise.all([
             spendThisPeriod(orgId),
 
             // Per stage, so "what did the checking half cost" is answerable
@@ -85,9 +85,69 @@ export const aiUsage = async (req, res, next) => {
                GROUP BY tailoring_state, tailoring_skip_reason`,
                 [orgId],
             ),
+
+            // ── the AI agent ──────────────────────────────────────────
+            //
+            // What it was asked to do, what it finished, and what it cost per
+            // job — the number that says whether it is cheaper than a person.
+            query(
+                `SELECT COUNT(*)::int                                            AS runs,
+                        COUNT(*) FILTER (WHERE outcome = 'READY_TO_SUBMIT')::int AS filled,
+                        COUNT(*) FILTER (WHERE shadow)::int                      AS shadow,
+                        COALESCE(SUM(cost_usd), 0)::float8                       AS cost,
+                        COALESCE(AVG(cost_usd) FILTER (WHERE ended_at IS NOT NULL), 0)::float8 AS avg_cost,
+                        COALESCE(SUM(model_calls), 0)::int                       AS model_calls
+                   FROM agent_runs
+                  WHERE organization_id = $1
+                    AND started_at >= date_trunc('month', now())`,
+                [orgId],
+            ),
+            query(
+                `SELECT COALESCE(outcome, 'RUNNING') AS outcome, COUNT(*)::int AS n
+                   FROM agent_runs
+                  WHERE organization_id = $1
+                    AND started_at >= date_trunc('month', now())
+               GROUP BY 1`,
+                [orgId],
+            ),
+            // The sites the agent works most. The top of this list is the next
+            // recipe worth writing: coded, it moves back to free and instant.
+            query(
+                `SELECT host,
+                        COUNT(*)::int                                            AS runs,
+                        COUNT(*) FILTER (WHERE outcome = 'READY_TO_SUBMIT')::int AS filled,
+                        COALESCE(SUM(cost_usd), 0)::float8                       AS cost
+                   FROM agent_runs
+                  WHERE organization_id = $1
+                    AND host IS NOT NULL
+                    AND started_at >= now() - interval '30 days'
+               GROUP BY host
+               ORDER BY runs DESC
+                  LIMIT 10`,
+                [orgId],
+            ),
+            query(
+                `SELECT 'agent' AS stage,
+                        COUNT(*)::int                                AS runs,
+                        COALESCE(SUM(cost_usd), 0)::float8           AS cost,
+                        COALESCE(SUM(input_tokens), 0)::bigint       AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::bigint      AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)::bigint  AS cache_read_tokens,
+                        COALESCE(SUM(cache_write_tokens), 0)::bigint AS cache_write_tokens,
+                        COALESCE(AVG(duration_ms), 0)::int           AS avg_ms
+                   FROM agent_steps
+                  WHERE organization_id = $1
+                    AND created_at >= date_trunc('month', now())`,
+                [orgId],
+            ),
         ]);
 
-        const byStage = stages.rows;
+        // Agent turns sit in the same table as every other stage, so "what did
+        // AI cost this month" is one total rather than two screens.
+        const byStage = [
+            ...stages.rows,
+            ...agentStage.rows.filter((r) => r.runs > 0),
+        ];
         const totals = byStage.reduce((acc, s) => ({
             cost: acc.cost + Number(s.cost),
             input: acc.input + Number(s.input_tokens),
@@ -132,6 +192,16 @@ export const aiUsage = async (req, res, next) => {
             },
             queue: {
                 tailored, notTailored, pending, flagged, skips,
+            },
+            agent: {
+                runs: agentRuns.rows[0]?.runs ?? 0,
+                filled: agentRuns.rows[0]?.filled ?? 0,
+                shadow: agentRuns.rows[0]?.shadow ?? 0,
+                cost: Number((agentRuns.rows[0]?.cost ?? 0).toFixed(4)),
+                avgCost: Number((agentRuns.rows[0]?.avg_cost ?? 0).toFixed(4)),
+                modelCalls: agentRuns.rows[0]?.model_calls ?? 0,
+                outcomes: Object.fromEntries(agentOutcomes.rows.map((r) => [r.outcome, r.n])),
+                hosts: agentHosts.rows,
             },
         });
     } catch (err) {

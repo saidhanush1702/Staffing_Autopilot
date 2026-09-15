@@ -1023,7 +1023,8 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                 // The lane, decided here because the portal is known here.
                 // Recorded rather than recomputed later: teaching the app a new
                 // system must not silently rewrite what happened historically.
-                const channel = match.automatable ? 'BOT' : 'HUMAN';
+                // BOT, AGENT or HUMAN — see config/queueLanes.js.
+                const channel = await laneFor(orgId, match.automatable);
 
                 const inserted = await query(
                     `INSERT INTO queue_items

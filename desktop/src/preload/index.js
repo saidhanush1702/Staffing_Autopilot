@@ -61,6 +61,11 @@ contextBridge.exposeInMainWorld('smartapply', {
     questions: () => ipcRenderer.invoke('questions'),
     answerBank: () => ipcRenderer.invoke('answerBank'),
     answerQuestion: (id, answerText) => ipcRenderer.invoke('answerQuestion', id, answerText),
+    /**
+     * Answers already given to differently-worded questions. Offered only —
+     * using one fills the box, and the consultant still presses Save.
+     */
+    questionSuggestions: () => ipcRenderer.invoke('questionSuggestions'),
 
     /** Everything this consultant has applied to, grouped by job board. */
     applications: () => ipcRenderer.invoke('applications'),

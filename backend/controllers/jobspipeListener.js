@@ -52,6 +52,7 @@
 import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
+import { laneFor } from '../config/queueLanes.js';
 import { evaluate } from '../config/jobMatcher.js';
 import { jobspipeToPosting, unwrapBatch, SOURCE_NAME } from '../connectors/jobspipe.js';
 import {
@@ -328,7 +329,8 @@ export const ingestAdapted = async (orgId, adapted, {
               WHERE p.id = $1`,
             [stored.id],
         );
-        const channel = portal[0]?.automatable ? 'BOT' : 'HUMAN';
+        // BOT, AGENT or HUMAN — one rule for every door a job comes in by.
+        const channel = await laneFor(orgId, portal[0]?.automatable);
 
         // R-01 / R-03: the same posting legitimately reaches several
         // consultants. Flagged for visibility, never blocked.

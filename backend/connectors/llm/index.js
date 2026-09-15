@@ -117,21 +117,32 @@ export const unavailableReason = (stage) => {
  * `unpriced` so an operator can see that the number understates reality.
  */
 export const spendThisPeriod = async (orgId) => {
+    // Two ledgers, one ceiling. Resume tailoring and the form-filling agent
+    // draw on the same monthly budget, so a busy agent month is visible as
+    // less tailoring headroom rather than as a second bill nobody set.
     const { rows } = await query(
-        `SELECT COALESCE(SUM(r.cost_usd), 0)::float8      AS spent,
-                COUNT(*) FILTER (WHERE r.cost_usd IS NULL)::int AS unpriced,
-                o.ai_monthly_budget_usd::float8           AS budget
-           FROM organizations o
-      LEFT JOIN resume_tailoring_runs r
-             ON r.organization_id = o.id
-            AND r.created_at >= (
-                CASE WHEN EXTRACT(DAY FROM now()) >= o.ai_spend_reset_day
-                     THEN date_trunc('month', now())
-                     ELSE date_trunc('month', now()) - interval '1 month'
-                END + (o.ai_spend_reset_day - 1) * interval '1 day'
-            )
-          WHERE o.id = $1
-       GROUP BY o.ai_monthly_budget_usd`,
+        `WITH o AS (
+             SELECT id, ai_monthly_budget_usd,
+                    CASE WHEN EXTRACT(DAY FROM now()) >= ai_spend_reset_day
+                         THEN date_trunc('month', now())
+                         ELSE date_trunc('month', now()) - interval '1 month'
+                    END + (ai_spend_reset_day - 1) * interval '1 day' AS since
+               FROM organizations
+              WHERE id = $1
+         ),
+         spend AS (
+             SELECT r.cost_usd
+               FROM resume_tailoring_runs r, o
+              WHERE r.organization_id = o.id AND r.created_at >= o.since
+             UNION ALL
+             SELECT s.cost_usd
+               FROM agent_steps s, o
+              WHERE s.organization_id = o.id AND s.created_at >= o.since
+         )
+         SELECT COALESCE((SELECT SUM(cost_usd) FROM spend), 0)::float8        AS spent,
+                (SELECT COUNT(*) FROM spend WHERE cost_usd IS NULL)::int      AS unpriced,
+                o.ai_monthly_budget_usd::float8                               AS budget
+           FROM o`,
         [orgId],
     );
 

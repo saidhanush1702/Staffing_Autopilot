@@ -56,7 +56,14 @@ const Group = ({ label, tone, rows }) => {
                 <div style={{ marginTop: 8 }}>
                     {rows.map((r, i) => (
                         <div className="qa" key={`${r.company}-${i}`}>
-                            <p className="qa-a">{r.company}</p>
+                            <p className="qa-a">
+                                {r.company}
+                                {/* The agent's work is marked, because it is the work
+                                    to read most closely before it is sent. */}
+                                {r.filledBy === 'AGENT' && (
+                                    <span className="pill brand" style={{ marginLeft: 8 }}>AI agent</span>
+                                )}
+                            </p>
                             <p className="qa-q">
                                 {r.title}
                                 {r.board ? ` · ${r.board}` : ''}
@@ -90,6 +97,9 @@ const LastRun = ({ snap }) => {
     if (rest.length > 0) groups.push(['Other', 'idle', rest]);
 
     const applied = outcomes.filter((o) => o.result === 'SUBMITTED').length;
+    const byAgent = outcomes.filter(
+        (o) => o.filledBy === 'AGENT' && (o.result === 'SUBMITTED' || o.result === 'READY_TO_SUBMIT'),
+    ).length;
     const needsYou = outcomes.filter(
         (o) => o.result === 'READY_TO_SUBMIT' || o.result === 'PARKED'
             || o.result === 'HANDED_OVER' || o.result === 'NEEDS_SIGN_IN',
@@ -104,6 +114,7 @@ const LastRun = ({ snap }) => {
                         {outcomes.length} job{outcomes.length === 1 ? '' : 's'} worked
                         {run.at ? ` · finished ${when(run.at)}` : ''}
                         {run.stopped ? ' · stopped part-way' : ''}
+                        {byAgent > 0 ? ` · ${byAgent} filled by the AI agent` : ''}
                     </p>
                 </div>
                 <span className={`pill ${applied > 0 ? 'ok' : 'idle'}`}>

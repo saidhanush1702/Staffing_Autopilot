@@ -20,6 +20,9 @@ import { useState } from 'react';
  */
 const Controls = ({ snap, onRefresh }) => {
     const [autoSubmit, setAutoSubmit] = useState(Boolean(snap.autoSubmit));
+    // On unless the consultant turned it off. The organisation decides whether
+    // the agent may run at all; this can only narrow that.
+    const [agentFallback, setAgentFallback] = useState(snap.agentFallback !== false);
     const [busy, setBusy] = useState(false);
 
     const running = Boolean(snap.automationOn);
@@ -54,7 +57,7 @@ const Controls = ({ snap, onRefresh }) => {
                     disabled={busy}
                     onClick={() => act(running
                         ? window.smartapply.stopAutomation
-                        : () => window.smartapply.startAutomation({ autoSubmit }))}
+                        : () => window.smartapply.startAutomation({ autoSubmit, agentFallback }))}
                 >
                     {busy ? 'Working…' : (running ? 'Stop' : 'Start applying')}
                 </button>
@@ -62,9 +65,30 @@ const Controls = ({ snap, onRefresh }) => {
 
             {running ? (
                 <p className="muted">
-                    Stop first to change whether applications are submitted automatically.
+                    Stop first to change whether applications are submitted automatically
+                    {snap.agentFallback !== false
+                        ? ', or whether the AI agent may take over.'
+                        : '. The AI agent is off for this run.'}
                 </p>
             ) : (
+                <>
+                <label className="switch">
+                    <input
+                        type="checkbox"
+                        checked={agentFallback}
+                        onChange={(e) => setAgentFallback(e.target.checked)}
+                    />
+                    <span>
+                        <strong>Let the AI agent take over</strong>
+                        <p className="muted" style={{ marginTop: 2 }}>
+                            {agentFallback
+                                ? 'When a site is new to the app, or its automation breaks, the AI '
+                                  + 'agent fills the form using only your profile and approved '
+                                  + 'answers. Anything new still comes to you.'
+                                : 'Jobs the automation cannot fill come straight to you.'}
+                        </p>
+                    </span>
+                </label>
                 <label className="switch">
                     <input
                         type="checkbox"
@@ -81,6 +105,7 @@ const Controls = ({ snap, onRefresh }) => {
                         </p>
                     </span>
                 </label>
+                </>
             )}
         </section>
     );

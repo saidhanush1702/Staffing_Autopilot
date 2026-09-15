@@ -127,6 +127,13 @@ import {
     findContactNow, setDoNotContact, contactUsage, dncSchema,
 } from './controllers/contactController.js';
 import { aiUsage } from './controllers/aiUsageController.js';
+import {
+    agentStart, agentStep, agentFinish, getAgentSettings, updateAgentSettings,
+    agentStartSchema, agentStepSchema, agentFinishSchema, agentSettingsSchema,
+} from './controllers/agentController.js';
+import {
+    questionSuggestions, questionSuggestionsSchema,
+} from './controllers/questionSuggestionController.js';
 import { listConsultantJobs } from './controllers/consultantJobsController.js';
 import { resumeUpload } from './utils/upload.js';
 
@@ -477,6 +484,11 @@ app.post('/api/management/resume-reviews/:itemId/retry',
 // What the AI stage cost this month, and whether caching and the flag rate
 // are where they should be. Read-only — the budget itself is an org setting.
 app.get('/api/management/ai-usage', [verifyToken, isManagement], aiUsage);
+// Whether the AI agent may fill forms, and its per-job limits. Anyone in
+// management can read it; only an organisation admin can change it.
+app.get('/api/management/ai-agent', [verifyToken, isManagement], getAgentSettings);
+app.put('/api/management/ai-agent',
+    [verifyToken, isOrgAdmin, validate(agentSettingsSchema)], updateAgentSettings);
 
 app.get('/api/management/contacts', [verifyToken, isManagement], listContacts);
 app.get('/api/management/contacts/usage', [verifyToken, isManagement], contactUsage);
@@ -533,6 +545,20 @@ app.post('/api/device/queue/:id/questions', [verifyDevice, validate(reportSchema
 app.post('/api/device/queue/:id/parked', [verifyDevice, validate(reportSchema)], reportParked);
 app.post('/api/device/queue/:id/skipped', [verifyDevice, validate(reportSchema)], reportSkipped);
 app.post('/api/device/queue/:id/reclassify', [verifyDevice, validate(reportSchema)], reclassify);
+
+// The AI agent: fills an application when a coded recipe cannot. The loop runs
+// on the device, where the signed-in browser is; every model call comes through
+// here, where the key, the budget and the ledger are. See agentController.js.
+app.post('/api/device/queue/:id/agent/start',
+    [verifyDevice, validate(agentStartSchema)], agentStart);
+app.post('/api/device/agent/runs/:runId/step',
+    [verifyDevice, validate(agentStepSchema)], agentStep);
+app.post('/api/device/agent/runs/:runId/finish',
+    [verifyDevice, validate(agentFinishSchema)], agentFinish);
+// Differently-worded questions that an existing approved answer may already
+// cover. Suggestions only — nothing is answered until the consultant accepts.
+app.post('/api/device/questions/suggestions',
+    [verifyDevice, validate(questionSuggestionsSchema)], questionSuggestions);
 // R-02: this RECORDS a submission the consultant already made. It never causes
 // one, and it is the only route that can create an application record.
 app.post('/api/device/queue/:id/submitted',

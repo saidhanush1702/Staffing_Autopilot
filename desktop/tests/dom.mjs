@@ -838,6 +838,239 @@ try {
     check('  and is reported as unanswered',
         out.unknown.some((u) => u.questionText.startsWith('How Did You Hear')), true);
 
+    /* ── the AI agent, against real markup ────────────────────────── */
+
+    /**
+     * Every earlier section leaves its pages open, and by this point in the
+     * suite that is a lot of Chromium. These sections close the page they are
+     * done with before opening the next, so adding them does not tip a machine
+     * with little free memory into a crashed renderer.
+     */
+    const swap = async (next) => {
+        await page?.close().catch(() => {});
+        page = await next();
+        return page;
+    };
+
+    const { observe } = require('../src/main/agent/observe.js');
+    const { executeAction, pressAgentSubmit } = require('../src/main/agent/actions.js');
+    const { runAgent } = require('../src/main/agent/runAgent.js');
+    const { buildAnswerBook } = require('../src/main/browser/answers.js');
+
+    /** A career-site form no recipe knows: every kind of field, and two traps. */
+    const AGENT_FORM = `
+      <main>
+        <h1>Apply — Data Engineer</h1>
+        <form id="apply" onsubmit="event.preventDefault(); document.body.dataset.sent = '1';
+            const p = document.createElement('p'); p.textContent = 'Thank you for applying';
+            document.body.appendChild(p);">
+          <label for="fn">First name *</label><input id="fn" name="fn" required>
+          <label for="em">Email *</label><input id="em" name="em" type="email" required value="already@portal.example">
+          <fieldset>
+            <legend>Are you legally authorised to work in the United States? *</legend>
+            <label><input type="radio" name="auth" value="y"> Yes</label>
+            <label><input type="radio" name="auth" value="n"> No</label>
+          </fieldset>
+          <label for="yrs">How many years have you worked with React.js?</label>
+          <select id="yrs"><option value="">Select…</option><option>0-2</option><option>3-5</option><option>6+</option></select>
+          <label for="cv">Resume</label><input id="cv" type="file">
+          <label for="pw">Create a password</label><input id="pw" type="password">
+          <button type="button" id="next">Next</button>
+          <button type="submit" id="send">Submit application</button>
+        </form>
+        <a href="/logout">Sign out</a>
+      </main>`;
+
+    const approved = [
+        { question_id: 'q-auth', question_text: 'Are you authorized to work in the US?', answer_text: 'Yes' },
+        { question_id: 'q-react', question_text: 'Years of experience with React', answer_text: '3-5' },
+    ];
+    const agentProfile = { name: 'Sai Dhanush', email: 'sd@example.com', phone: '+91 90000 00000' };
+    const byLabel = (s, re) => s.observation.fields.find((f) => re.test(f.label));
+    const ctl = (s, re) => s.observation.controls.find((c) => re.test(c.text));
+    const ctxFor = (s, extra = {}) => ({
+        registry: s.registry,
+        errors: s.observation.errors,
+        book: buildAnswerBook({ profile: agentProfile, approvedAnswers: approved }),
+        approvedAnswers: approved,
+        resumePath: null,
+        attachedResume: false,
+        filledCount: 0,
+        typing: NO_PAUSE,
+        ...extra,
+    });
+    const doIt = (s, action, extra) => executeAction(page, {
+        ref: '', source: '', refs: [], kind: '', reason: '', ...action,
+    }, ctxFor(s, extra));
+
+    section('AI agent — what it sees');
+
+    await swap(() => load(browser, AGENT_FORM));
+    let seen = await observe(page);
+    check('every field on the form is described',
+        ['First name', 'Email', 'authorised', 'React', 'Resume', 'password']
+            .every((w) => seen.observation.fields.some((f) => f.label.includes(w))), true);
+    check('a radio group is ONE question with its options', byLabel(seen, /authorised/)?.options, ['Yes', 'No']);
+    check('  marked required', byLabel(seen, /authorised/)?.required, true);
+    check('a select brings its options', byLabel(seen, /React/)?.options, ['Select…', '0-2', '3-5', '6+']);
+    check('a pre-filled text field says only that it is filled', byLabel(seen, /Email/)?.value, '(filled)');
+    check('  its contents appear nowhere in what the model is sent',
+        JSON.stringify(seen.observation).includes('already@portal.example'), false);
+    check('a password field is flagged', seen.observation.passwordField, true);
+    check('controls are listed by what they say',
+        [Boolean(ctl(seen, /^Next$/)), Boolean(ctl(seen, /Submit application/)), Boolean(ctl(seen, /Sign out/))],
+        [true, true, true]);
+    const again = await observe(page);
+    check('refs survive a second look', byLabel(again, /First name/)?.ref, byLabel(seen, /First name/)?.ref);
+
+    section('AI agent — what its hands will and will not do');
+
+    let r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /First name/).ref, source: 'profile:firstName' });
+    check('a profile value goes into the field it was pointed at', [r.ok, await page.inputValue('#fn')], [true, 'Sai']);
+    check('  recorded as the agent’s match', [r.qa?.source, r.qa?.matchedBy], ['PROFILE', 'AGENT']);
+
+    seen = await observe(page);
+    r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /First name/).ref, source: 'profile:lastName' });
+    check('a field that already holds something is left alone', [r.ok, await page.inputValue('#fn')], [false, 'Sai']);
+
+    r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /React/).ref, source: 'answer:not-a-real-id' });
+    check('an answer this consultant does not have is refused', [r.ok, await page.inputValue('#yrs')], [false, '']);
+
+    r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /password/).ref, source: 'profile:email' });
+    check('a password field is never filled (R-18)', [r.ok, await page.inputValue('#pw')], [false, '']);
+
+    r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /authorised/).ref, source: 'answer:q-auth' });
+    check('a differently-worded approved answer picks the radio option',
+        [r.ok, await page.isChecked('input[name=auth][value=y]')], [true, true]);
+
+    r = await doIt(seen, { action: 'fill', ref: byLabel(seen, /React/).ref, source: 'answer:q-react' });
+    check('  and the matching option in a select', [r.ok, await page.inputValue('#yrs')], [true, '3-5']);
+
+    seen = await observe(page);
+    r = await doIt(seen, { action: 'press', ref: ctl(seen, /Submit application/).ref }, { filledCount: 3 });
+    check('a submit button is never pressed by the agent',
+        [r.ok, await page.evaluate(() => document.body.dataset.sent ?? null)], [false, null]);
+    r = await doIt(seen, { action: 'press', ref: ctl(seen, /Sign out/).ref });
+    check('nor is signing out', r.ok, false);
+
+    r = await doIt(seen, { action: 'ask_human', refs: [byLabel(seen, /React/).ref] });
+    check('ask_human hands a question over with its options',
+        [r.terminal?.outcome, (r.terminal?.unknown?.[0]?.options ?? []).includes('3-5')], ['INCOMPLETE', true]);
+
+    const resumeFile = require('node:path').join(require('node:os').tmpdir(), `sa-agent-${Date.now()}.pdf`);
+    require('node:fs').writeFileSync(resumeFile, '%PDF-1.4 test');
+    r = await doIt(seen, { action: 'upload_resume', ref: byLabel(seen, /Resume/).ref });
+    check('no resume for the job means nothing is uploaded', r.ok, false);
+    r = await doIt(seen, { action: 'upload_resume', ref: byLabel(seen, /Resume/).ref }, { resumePath: resumeFile });
+    check('  with one, it goes into the file field',
+        [r.ok, await page.evaluate(() => document.getElementById('cv').files.length)], [true, 1]);
+
+    await swap(() => load(browser, AGENT_FORM));
+    seen = await observe(page);
+    r = await doIt(seen, { action: 'ready', ref: ctl(seen, /Submit application/).ref });
+    check('"ready" is not believed while required fields are empty',
+        [r.ok, /First name/.test(r.error ?? '')], [false, true]);
+    await page.fill('#fn', 'Sai');
+    await page.check('input[name=auth][value=y]');
+    seen = await observe(page);
+    r = await doIt(seen, { action: 'ready', ref: ctl(seen, /^Next$/).ref });
+    check('  nor when the button it names does not send anything', r.ok, false);
+    r = await doIt(seen, { action: 'ready', ref: ctl(seen, /Submit application/).ref });
+    check('  and is, once the page agrees', r.terminal?.outcome, 'READY_TO_SUBMIT');
+
+    await swap(() => load(browser, `
+      <main><h1>Data Engineer</h1><p>A great job.</p>
+        <button id="go" onclick="document.body.dataset.opened = '1'">Apply now</button></main>`));
+    seen = await observe(page);
+    r = await doIt(seen, { action: 'press', ref: ctl(seen, /Apply now/).ref }, { filledCount: 0 });
+    check('"Apply now" on a job page is pressed, to open the form',
+        [r.ok, await page.evaluate(() => document.body.dataset.opened ?? null)], [true, '1']);
+    r = await doIt(await observe(page), { action: 'press', ref: ctl(seen, /Apply now/).ref }, { filledCount: 2 });
+    check('  but not once answers are in, when it could send them', r.ok, false);
+
+    section('AI agent — a form inside an iframe');
+
+    await swap(() => browser.newPage());
+    await page.route('https://jobs.example.test/**', (route) => route.fulfill({
+        contentType: 'text/html', body: `<!doctype html><html><body>${AGENT_FORM}</body></html>`,
+    }));
+    await page.route('https://careers.example.test/**', (route) => route.fulfill({
+        contentType: 'text/html',
+        body: '<!doctype html><html><body><h1>Careers</h1>'
+            + '<iframe src="https://jobs.example.test/embed" width="900" height="900"></iframe></body></html>',
+    }));
+    await page.goto('https://careers.example.test/job/1');
+    await page.frameLocator('iframe').locator('#fn').waitFor();
+    seen = await observe(page);
+    const framed = byLabel(seen, /First name/);
+    check('fields inside an embedded application are seen', Boolean(framed), true);
+    check('  with a ref that names their frame', String(framed?.ref).startsWith('F1'), true);
+    r = await doIt(seen, { action: 'fill', ref: framed.ref, source: 'profile:firstName' });
+    check('  and can be filled there',
+        [r.ok, await page.frameLocator('iframe').locator('#fn').inputValue()], [true, 'Sai']);
+
+    section('AI agent — the whole loop, on a two-step form');
+
+    const TWO_STEP = `
+      <main>
+        <form id="apply" onsubmit="event.preventDefault(); document.body.dataset.sent = '1';
+            const p = document.createElement('p'); p.textContent = 'Thank you for applying';
+            document.body.appendChild(p);">
+          <div id="s1">
+            <h2>Your details</h2>
+            <label for="fn">First name *</label><input id="fn" required>
+            <label for="em">Email *</label><input id="em" type="email" required>
+            <button type="button" onclick="document.getElementById('s1').style.display = 'none';
+                document.getElementById('s2').style.display = 'block';">Next</button>
+          </div>
+          <div id="s2" style="display:none">
+            <h2>Eligibility</h2>
+            <fieldset><legend>Are you legally authorised to work in the United States? *</legend>
+              <label><input type="radio" name="auth" value="y"> Yes</label>
+              <label><input type="radio" name="auth" value="n"> No</label></fieldset>
+            <button type="submit">Submit application</button>
+          </div>
+        </form>
+      </main>`;
+
+    // Stands in for the model: a small rule over the same observation the
+    // real one reads. What is under test is everything around it.
+    const policy = (o) => {
+        const act = (action, ref, source = '') => ({
+            ok: true, action: { action, ref, source, refs: [], kind: '', reason: action },
+        });
+        const empty = o.fields.find((f) => f.required && !f.value);
+        if (empty && /first name/i.test(empty.label)) return act('fill', empty.ref, 'profile:firstName');
+        if (empty && /email/i.test(empty.label)) return act('fill', empty.ref, 'profile:email');
+        if (empty && /authorised/i.test(empty.label)) return act('fill', empty.ref, 'answer:q-auth');
+        const next = o.controls.find((c) => /^next$/i.test(c.text));
+        if (next) return act('press', next.ref);
+        return act('ready', o.controls.find((c) => /submit/i.test(c.text))?.ref ?? '');
+    };
+    const sentToHub = [];
+    const policyHub = {
+        agentStep: async (runId, body) => { sentToHub.push(body.observation); return policy(body.observation); },
+    };
+
+    await swap(() => load(browser, TWO_STEP));
+    const agentRun = await runAgent(page, {
+        hub: policyHub,
+        runId: 'dom-run',
+        fillOptions: { profile: agentProfile, approvedAnswers: approved, resumePath: null },
+        typing: NO_PAUSE,
+    });
+    check('the agent walks a two-step form to its submit button', agentRun.outcome, 'READY_TO_SUBMIT');
+    check('  filling the name, the email and the eligibility question',
+        agentRun.qa.map((q) => q.answerText), ['Sai', 'sd@example.com', 'Yes']);
+    check('  and sending nothing', await page.evaluate(() => document.body.dataset.sent ?? null), null);
+    check('  the model never saw the consultant’s email',
+        sentToHub.some((o) => JSON.stringify(o).includes('sd@example.com')), false);
+
+    const pressed = await pressAgentSubmit(page, agentRun.submit);
+    check('pressing the submit button it found sends the application',
+        [pressed.ok, await page.evaluate(() => document.body.dataset.sent ?? null)], [true, '1']);
+    check('  and the thank-you is read as confirmation', pressed.confirmed, true);
+
     section('the review screen shows what was actually filled in');
 
     page = await load(browser, `

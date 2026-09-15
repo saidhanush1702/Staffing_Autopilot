@@ -2150,6 +2150,337 @@ check('  a system Chrome is driven by channel, a bundled one is not',
         : resolved.launchOptions.channel === 'chrome',
     true);
 
+/* ── the AI agent ─────────────────────────────────────────────────────── */
+
+section('AI agent — the loop stops where it should');
+{
+    const { runAgent } = require('../src/main/agent/runAgent.js');
+    const NO_WAIT = { minMs: 0, maxMs: 0, betweenFieldsMs: [0, 0] };
+
+    /** A page whose signature changes on every look unless it is frozen. */
+    const pages = (opts = {}) => {
+        let n = 0;
+        return async () => {
+            n += 1;
+            return {
+                observation: {
+                    url: 'https://jobs.example.test/apply',
+                    fields: [],
+                    controls: [],
+                    headings: [],
+                    errors: opts.errors ?? [],
+                    challenge: opts.challenge ? opts.challenge(n) : false,
+                },
+                registry: new Map(),
+                signature: opts.frozen ? 'same' : `sig-${n}`,
+            };
+        };
+    };
+
+    /** The hub, answering from a script and remembering what it was sent. */
+    const scriptedHub = (replies) => {
+        const sent = [];
+        let i = 0;
+        return {
+            sent,
+            agentStep: async (runId, body) => {
+                sent.push(body);
+                const r = replies[Math.min(i, replies.length - 1)];
+                i += 1;
+                return r;
+            },
+        };
+    };
+    const act = (action, extra = {}) => ({
+        ok: true,
+        action: {
+            action, ref: 'F0f1', source: '', refs: [], kind: '', reason: `doing ${action}`, ...extra,
+        },
+    });
+
+    let executed = [];
+    let hub = scriptedHub([
+        act('fill', { source: 'profile:email' }),
+        act('press', { ref: 'F0c2' }),
+        act('ready', { ref: 'F0c3' }),
+    ]);
+    let out = await runAgent({}, { hub, runId: 'r1', typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async (page, action) => {
+            executed.push(action.action);
+            if (action.action === 'fill') {
+                return {
+                    ok: true, result: 'filled',
+                    qa: { questionText: 'Email', answerText: 'x', source: 'PROFILE' },
+                };
+            }
+            if (action.action === 'press') return { ok: true, result: 'pressed' };
+            return {
+                terminal: {
+                    outcome: 'READY_TO_SUBMIT', detail: 'ready', submit: { ref: 'F0c3', frameIndex: 0 },
+                },
+            };
+        },
+    });
+    check('a form the agent completes ends READY_TO_SUBMIT', out.outcome, 'READY_TO_SUBMIT');
+    check('  having done what it was told, in order', executed, ['fill', 'press', 'ready']);
+    check('  with the filled answer carried in qa', out.qa.length, 1);
+    check('  and the submit button remembered', out.submit?.ref, 'F0c3');
+    check('  in the same shape a recipe returns',
+        ['outcome', 'qa', 'unknown', 'attachedResume', 'steps', 'detail'].every((k) => k in out), true);
+
+    hub = scriptedHub([act('press')]);
+    out = await runAgent({}, { hub, runId: 'r2', typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async () => ({ ok: false, error: 'that sends the application' }),
+    });
+    check('four refusals in a row end the run', out.outcome, 'INCOMPLETE');
+    check('  and say why', /kept choosing actions the app refused/.test(out.detail), true);
+    check('  the model was told about every refusal',
+        hub.sent.slice(1).every((b) => /refused/.test(b.lastResult)), true);
+
+    hub = scriptedHub([act('press')]);
+    out = await runAgent({}, { hub, runId: 'r3', typing: NO_WAIT }, {
+        observe: pages({ frozen: true, errors: ['Phone is required'] }),
+        execute: async () => ({ ok: true, result: 'pressed' }),
+    });
+    check('a page that stops changing ends the run as stuck', out.outcome, 'INCOMPLETE');
+    check('  quoting what the form complained about', /Phone is required/.test(out.detail), true);
+
+    hub = scriptedHub([{ ok: false, stop: 'CAP', detail: 'the AI agent reached this job’s $0.50 limit' }]);
+    let touched = 0;
+    out = await runAgent({}, { hub, runId: 'r4', typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async () => { touched += 1; return { ok: true }; },
+    });
+    check('the hub refusing a turn ends the run', out.outcome, 'INCOMPLETE');
+    check('  with the hub’s own reason', /\$0\.50 limit/.test(out.detail), true);
+    check('  and nothing on the page is touched', touched, 0);
+
+    hub = scriptedHub([
+        { ok: true, action: null, invalid: 'answer:a99 is not in the catalogue.' },
+        act('ready'),
+    ]);
+    out = await runAgent({}, { hub, runId: 'r5', typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async () => ({ terminal: { outcome: 'READY_TO_SUBMIT', detail: 'ok' } }),
+    });
+    check('an unusable reply is fed back rather than acted on', /a99/.test(hub.sent[1]?.lastResult ?? ''), true);
+    check('  and the run carries on', out.outcome, 'READY_TO_SUBMIT');
+
+    touched = 0;
+    hub = scriptedHub([
+        act('fill', { source: 'profile:email' }),
+        act('fill', { source: 'profile:phone' }),
+        act('press'),
+    ]);
+    out = await runAgent({}, { hub, runId: 'r6', shadow: true, typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async () => { touched += 1; return { ok: true }; },
+    });
+    check('shadow mode never touches the page', touched, 0);
+    check('  it ends SHADOW', out.outcome, 'SHADOW');
+    check('  having recorded three proposals', out.agent.proposals.length, 3);
+
+    hub = scriptedHub([act('ready')]);
+    out = await runAgent({}, {
+        hub, runId: 'r7', typing: NO_WAIT, waitForBotCheck: async () => false,
+    }, {
+        observe: pages({ challenge: () => true }),
+        execute: async () => ({ ok: true }),
+    });
+    check('a human check nobody clears ends BLOCKED, without asking the model',
+        [out.outcome, hub.sent.length], ['BLOCKED', 0]);
+
+    let cleared = 0;
+    out = await runAgent({}, {
+        hub: scriptedHub([act('ready')]),
+        runId: 'r7b',
+        typing: NO_WAIT,
+        waitForBotCheck: async () => { cleared += 1; return true; },
+    }, {
+        observe: pages({ challenge: (n) => n === 1 }),
+        execute: async () => ({ terminal: { outcome: 'READY_TO_SUBMIT', detail: 'ok' } }),
+    });
+    check('  one the consultant clears lets the agent carry on', [cleared, out.outcome], [1, 'READY_TO_SUBMIT']);
+
+    hub = scriptedHub([act('fill', { source: 'profile:email' })]);
+    out = await runAgent({}, { hub, runId: 'r8', maxActions: 5, typing: NO_WAIT }, {
+        observe: pages(),
+        execute: async () => ({ ok: true, result: 'filled' }),
+    });
+    check('the action ceiling holds', [out.outcome, out.steps], ['INCOMPLETE', 5]);
+
+    out = await runAgent({}, {
+        hub: scriptedHub([act('ready')]),
+        runId: 'r9',
+        typing: NO_WAIT,
+        prior: { qa: [{ questionText: 'Name', answerText: 'A', source: 'PROFILE' }], attachedResume: true },
+    }, {
+        observe: pages(),
+        execute: async () => ({ terminal: { outcome: 'READY_TO_SUBMIT', detail: 'ok' } }),
+    });
+    check('what the recipe already filled is kept', [out.qa.length, out.attachedResume], [1, true]);
+}
+
+section('AI agent — when the engine hands a job to it');
+{
+    /** A hub that also speaks the agent's three routes. */
+    const agentHub = (over = {}) => {
+        const hub = fakeHub({ queue: over.queue });
+        hub.started = [];
+        hub.finished = [];
+        hub.agentStart = async (id, body) => {
+            hub.started.push({ id, ...body });
+            return over.start ?? { ok: true, runId: 'run-1', mode: over.mode ?? 'ON', limits: {} };
+        };
+        hub.agentFinish = async (runId, body) => { hub.finished.push({ runId, ...body }); return { ok: true }; };
+        hub.agentStep = async () => ({ ok: false, stop: 'CAP', detail: 'not used here' });
+        return hub;
+    };
+
+    /** The agent loop, replaced by an answer. */
+    const agentReturns = (result) => {
+        const calls = [];
+        const fn = async (page, opts) => {
+            calls.push(opts);
+            return {
+                qa: [], unknown: [], attachedResume: false, steps: 1, submit: null,
+                agent: { runId: opts.runId, actions: 1, refused: 0 },
+                ...result,
+            };
+        };
+        fn.calls = calls;
+        return fn;
+    };
+
+    const noRecipe = item({
+        id: 'ag1', portal: 'GREENHOUSE', channel: 'AGENT', company: 'Acme', title: 'Engineer',
+        source_url: 'https://boards.greenhouse.io/acme/jobs/1',
+    });
+    const queueOf = (...items) => () => Promise.resolve({ items, approvedAnswers: [], profile: {} });
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe) });
+        const runner = agentReturns({
+            outcome: 'READY_TO_SUBMIT',
+            detail: 'filled',
+            qa: [{ questionText: 'Email', answerText: 'x', source: 'PROFILE', matchedBy: 'AGENT' }],
+            submit: { ref: 'F0c9', frameIndex: 0 },
+        });
+        const eng = engineWith(hub, fakeSessions({ landsOn: noRecipe.source_url }), { runAgent: runner });
+        const stats = await eng.run();
+        check('a job with no recipe goes to the agent, not straight to a person',
+            hub.calls.some((c) => c.name === 'reclassify'), false);
+        check('  the hub was asked first, as NO_RECIPE', hub.started[0]?.entry, 'NO_RECIPE');
+        check('  naming the site', hub.started[0]?.host, 'boards.greenhouse.io');
+        check('  the job was leased before the agent touched it', hub.calls.some((c) => c.name === 'lease'), true);
+        check('  a filled form is reported like any other', hub.calls.some((c) => c.name === 'filled'), true);
+        check('  and counted as the agent’s work', [stats.agentTried, stats.agentFilled], [1, 1]);
+        check('  marked so on the run summary', stats.outcomes[0]?.filledBy, 'AGENT');
+        check('  it waits for review with the submit button it found',
+            eng.store.get('awaitingReview')[0]?.submit?.ref, 'F0c9');
+        check('  marked as agent-filled for the review screen',
+            eng.store.get('awaitingReview')[0]?.filledBy, 'AGENT');
+        check('  and the run is closed on the hub', hub.finished[0]?.outcome, 'READY_TO_SUBMIT');
+    }
+
+    {
+        const hub = agentHub({
+            queue: queueOf(noRecipe),
+            start: { ok: false, reason: 'The AI agent is switched off for this organisation.' },
+        });
+        const runner = agentReturns({ outcome: 'READY_TO_SUBMIT' });
+        const eng = engineWith(hub, fakeSessions(), { runAgent: runner });
+        await eng.run();
+        check('an agent the hub refuses: the job is handed over as before',
+            hub.calls.some((c) => c.name === 'reclassify'), true);
+        check('  without leasing or opening anything', hub.calls.some((c) => c.name === 'lease'), false);
+        check('  and without the agent running', runner.calls.length, 0);
+    }
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe) });
+        const eng = engineWith(hub, fakeSessions(), { runAgent: agentReturns({ outcome: 'READY_TO_SUBMIT' }) });
+        eng.store.set({ agentFallback: false });
+        await eng.run();
+        check('a consultant who switched the agent off is never asked about it', hub.started.length, 0);
+    }
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe) });
+        const eng = engineWith(hub, fakeSessions(), {
+            runAgent: agentReturns({
+                outcome: 'INCOMPLETE', detail: 'the page stopped changing — the AI agent got stuck',
+            }),
+        });
+        await eng.run();
+        const handed = hub.calls.find((c) => c.name === 'reclassify');
+        check('what the agent cannot finish still reaches a person', Boolean(handed), true);
+        check('  with the agent’s reason attached', /got stuck/.test(handed?.args[1]?.reason ?? ''), true);
+        check('  and the run records how it ended', hub.finished[0]?.outcome, 'INCOMPLETE');
+    }
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe) });
+        const eng = engineWith(hub, fakeSessions(), {
+            runAgent: agentReturns({ outcome: 'CLOSED', detail: 'the posting says it is closed' }),
+        });
+        const stats = await eng.run();
+        check('a posting the agent finds closed is skipped, not handed over',
+            [hub.calls.some((c) => c.name === 'skipped'), hub.calls.some((c) => c.name === 'reclassify')],
+            [true, false]);
+        check('  and counted as expired', stats.closed, 1);
+    }
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe), mode: 'SHADOW' });
+        const eng = engineWith(hub, fakeSessions(), {
+            runAgent: agentReturns({ outcome: 'SHADOW', detail: 'shadow mode — the AI agent would have: fill F0f1' }),
+        });
+        await eng.run();
+        check('shadow mode hands the job over exactly as if the agent did not exist',
+            [hub.calls.some((c) => c.name === 'reclassify'), hub.calls.some((c) => c.name === 'filled')],
+            [true, false]);
+        check('  and records the run as SHADOW', hub.finished[0]?.outcome, 'SHADOW');
+    }
+
+    {
+        const hub = agentHub({ queue: queueOf(noRecipe) });
+        const eng = engineWith(hub, fakeSessions(), {
+            runAgent: agentReturns({
+                outcome: 'READY_TO_SUBMIT',
+                detail: 'filled',
+                qa: [{ questionText: 'Email', answerText: 'x', source: 'PROFILE' }],
+                submit: { ref: 'F0c1', frameIndex: 0 },
+            }),
+        });
+        eng.store.set({ autoSubmit: true });
+        const stats = await eng.run();
+        check('auto-submit never claims a submission it could not make',
+            hub.calls.some((c) => c.name === 'submitted'), false);
+        check('  the application stays waiting for the consultant', stats.outcomes[0]?.result, 'READY_TO_SUBMIT');
+    }
+
+    {
+        const wf = item({ id: 'wf1', portal: 'WELLFOUND', company: 'Initech', source_url: 'https://wellfound.com/jobs/1' });
+        const hub = agentHub({ queue: queueOf(wf) });
+        const runner = agentReturns({
+            outcome: 'READY_TO_SUBMIT',
+            detail: 'filled',
+            qa: [{ questionText: 'Email', answerText: 'x', source: 'PROFILE' }],
+        });
+        const eng = engineWith(hub, fakeSessions({ landsOn: 'https://careers.initech.example/apply/1' }), {
+            runAgent: runner,
+        });
+        await eng.run();
+        check('a recipe that lands somewhere it does not know hands the page to the agent',
+            hub.started[0]?.entry, 'RECIPE_FAILED');
+        check('  naming where it landed', hub.started[0]?.host, 'careers.initech.example');
+        check('  and the job is not handed over', hub.calls.some((c) => c.name === 'reclassify'), false);
+    }
+}
+
 section('errors are written down, and the log stays bounded');
 
 const logsDir = path.join(tmp, 'logs');

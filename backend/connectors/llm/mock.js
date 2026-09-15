@@ -31,6 +31,35 @@ import { env, numEnv } from './transport.js';
 
 export const name = 'mock';
 
+/*
+ * ── A SCRIPT, FOR STAGES THAT ARE A CONVERSATION ──────────────────────
+ *
+ * The agent stage is called once per turn and needs a DIFFERENT answer each
+ * time — press Apply, fill the email, press Next, declare ready. One canned
+ * reply cannot walk a form, so a stage may be given a JSON array instead:
+ *
+ *   LLM_MOCK_SCRIPT_AGENT='[{"action":"press",...},{"action":"fill",...}]'
+ *
+ * Each call takes the next entry; once the script runs out, the last entry
+ * repeats. `resetMockScripts` rewinds every script, for a suite that runs the
+ * same one twice.
+ */
+const cursors = new Map();
+
+export const resetMockScripts = () => { cursors.clear(); };
+
+const scripted = (stage) => {
+    const raw = env(`LLM_MOCK_SCRIPT_${String(stage ?? '').toUpperCase()}`);
+    if (!raw) return null;
+    let steps;
+    try { steps = JSON.parse(raw); } catch { return null; }
+    if (!Array.isArray(steps) || steps.length === 0) return null;
+    const key = `${stage}:${raw}`;
+    const at = cursors.get(key) ?? 0;
+    cursors.set(key, at + 1);
+    return JSON.stringify(steps[Math.min(at, steps.length - 1)]);
+};
+
 export const isConfigured = () => true;
 
 export const call = async ({ stage, model, input, schema }) => {
@@ -48,8 +77,8 @@ export const call = async ({ stage, model, input, schema }) => {
         return { ok: false, retryable: false, error: 'Mock provider: simulated 400.' };
     }
 
-    const canned = env(`LLM_MOCK_RESPONSE_${String(stage ?? '').toUpperCase()}`,
-        env('LLM_MOCK_RESPONSE'));
+    const canned = scripted(stage)
+        ?? env(`LLM_MOCK_RESPONSE_${String(stage ?? '').toUpperCase()}`, env('LLM_MOCK_RESPONSE'));
     const text = canned || (schema ? '{}' : 'mock response');
 
     let json = null;

@@ -374,34 +374,69 @@ included — can view, edit or weaken it.**
 
 ---
 
-## 8. The queue: two lanes
+## 8. The queue: three lanes
 
-Every job that reaches a consultant enters one of two lanes, decided
-automatically by **which system you apply through**.
+Every job that reaches a consultant enters one of three lanes, decided
+automatically by **which system you apply through** and whether the
+organisation has the AI agent switched on.
 
 ```mermaid
 flowchart TD
-    A["<b>Ready queue item</b>"] --> B{"Apply through one of<br/>the five automated boards?"}
+    A["<b>Ready queue item</b>"] --> B{"Apply through a board<br/>the app has a recipe for?"}
 
     B -->|"Yes"| C["<b>BOT LANE</b><br/>LinkedIn · Wellfound · Built In<br/>TheLadders · CrunchBoard"]
-    B -->|"No"| D["<b>HUMAN LANE</b><br/>Greenhouse · Lever · Workday<br/>company careers pages · everywhere else"]
+    B -->|"No — agent on"| X["<b>AGENT LANE</b><br/>Greenhouse · Lever · company careers pages<br/>any site with no coded recipe"]
+    B -->|"No — agent off"| D["<b>HUMAN LANE</b><br/>everywhere the app does not fill"]
 
     C --> E["Desktop app opens the job,<br/>fills the form, stops at review"]
+    E -.->|"recipe breaks"| Y
+    X --> Y["Desktop app's <b>AI agent</b> reads the page,<br/>fills from approved answers only, stops at review"]
+    Y -.->|"cannot finish"| D
     D --> F["Portal shows the job.<br/>Consultant opens and applies directly"]
 
     E --> G["<b>Consultant submits</b>"]
+    Y --> G
     F --> G
     G --> H["<b>Permanent record</b>"]
 
     style C fill:#fbf1de,stroke:#96620a,color:#151923
+    style X fill:#e3f1ee,stroke:#0d6157,color:#151923
     style D fill:#e8ecfa,stroke:#37418c,color:#151923
     style H fill:#e6f4ec,stroke:#17754a,color:#151923
 ```
 
 **Every job is worked either way.** The lane decides *who does the typing*, never
-whether the job is pursued. Both lanes end in the same permanent record, and the
-same daily cap governs both — an employer sees one person regardless of how the
+whether the job is pursued. All lanes end in the same permanent record, and the
+same daily cap governs them — an employer sees one person regardless of how the
 form was filled.
+
+### The AI agent: the second line
+
+When a coded recipe cannot finish a job — the apply link leaves for a site it
+does not know, the form is not what the recipe expected, the wizard refuses to
+move — or when no recipe exists at all, the desktop app's AI agent takes the job
+before a person does. It reads the page, chooses one action per turn, and the
+hub checks every action before the desktop carries it out.
+
+The rules are enforced in code, not in the prompt:
+
+- **It never writes an answer.** It points at a profile field or an approved
+  answer; the app looks up the words. A question nothing covers goes to the
+  consultant's Questions tab, exactly as it does from a recipe.
+- **It never submits.** There is no submit action. "Ready" is believed only when
+  every required field is filled, no error is shown, and the button named really
+  reads like a submit button. The consultant's auto-submit choice then applies,
+  and a board that never auto-submits still never does.
+- **It never handles sign-ins or human checks.** Those pause for the consultant.
+- **It is bounded per job** by a call cap and a dollar cap, and draws on the same
+  monthly AI budget as tailoring. The hub refuses the call that would exceed any
+  of them.
+
+Each organisation chooses **Off**, **Shadow** or **On** on the Running costs page.
+Shadow lets the agent decide on real jobs without typing anything, so what it
+*would* have done can be read before it is allowed to do it. The same page lists
+the sites the agent works most — the next recipes worth coding, which moves them
+back to the free, instant bot lane.
 
 ### Queue item states
 
@@ -791,9 +826,10 @@ LLM_OPENAI_API_KEY=
 GEMINI_API_KEY=
 ```
 
-Each of the three stages — parse, tailor, check — can override the provider and
-model independently (`LLM_TAILOR_MODEL`, `LLM_CHECK_MODEL`, …), so the expensive
-model can do the writing while a cheap one does the checking. The model actually
+Each stage — parse, tailor, check, and the AI agent's `agent` and `match` — can
+override the provider and model independently (`LLM_TAILOR_MODEL`,
+`LLM_AGENT_MODEL`, …), so the expensive model can do the writing while a cheap
+one does the checking. The model actually
 used is recorded on every artifact, so a model change is auditable after the
 fact rather than a mystery.
 

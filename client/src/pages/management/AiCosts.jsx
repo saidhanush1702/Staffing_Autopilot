@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-    Coins, Sparkles, Database, ShieldAlert, AlertCircle, MinusCircle, Gauge,
+    Coins, Sparkles, Database, ShieldAlert, AlertCircle, MinusCircle, Gauge, Bot, Hand,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -8,8 +8,128 @@ import StatCard from '../../components/ui/StatCard.jsx';
 import { SKIP_REASONS } from '../../components/queue/TailoringBadge.jsx';
 import {
     card, cardPad, badge, eyebrow, sectionTitle, pageTitle, pageSubtitle,
-    alertShell, TONE, TONE_ALERT,
+    alertShell, TONE, TONE_ALERT, input, fieldLabel, btn,
 } from '../../design/tokens.js';
+
+/**
+ * ── THE AI AGENT'S SWITCH ─────────────────────────────────────────────
+ *
+ * Three positions, because trusting an agent is a process rather than a
+ * decision. SHADOW lets it decide on real jobs without typing anything, so an
+ * owner can read what it WOULD have done before letting it do it.
+ */
+const AGENT_MODES = [
+    ['OFF', 'Off', 'Jobs the automation cannot fill go straight to consultants.'],
+    ['SHADOW', 'Shadow', 'The agent looks at those jobs and records what it would do, but types nothing. Use this first.'],
+    ['ON', 'On', 'The agent fills those forms from approved answers and profiles, then stops for the consultant.'],
+];
+
+const AgentSettings = ({ settings, onSaved }) => {
+    const [mode, setMode] = useState(settings.mode);
+    const [cap, setCap] = useState(String(settings.jobCapUsd));
+    const [calls, setCalls] = useState(String(settings.maxModelCalls));
+    const [busy, setBusy] = useState(false);
+    const [message, setMessage] = useState(null);
+
+    const changed = mode !== settings.mode
+        || Number(cap) !== Number(settings.jobCapUsd)
+        || Number(calls) !== Number(settings.maxModelCalls);
+
+    const save = async () => {
+        setBusy(true);
+        setMessage(null);
+        try {
+            const { data } = await api.put('/management/ai-agent', {
+                mode, jobCapUsd: Number(cap), maxModelCalls: Number(calls),
+            });
+            onSaved(data);
+            setMessage({ tone: 'success', text: 'Saved.' });
+        } catch (err) {
+            setMessage({ tone: 'danger', text: errorMessage(err) });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <div className={`mt-3 ${card} ${cardPad}`}>
+            <p className={eyebrow}>When the automation cannot fill a job</p>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="AI agent mode">
+                {AGENT_MODES.map(([value, label, hint]) => (
+                    <label
+                        key={value}
+                        className={`cursor-pointer rounded-lg border p-3 text-sm ${
+                            mode === value ? 'border-brand-500 bg-brand-50' : 'border-slate-200'}`}
+                    >
+                        <span className="flex items-center gap-2 font-medium text-slate-800">
+                            <input
+                                type="radio"
+                                name="agent-mode"
+                                value={value}
+                                checked={mode === value}
+                                onChange={() => setMode(value)}
+                            />
+                            {label}
+                        </span>
+                        <span className="mt-1 block text-xs text-slate-500">{hint}</span>
+                    </label>
+                ))}
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div>
+                    <label htmlFor="agent-cap" className={fieldLabel}>Most it may spend on one job (USD)</label>
+                    <input
+                        id="agent-cap"
+                        type="number"
+                        min="0.01"
+                        max="10"
+                        step="0.05"
+                        className={input}
+                        value={cap}
+                        onChange={(e) => setCap(e.target.value)}
+                    />
+                </div>
+                <div>
+                    <label htmlFor="agent-calls" className={fieldLabel}>Most model calls on one job</label>
+                    <input
+                        id="agent-calls"
+                        type="number"
+                        min="3"
+                        max="100"
+                        step="1"
+                        className={input}
+                        value={calls}
+                        onChange={(e) => setCalls(e.target.value)}
+                    />
+                </div>
+            </div>
+
+            {!settings.available && (
+                <p className="mt-3 text-xs text-slate-500">
+                    {settings.unavailableReason} Until a model is configured the agent
+                    cannot run, whichever mode is chosen.
+                </p>
+            )}
+
+            <div className="mt-4 flex items-center gap-3">
+                <button
+                    type="button"
+                    className={btn.primary}
+                    disabled={!changed || busy}
+                    onClick={save}
+                >
+                    {busy ? 'Saving…' : 'Save'}
+                </button>
+                {message && (
+                    <span className={`text-sm ${message.tone === 'danger' ? 'text-danger-600' : 'text-success-600'}`}>
+                        {message.text}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+};
 
 /**
  * ── WHAT LAST MONTH COST, AND WHY ─────────────────────────────────────
@@ -51,17 +171,20 @@ const pct = (n) => (n === null || n === undefined ? '—' : `${n}%`);
 const AiCosts = () => {
     const [ai, setAi] = useState(null);
     const [contacts, setContacts] = useState(null);
+    const [agentSettings, setAgentSettings] = useState(null);
     const [error, setError] = useState('');
 
     useEffect(() => {
         (async () => {
             try {
-                const [a, c] = await Promise.all([
+                const [a, c, g] = await Promise.all([
                     api.get('/management/ai-usage'),
                     api.get('/management/contacts/usage'),
+                    api.get('/management/ai-agent'),
                 ]);
                 setAi(a.data);
                 setContacts(c.data);
+                setAgentSettings(g.data);
             } catch (err) {
                 setError(errorMessage(err));
             }
@@ -80,9 +203,13 @@ const AiCosts = () => {
         );
     }
 
-    if (!ai || !contacts) return <PageLoader />;
+    if (!ai || !contacts || !agentSettings) return <PageLoader />;
 
     const overBudget = ai.budget.budget > 0 && ai.budget.exhausted;
+    const agent = ai.agent ?? { runs: 0, filled: 0, shadow: 0, cost: 0, avgCost: 0, outcomes: {}, hosts: [] };
+    const handedOver = Math.max(0, agent.runs - agent.filled - agent.shadow
+        - (agent.outcomes.CLOSED ?? 0) - (agent.outcomes.ALREADY_APPLIED ?? 0)
+        - (agent.outcomes.RUNNING ?? 0));
 
     return (
         <div className="mx-auto max-w-5xl">
@@ -216,6 +343,74 @@ const AiCosts = () => {
                                 </li>
                             ))}
                     </ul>
+                </div>
+            )}
+
+            {/* ── the AI agent ─────────────────────────────────────── */}
+            <h2 className={`mt-8 ${sectionTitle}`}>AI agent</h2>
+            <p className="mt-1 text-sm text-slate-500">
+                Fills an application when a site has no coded automation, or its automation
+                breaks. It only ever uses a consultant&rsquo;s profile and approved answers,
+                and it shares the monthly AI budget above.
+            </p>
+
+            <AgentSettings settings={agentSettings} onSaved={setAgentSettings} />
+
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <StatCard
+                    icon={Bot}
+                    label="Jobs the agent took this month"
+                    value={agent.runs}
+                    hint={agent.shadow > 0 ? `${agent.shadow} in shadow mode` : 'recipes could not finish these'}
+                />
+                <StatCard
+                    icon={Sparkles}
+                    label="Filled by the agent"
+                    value={agent.filled}
+                    hint={agent.runs > 0 ? `${Math.round((agent.filled / agent.runs) * 100)}% of the jobs it took` : '—'}
+                    tone="success"
+                />
+                <StatCard
+                    icon={Hand}
+                    label="Handed to consultants"
+                    value={handedOver}
+                    hint="a sign-in, a new question, or a page it could not get past"
+                    tone={handedOver > agent.filled ? 'warning' : 'neutral'}
+                />
+                <StatCard
+                    icon={Coins}
+                    label="Average cost per job"
+                    value={money(agent.avgCost)}
+                    hint={`${money(agent.cost)} this month`}
+                    tone="brand"
+                />
+            </div>
+
+            {agent.hosts.length > 0 && (
+                <div className={`mt-4 ${card} ${cardPad}`}>
+                    <p className={eyebrow}>Sites the agent works most — the next recipes worth coding</p>
+                    <div className="mt-3 overflow-x-auto">
+                        <table className="w-full min-w-[28rem] text-sm">
+                            <thead>
+                                <tr className="text-left text-xs text-slate-400">
+                                    <th className="pb-2 font-medium">Site</th>
+                                    <th className="pb-2 text-right font-medium">Jobs</th>
+                                    <th className="pb-2 text-right font-medium">Filled</th>
+                                    <th className="pb-2 text-right font-medium">Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-line-soft">
+                                {agent.hosts.map((h) => (
+                                    <tr key={h.host}>
+                                        <td className="py-2 text-slate-700">{h.host}</td>
+                                        <td className="py-2 text-right tabular-nums text-slate-600">{h.runs}</td>
+                                        <td className="py-2 text-right tabular-nums text-slate-600">{h.filled}</td>
+                                        <td className="py-2 text-right tabular-nums text-slate-800">{money(h.cost)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             )}
 
