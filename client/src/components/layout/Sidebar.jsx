@@ -4,6 +4,7 @@ import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
     PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks, Webhook,
+    GraduationCap, FileCog,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -106,6 +107,7 @@ const NAV_GROUPS = [
         items: [
             { to: '/management/devices', label: 'Desktop Access', icon: Laptop, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/costs', label: 'Running Costs', icon: Coins, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            { to: '/management/resume-settings', label: 'Resume Generation', icon: FileCog, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },
     {
@@ -115,6 +117,13 @@ const NAV_GROUPS = [
             {
                 to: '/portal/profile', label: 'My Profile', icon: UserCircle,
                 roles: ['CONSULTANT'], badge: 'incomplete',
+            },
+            // Skills, experience, projects, education — what their tailored
+            // resumes are built from. Separate from My Profile because these
+            // save immediately, where profile fields are proposed and reviewed.
+            {
+                to: '/portal/career', label: 'My Career', icon: GraduationCap,
+                roles: ['CONSULTANT'], badge: 'careerGaps',
             },
             // Every job matched to them, and what happened to it. The same
             // screen their recruiter sees, minus the management actions.
@@ -157,7 +166,7 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
     const location = useLocation();
     const [badges, setBadges] = useState({
         approvals: 0, incomplete: 0, answers: 0, unanswered: 0,
-        resumeReviews: 0, myResumeReviews: 0,
+        resumeReviews: 0, myResumeReviews: 0, careerGaps: 0,
     });
     const [collapsed, setCollapsed] = useState(() => {
         try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
@@ -191,16 +200,23 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
                     answers: answers.data.pending,
                 }));
             } else if (user.role === 'CONSULTANT') {
-                const [me, unanswered, reviews] = await Promise.all([
+                const [me, unanswered, reviews, career] = await Promise.all([
                     api.get('/portal/me'),
                     api.get('/portal/answers/count'),
                     api.get('/portal/resume-reviews/count'),
+                    api.get('/portal/career/readiness'),
                 ]);
                 setBadges((b) => ({
                     ...b,
                     incomplete: me.data.missingFields.length,
                     unanswered: unanswered.data.outstanding,
                     myResumeReviews: reviews.data.count,
+                    // Kept separate from `incomplete` on purpose. That badge
+                    // counts the profile fields a recruiter approves; this one
+                    // counts what is missing before a resume can be BUILT.
+                    // Merging them would put a number on My Profile that points
+                    // at a gap on a different screen.
+                    careerGaps: career.data.count,
                 }));
             }
         } catch { /* a stale badge must never break the shell */ }

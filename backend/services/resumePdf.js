@@ -34,15 +34,23 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import PDFDocument from 'pdfkit';
 import { UPLOAD_ROOT } from '../utils/upload.js';
+import { getTemplate } from '../config/resumeTemplates.js';
 
 /** Where tailored files live — deliberately not beside the base resumes. */
 export const tailoredDir = (orgId) => path.join(UPLOAD_ROOT, orgId, 'tailored');
 
 const PAGE_MARGIN = 54;          // 0.75in — generous enough not to look cramped
 const RULE_COLOUR = '#999999';
-const BODY = 10;
-const HEADING = 11;
-const NAME = 18;
+
+/**
+ * Type sizes, supplied by the template.
+ *
+ * A module-level constant was the obvious first cut, and it meant every
+ * template printed at identical size no matter what its config said — which
+ * makes the config a lie. They are threaded through instead, so the denser
+ * templates can genuinely run a little tighter and fit one page.
+ */
+const DEFAULT_STYLE = { bodySize: 10, headingSize: 11, nameSize: 18 };
 
 /** Headings, in the wording a parser expects to meet. */
 const SECTION_LABELS = {
@@ -81,11 +89,11 @@ const dateRange = (start, end) => {
 
 /* ── the sections ──────────────────────────────────────────────────── */
 
-const sectionHeading = (doc, label) => {
+const sectionHeadingS = (doc, label, st) => {
     if (doc.y > doc.page.height - doc.page.margins.bottom - 60) doc.addPage();
 
     doc.moveDown(0.6);
-    doc.font('Helvetica-Bold').fontSize(HEADING).fillColor('#000000')
+    doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
         .text(label, { characterSpacing: 0.6 });
 
     // A hairline rule, drawn rather than typed. A row of dashes would be read
@@ -96,7 +104,7 @@ const sectionHeading = (doc, label) => {
         .lineWidth(0.5).strokeColor(RULE_COLOUR).stroke();
 
     doc.moveDown(0.5);
-    doc.font('Helvetica').fontSize(BODY).fillColor('#000000');
+    doc.font('Helvetica').fontSize(st.bodySize).fillColor('#000000');
 };
 
 const bulletList = (doc, bullets) => {
@@ -112,16 +120,16 @@ const bulletList = (doc, bullets) => {
 };
 
 const RENDERERS = {
-    summary(doc, resume) {
+    summary(doc, resume, st) {
         if (!resume.summary) return;
-        sectionHeading(doc, SECTION_LABELS.summary);
+        sectionHeadingS(doc, SECTION_LABELS.summary, st);
         doc.text(String(resume.summary).trim(), { align: 'left', lineGap: 1 });
     },
 
-    skills(doc, resume) {
+    skills(doc, resume, st) {
         const groups = (resume.skills ?? []).filter((g) => (g.items ?? []).length > 0);
         if (groups.length === 0) return;
-        sectionHeading(doc, SECTION_LABELS.skills);
+        sectionHeadingS(doc, SECTION_LABELS.skills, st);
 
         for (const group of groups) {
             const items = group.items.join(', ');
@@ -136,35 +144,35 @@ const RENDERERS = {
         }
     },
 
-    experience(doc, resume) {
+    experience(doc, resume, st) {
         const roles = resume.experience ?? [];
         if (roles.length === 0) return;
-        sectionHeading(doc, SECTION_LABELS.experience);
+        sectionHeadingS(doc, SECTION_LABELS.experience, st);
 
         roles.forEach((role, i) => {
             if (i > 0) doc.moveDown(0.45);
             if (doc.y > doc.page.height - doc.page.margins.bottom - 80) doc.addPage();
 
-            doc.font('Helvetica-Bold').fontSize(BODY)
+            doc.font('Helvetica-Bold').fontSize(st.bodySize)
                 .text(`${role.title} — ${role.company}`, { paragraphGap: 0 });
 
             const meta = [role.location, dateRange(role.startDate, role.endDate)]
                 .filter(Boolean).join('  |  ');
             if (meta) {
-                doc.font('Helvetica-Oblique').fontSize(BODY - 1).fillColor('#444444')
+                doc.font('Helvetica-Oblique').fontSize(st.bodySize - 1).fillColor('#444444')
                     .text(meta, { paragraphGap: 2 });
                 doc.fillColor('#000000');
             }
 
-            doc.font('Helvetica').fontSize(BODY);
+            doc.font('Helvetica').fontSize(st.bodySize);
             bulletList(doc, role.bullets);
         });
     },
 
-    projects(doc, resume) {
+    projects(doc, resume, st) {
         const projects = resume.projects ?? [];
         if (projects.length === 0) return;
-        sectionHeading(doc, SECTION_LABELS.projects);
+        sectionHeadingS(doc, SECTION_LABELS.projects, st);
 
         projects.forEach((p, i) => {
             if (i > 0) doc.moveDown(0.35);
@@ -175,10 +183,10 @@ const RENDERERS = {
         });
     },
 
-    education(doc, resume) {
+    education(doc, resume, st) {
         const education = resume.education ?? [];
         if (education.length === 0) return;
-        sectionHeading(doc, SECTION_LABELS.education);
+        sectionHeadingS(doc, SECTION_LABELS.education, st);
 
         for (const e of education) {
             const degree = [e.degree, e.field].filter(Boolean).join(', ');
@@ -188,24 +196,24 @@ const RENDERERS = {
             const meta = [dateRange(e.startDate, e.endDate), e.details]
                 .filter(Boolean).join('  |  ');
             if (meta) {
-                doc.font('Helvetica-Oblique').fontSize(BODY - 1).fillColor('#444444')
+                doc.font('Helvetica-Oblique').fontSize(st.bodySize - 1).fillColor('#444444')
                     .text(meta, { paragraphGap: 2 });
-                doc.fillColor('#000000').fontSize(BODY);
+                doc.fillColor('#000000').fontSize(st.bodySize);
             }
             doc.font('Helvetica');
         }
     },
 
-    certifications(doc, resume) {
+    certifications(doc, resume, st) {
         const certs = resume.certifications ?? [];
         if (certs.length === 0) return;
-        sectionHeading(doc, SECTION_LABELS.certifications);
+        sectionHeadingS(doc, SECTION_LABELS.certifications, st);
 
         bulletList(doc, certs.map((c) => [c.name, c.issuer, c.date]
             .filter(Boolean).join(' — ')));
     },
 
-    additional(doc, resume) {
+    additional(doc, resume, st) {
         const extra = resume.additional ?? [];
         if (extra.length === 0) return;
 
@@ -213,7 +221,7 @@ const RENDERERS = {
             // The consultant's own heading is kept, uppercased to match the
             // others. Renaming their "Publications" to something generic would
             // lose information the document deliberately carried.
-            sectionHeading(doc, String(block.heading).toUpperCase().slice(0, 60));
+            sectionHeadingS(doc, String(block.heading).toUpperCase().slice(0, 60), st);
             bulletList(doc, block.items);
         }
     },
@@ -221,8 +229,8 @@ const RENDERERS = {
 
 /* ── the whole document ────────────────────────────────────────────── */
 
-const renderHeader = (doc, contact) => {
-    doc.font('Helvetica-Bold').fontSize(NAME).fillColor('#000000')
+const renderHeader = (doc, contact, st) => {
+    doc.font('Helvetica-Bold').fontSize(st.nameSize).fillColor('#000000')
         .text(contact?.name ?? '', { align: 'center' });
 
     // Contact details as plain text on one line, labelled by their own
@@ -231,12 +239,12 @@ const renderHeader = (doc, contact) => {
         .filter(Boolean).join('  |  ');
     if (line) {
         doc.moveDown(0.25);
-        doc.font('Helvetica').fontSize(BODY).text(line, { align: 'center' });
+        doc.font('Helvetica').fontSize(st.bodySize).text(line, { align: 'center' });
     }
 
     const links = (contact?.links ?? []).filter(Boolean);
     if (links.length > 0) {
-        doc.font('Helvetica').fontSize(BODY - 1)
+        doc.font('Helvetica').fontSize(st.bodySize - 1)
             .text(links.join('  |  '), { align: 'center' });
     }
 
@@ -257,7 +265,11 @@ const renderHeader = (doc, contact) => {
  *
  * @returns {Promise<{storedName, absolutePath, sha256, sizeBytes, filename}>}
  */
-export const renderResumePdf = async ({ orgId, resume, company, title, artifactId }) => {
+export const renderResumePdf = async ({
+    orgId, resume, company, title, artifactId, template = null,
+}) => {
+    const layout = getTemplate(template?.name ?? template);
+    const style = { ...DEFAULT_STYLE, ...(layout?.style ?? {}) };
     const dir = tailoredDir(orgId);
     fs.mkdirSync(dir, { recursive: true });
 
@@ -294,14 +306,26 @@ export const renderResumePdf = async ({ orgId, resume, company, title, artifactI
         doc.on('error', reject);
         doc.pipe(stream);
 
-        renderHeader(doc, resume.contact);
+        renderHeader(doc, resume.contact, style);
 
-        // Their order, then anything they had that the order forgot to mention.
-        const declared = (resume.sectionOrder ?? []).filter((s) => RENDERERS[s]);
+        // ── WHO DECIDES THE RUNNING ORDER ─────────────────────────
+        //
+        // The template, when there is one — that is the whole point of having
+        // templates, and it is what stops the model being able to rearrange a
+        // resume by returning a different sectionOrder.
+        //
+        // Without a template we fall back to the order the resume itself
+        // declared, which is the base resume's own order. Either way the
+        // renderer decides, never the model.
+        const preferred = layout?.sections?.length
+            ? layout.sections
+            : (resume.sectionOrder ?? []);
+
+        const declared = preferred.filter((s) => RENDERERS[s]);
         const rest = Object.keys(RENDERERS).filter((s) => !declared.includes(s));
 
         for (const section of [...declared, ...rest]) {
-            RENDERERS[section](doc, resume);
+            RENDERERS[section](doc, resume, style);
         }
 
         doc.end();

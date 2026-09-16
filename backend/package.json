@@ -20,11 +20,13 @@
     "test:tailoring": "node tests/tailoring.test.mjs",
     "test:contacts": "node tests/contacts.test.mjs",
     "test:e2e": "node tests/e2e.test.mjs",
-    "test:phase7": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs && node tests/contacts.test.mjs && node tests/e2e.test.mjs",
+    "test:phase7": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs",
     "verify:llm": "node scripts/verify-llm.mjs",
     "jobspipe:freshness": "node scripts/jobspipe-freshness.mjs",
     "jobspipe:poll": "node -e \"import('./jobs/jobspipePoller.js').then(m=>m.pollAllOrgs().then(r=>{console.log(r);process.exit(0)}))\"",
-    "test:jobspipe-search": "node tests/jobspipeSearch.test.mjs"
+    "test:jobspipe-search": "node tests/jobspipeSearch.test.mjs",
+    "test:profile": "node tests/profileResume.test.mjs && node tests/profileApi.test.mjs",
+    "test:all": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs && node tests/profileResume.test.mjs && node tests/profileApi.test.mjs"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

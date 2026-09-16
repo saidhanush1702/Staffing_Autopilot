@@ -3,24 +3,35 @@
  *
  * One queue item, from QUEUED to either READY or RESUME_REVIEW.
  *
- *    1  load the item, the posting, the consultant's base resume
- *    2  no base resume?          → NOT_TAILORED, READY, stop
- *    3  budget exhausted?        → NOT_TAILORED, READY, stop
- *    4  parse the base resume    (cached per resume, not per job)
- *    5  unparseable?             → NOT_TAILORED, READY, stop
- *    6  ATS score, before
- *    7  tailor
- *    8  fabrication check
- *    9  ATS score, after
- *   10  render the PDF
- *   11  write the artifact and the ledger
- *   12  flagged → RESUME_REVIEW ·  clean → READY
+ *    1  load the item, the posting, the agency's resume settings
+ *    2  which source does this agency use — BASE_RESUME or PROFILE?
+ *    3  BASE_RESUME with no file?  → NOT_TAILORED, READY, stop
+ *    4  budget exhausted?          → NOT_TAILORED, READY, stop
+ *    5  read the career:
+ *         BASE_RESUME → parse the file  (cached per resume, not per job)
+ *         PROFILE     → assemble the structured rows  (no model call)
+ *    6  nothing to build from?     → NOT_TAILORED, READY, stop
+ *    7  ATS score, before
+ *    8  tailor          (told which template it is writing for)
+ *    9  fabrication check
+ *   10  ATS score, after
+ *   11  render the PDF  (into the agency's template)
+ *   12  write the artifact and the ledger
+ *   13  flagged → RESUME_REVIEW ·  clean → READY
+ *
+ * ── TWO SOURCES, ONE SHAPE ────────────────────────────────────────────
+ *
+ * Step 5 is the only place the two sources differ. Both hand back
+ * `{ sections, rawText }`, so steps 7 to 13 are identical either way — which
+ * is why adding PROFILE mode was a branch rather than a second pipeline, and
+ * why the fabrication check, the scorer and the review gate needed no changes
+ * at all.
  *
  * ── THE RULE THAT SHAPES EVERY FAILURE PATH ───────────────────────────
  *
  * An application never fails to go out because the AI stage had a bad day.
  *
- * Steps 2, 3 and 5 are not errors — they are ordinary outcomes with ordinary
+ * Steps 3, 4 and 6 are not errors — they are ordinary outcomes with ordinary
  * causes, and each one ends with the item at READY carrying the consultant's
  * base resume and a marker saying what did not happen. The old behaviour, where
  * a missing resume or an exhausted budget silently held a job forever, is worse
@@ -42,6 +53,8 @@ import { getBaseDocument, recordRun } from '../../services/resumeParse.js';
 import { tailorResume } from '../../services/resumeTailor.js';
 import { checkFabrication } from '../../services/fabricationCheck.js';
 import { renderResumePdf } from '../../services/resumePdf.js';
+import { buildProfileResume } from '../../services/profileResume.js';
+import { getTemplate } from '../../config/resumeTemplates.js';
 
 export const KIND = 'tailorResume';
 
@@ -124,10 +137,14 @@ export const handle = async (job) => {
         `SELECT q.id, q.consultant_id, q.status_id,
                 st.name              AS status,
                 p.company, p.title, p.description,
-                r.id AS artifact_id, r.stored_name, r.sha256, r.original_name
+                r.id AS artifact_id, r.stored_name, r.sha256, r.original_name,
+                -- Where this agency reads a consultant's career from, and
+                -- which layout it prints. Both are per organisation.
+                o.resume_source, o.resume_template
            FROM queue_items q
            JOIN lkp_queue_statuses st ON st.id = q.status_id
            JOIN job_postings p        ON p.id = q.posting_id
+           JOIN organizations o       ON o.id = q.organization_id
       LEFT JOIN consultant_profiles cp ON cp.user_id = q.consultant_id
       LEFT JOIN resume_artifacts r     ON r.id = cp.base_resume_artifact_id
           WHERE q.id = $1 AND q.organization_id = $2`,
@@ -161,15 +178,28 @@ export const handle = async (job) => {
         return { tailored: false, skipReason, reason };
     };
 
-    /* ── 2 · no base resume ────────────────────────────────────────── */
+    /* ── 2 · which source is this agency using ─────────────────────── */
+    //
+    // Resolved HERE rather than at the source branch below, because the
+    // no-base-resume check immediately after it only makes sense for one of
+    // the two sources. Computing it later meant PROFILE-mode consultants —
+    // who by design never upload a file — were rejected as NO_BASE_RESUME
+    // before the profile was ever looked at.
+    const template = getTemplate(item.resume_template);
+    const fromProfile = item.resume_source === 'PROFILE';
 
-    if (!item.artifact_id) {
+    /* ── 3 · nothing to tailor from ────────────────────────────────── */
+
+    // Only a concern in BASE_RESUME mode. In PROFILE mode the absence of an
+    // uploaded file is normal, and the equivalent check — "is there anything
+    // in the profile?" — happens inside buildProfileResume below.
+    if (!fromProfile && !item.artifact_id) {
         return finishUntailored('NO_BASE_RESUME',
             'No base resume is on file for this consultant, so there was nothing to tailor. '
             + 'The application can still be made.');
     }
 
-    /* ── 3 · is the feature even switched on, and is there budget ──── */
+    /* ── 4 · is the feature even switched on, and is there budget ──── */
 
     if (!isAvailable('tailor')) {
         return finishUntailored('LLM_NOT_CONFIGURED', unavailableReason('tailor'));
@@ -182,31 +212,45 @@ export const handle = async (job) => {
             + `($${budget.spent.toFixed(2)} used). The base resume was attached instead.`);
     }
 
-    /* ── 4 · the structured base resume ────────────────────────────── */
+    /* ── 5 · where this agency reads the career from ───────────────── */
+    //
+    // Two sources, one shape. PROFILE assembles structured rows; BASE_RESUME
+    // parses the uploaded file and caches it. Both hand back
+    // `{ sections, rawText }`, so everything after this point — tailoring, the
+    // fabrication check, scoring, rendering, the review gate — is identical
+    // either way. That is why this is a branch and not a second pipeline.
+    const parsed = fromProfile
+        ? await buildProfileResume({
+            orgId,
+            consultantId: item.consultant_id,
+            templateName: item.resume_template,
+        })
+        : await getBaseDocument({
+            orgId,
+            consultantId: item.consultant_id,
+            artifact: {
+                id: item.artifact_id,
+                stored_name: item.stored_name,
+                sha256: item.sha256,
+            },
+        });
 
-    const parsed = await getBaseDocument({
-        orgId,
-        consultantId: item.consultant_id,
-        artifact: {
-            id: item.artifact_id,
-            stored_name: item.stored_name,
-            sha256: item.sha256,
-        },
-    });
-
-    /* ── 5 · nothing readable in the file ──────────────────────────── */
+    /* ── 6 · nothing to build from ─────────────────────────────────── */
 
     if (!parsed.ok) {
         if (parsed.retryable && !lastAttempt) {
-            throw new Error(`Could not parse the base resume: ${parsed.error}`);
+            throw new Error(`Could not read the consultant's career: ${parsed.error}`);
         }
+        // PROFILE_INCOMPLETE from the profile builder, UNPARSEABLE_RESUME from
+        // the file parser. Both end the same way: the application still goes
+        // out, carrying the base resume, marked with the reason.
         return finishUntailored(parsed.reason, parsed.error);
     }
 
     const baseSections = parsed.document.sections;
     const baseText = parsed.document.rawText;
 
-    /* ── 6 · the score before ──────────────────────────────────────── */
+    /* ── 7 · the score before ──────────────────────────────────────── */
 
     // The consultant's own search terms are weighted up: a skill the agency
     // already placed this person on matters more than an incidental word.
@@ -246,9 +290,9 @@ export const handle = async (job) => {
     // of it.
     const before = scoreResume(flattenResumeText(baseSections), jobText, criteriaTerms);
 
-    /* ── 7 · tailor ────────────────────────────────────────────────── */
+    /* ── 8 · tailor ────────────────────────────────────────────────── */
 
-    const tailored = await tailorResume({ baseSections, posting: item });
+    const tailored = await tailorResume({ baseSections, posting: item, template });
 
     await recordRun({
         orgId,
@@ -274,7 +318,7 @@ export const handle = async (job) => {
             + 'The base resume was attached instead.');
     }
 
-    /* ── 8 · the independent check ─────────────────────────────────── */
+    /* ── 9 · the independent check ─────────────────────────────────── */
 
     const check = await checkFabrication({
         baseText,
@@ -297,11 +341,11 @@ export const handle = async (job) => {
         error: check.error,
     });
 
-    /* ── 9 · the score after ───────────────────────────────────────── */
+    /* ── 10 · the score after ───────────────────────────────────────── */
 
     const after = scoreResume(flattenResumeText(tailored.resume), jobText, criteriaTerms);
 
-    /* ── 10 · render ───────────────────────────────────────────────── */
+    /* ── 11 · render ───────────────────────────────────────────────── */
 
     const artifactId = randomUUID();
     let file;
@@ -312,6 +356,7 @@ export const handle = async (job) => {
             company: item.company,
             title: item.title,
             artifactId,
+            template,
         });
     } catch (err) {
         if (!lastAttempt) throw new Error(`Could not render the PDF: ${err.message}`);
@@ -319,21 +364,30 @@ export const handle = async (job) => {
             `The tailored resume could not be rendered: ${err.message}`);
     }
 
-    /* ── 11 · the artifact, and the flags against it ───────────────── */
+    /* ── 12 · the artifact, and the flags against it ───────────────── */
 
     await query(
         `INSERT INTO resume_artifacts
             (id, organization_id, consultant_id, kind, original_name, stored_name,
              mime_type, size_bytes, sha256, source_artifact_id, queue_item_id,
              provider, model, ats_score_before, ats_score_after, sections,
-             generated_at)
-         VALUES ($1,$2,$3,'tailored',$4,$5,'application/pdf',$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,now())`,
+             template, resume_source, generated_at)
+         VALUES ($1,$2,$3,'tailored',$4,$5,'application/pdf',$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,now())`,
         [artifactId, orgId, item.consultant_id, file.filename, file.storedName,
-            file.sizeBytes, file.sha256, item.artifact_id, itemId,
+            file.sizeBytes, file.sha256,
+            // In PROFILE mode there is no source FILE this descends from — the
+            // source is the profile itself — so the link is left null rather
+            // than pointed at a base resume that had nothing to do with it.
+            fromProfile ? null : item.artifact_id,
+            itemId,
             tailored.provider, tailored.model, before.score, after.score,
             // Kept so the review screen can show the sentence that was flagged
             // in the document it appears in. See migration 042.
-            JSON.stringify(tailored.resume)],
+            JSON.stringify(tailored.resume),
+            // Which layout and which source produced this file. Both settings
+            // will change; a file has to stay accountable to the ones that
+            // were in force when it was made.
+            template.name, item.resume_source],
     );
 
     for (const flag of check.flags) {
@@ -348,7 +402,7 @@ export const handle = async (job) => {
         );
     }
 
-    /* ── 12 · where it goes next ───────────────────────────────────── */
+    /* ── 13 · where it goes next ───────────────────────────────────── */
 
     const scoreNote = before.score !== null && after.score !== null
         ? ` ATS keyword coverage ${before.score} → ${after.score}.`

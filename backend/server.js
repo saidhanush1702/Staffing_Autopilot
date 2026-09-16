@@ -123,6 +123,15 @@ import {
     reviewDecisionSchema,
 } from './controllers/resumeReviewController.js';
 import {
+    listSection, getFullProfile, createRow, updateRow, deleteRow, reorderSection,
+    searchSkillsEndpoint, addSkill, removeSkill,
+    updateBasics, careerReadiness,
+    validateSection, reorderSchema, skillSchema, basicsSchema,
+} from './controllers/profileSectionsController.js';
+import {
+    getResumeSettings, updateResumeSettings, resumeSettingsSchema,
+} from './controllers/resumeSettingsController.js';
+import {
     listContacts, queueItemContacts, applicationContacts, deviceQueueContacts,
     findContactNow, setDoNotContact, contactUsage, dncSchema,
 } from './controllers/contactController.js';
@@ -474,6 +483,76 @@ app.post('/api/management/resume-reviews/:itemId/reject',
     [verifyToken, isManagement, validate(reviewDecisionSchema)], rejectReview);
 app.post('/api/management/resume-reviews/:itemId/retry',
     [verifyToken, isManagement, validate(reviewDecisionSchema)], retryReview);
+
+/* ────────────── the consultant's career record (Phase 8) ───────────── */
+//
+// education · experience · projects · certifications · skills
+//
+// These are SELF-SERVICE for the consultant. Everything else on a profile goes
+// through a recruiter field by field, and these deliberately do not: they are
+// the person's own history, an approval queue forty entries deep would stall
+// onboarding on somebody else's inbox, and the no-fabrication check already
+// guards the only output that matters — a claim absent from these rows cannot
+// reach a generated resume.
+//
+// Management gets the same routes against a named consultant, narrowed to
+// their own people inside the controller by canAccessConsultant.
+
+// The skills vocabulary is shared, not tenant data — every agency would
+// otherwise rebuild the same list of what React is called.
+app.get('/api/skills/search', [verifyToken], searchSkillsEndpoint);
+
+// ── consultant, their own ──
+app.get('/api/portal/profile/full', [verifyToken, isConsultant], getFullProfile);
+// Drives the "My Career" badge. Same rule the tailoring step applies, so the
+// badge and the pipeline can never disagree about what is missing.
+app.get('/api/portal/career/readiness', [verifyToken, isConsultant], careerReadiness);
+app.get('/api/portal/profile/:section', [verifyToken, isConsultant], listSection);
+app.post('/api/portal/profile/:section',
+    [verifyToken, isConsultant, validateSection], createRow);
+app.patch('/api/portal/profile/:section/:id',
+    [verifyToken, isConsultant, validateSection], updateRow);
+app.delete('/api/portal/profile/:section/:id', [verifyToken, isConsultant], deleteRow);
+app.put('/api/portal/profile/:section/order',
+    [verifyToken, isConsultant, validate(reorderSchema)], reorderSection);
+
+app.patch('/api/portal/profile-basics',
+    [verifyToken, isConsultant, validate(basicsSchema)], updateBasics);
+app.post('/api/portal/profile-skills',
+    [verifyToken, isConsultant, validate(skillSchema)], addSkill);
+app.delete('/api/portal/profile-skills/:skillId', [verifyToken, isConsultant], removeSkill);
+
+// ── management, for a consultant they can reach ──
+app.get('/api/management/consultants/:consultantId/profile/full',
+    [verifyToken, isManagement], getFullProfile);
+app.get('/api/management/consultants/:consultantId/career/readiness',
+    [verifyToken, isManagement], careerReadiness);
+app.get('/api/management/consultants/:consultantId/profile/:section',
+    [verifyToken, isManagement], listSection);
+app.post('/api/management/consultants/:consultantId/profile/:section',
+    [verifyToken, isManagement, validateSection], createRow);
+app.patch('/api/management/consultants/:consultantId/profile/:section/:id',
+    [verifyToken, isManagement, validateSection], updateRow);
+app.delete('/api/management/consultants/:consultantId/profile/:section/:id',
+    [verifyToken, isManagement], deleteRow);
+app.put('/api/management/consultants/:consultantId/profile/:section/order',
+    [verifyToken, isManagement, validate(reorderSchema)], reorderSection);
+
+app.patch('/api/management/consultants/:consultantId/profile-basics',
+    [verifyToken, isManagement, validate(basicsSchema)], updateBasics);
+app.post('/api/management/consultants/:consultantId/profile-skills',
+    [verifyToken, isManagement, validate(skillSchema)], addSkill);
+app.delete('/api/management/consultants/:consultantId/profile-skills/:skillId',
+    [verifyToken, isManagement], removeSkill);
+
+/* ── how this agency builds resumes ─────────────────────────────────── */
+//
+// Readable by management so a recruiter can see why a resume looks the way it
+// does; writable by ORG_ADMIN only, because it changes what goes out under
+// every consultant's name.
+app.get('/api/management/resume-settings', [verifyToken, isManagement], getResumeSettings);
+app.patch('/api/management/resume-settings',
+    [verifyToken, isOrgAdmin, validate(resumeSettingsSchema)], updateResumeSettings);
 
 /* ─────────────────────────── contacts ───────────────────────────── */
 //

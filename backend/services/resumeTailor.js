@@ -21,6 +21,7 @@
 import { callModel } from '../connectors/llm/index.js';
 import { validateResume, RESUME_JSON_SCHEMA, compareStructure } from '../config/resumeSchema.js';
 import { TAILOR_SYSTEM, tailorInstruction } from '../config/tailoringRules.js';
+import { describeTemplate } from '../config/resumeTemplates.js';
 
 /**
  * The base resume as the model should see it.
@@ -41,11 +42,20 @@ ${JSON.stringify(sections, null, 2)}`;
  * @returns {{ok: true, resume, structural, provider, model, usage, costUsd, durationMs}}
  *        | {{ok: false, error, retryable, provider, model, usage, costUsd}}
  */
-export const tailorResume = async ({ baseSections, posting }) => {
+export const tailorResume = async ({ baseSections, posting, template = null }) => {
     const res = await callModel({
         stage: 'tailor',
         system: TAILOR_SYSTEM,
-        cacheable: baseBlock(baseSections),
+        // The template description rides with the base resume in the CACHEABLE
+        // block, not with the job. It is identical for every job this agency
+        // runs, so putting it here keeps it inside the cached prefix; putting
+        // it beside the volatile job description would push it outside and
+        // quietly stop the cache from hitting at all.
+        cacheable: template
+            ? `${describeTemplate(template)}
+
+${baseBlock(baseSections)}`
+            : baseBlock(baseSections),
         input: tailorInstruction({
             company: posting.company,
             title: posting.title,
