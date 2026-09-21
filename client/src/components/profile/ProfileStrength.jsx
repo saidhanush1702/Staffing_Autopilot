@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, AlertCircle, Info } from 'lucide-react';
 import {
-    card, cardPadRoomy, eyebrow, iconBtnShell, TONE_TEXT, TONE_SOLID,
+    CheckCircle2, AlertCircle, Info, GraduationCap, Sparkles,
+} from 'lucide-react';
+import {
+    card, cardPadRoomy, eyebrow, iconBtnShell, TONE_TEXT, TONE_SOLID, divider,
 } from '../../design/tokens.js';
 
 /**
@@ -20,6 +22,17 @@ import {
  * equal-weighted rather than scored like a credit model: each item is worth
  * the same one share of 100%, required or not — "14 of 16 things filled in"
  * is a number anyone can audit by eye against the list below it.
+ *
+ * ── ONE ICON, NOT TWO ───────────────────────────────────────────────────
+ *
+ * "Is there enough here for a tailored resume?" is a different question from
+ * "is the checklist filled in?", but it does not get its own icon — a second
+ * (i) beside this one would just be two things to click instead of one. It
+ * rides along in the same popover, and it is what decides whether the icon
+ * itself reads red or yellow before anyone opens it: red when the profile is
+ * still incomplete, yellow when identity is fine but the career record is not
+ * yet enough for a tailored resume, and the ordinary idle colour once both
+ * are settled.
  */
 const TIER = (pct) => {
     if (pct >= 85) return { tone: 'success', label: 'All-star profile' };
@@ -45,7 +58,7 @@ const Row = ({ item, onNavigate }) => (
     </button>
 );
 
-const ProfileStrength = ({ items }) => {
+const ProfileStrength = ({ items, isComplete, readiness }) => {
     const [open, setOpen] = useState(false);
     const ref = useRef(null);
 
@@ -69,6 +82,11 @@ const ProfileStrength = ({ items }) => {
     const required = items.filter((i) => i.required);
     const recommended = items.filter((i) => !i.required);
 
+    // Red beats yellow beats the ordinary idle colour — the icon should
+    // never look calmer than the worse of the two things it is reporting.
+    const readinessTone = !isComplete ? 'danger' : (readiness && !readiness.ready ? 'warning' : null);
+    const ReadinessIcon = readiness?.ready && isComplete ? Sparkles : GraduationCap;
+
     return (
         <span className="relative inline-flex" ref={ref}>
             <button
@@ -78,7 +96,8 @@ const ProfileStrength = ({ items }) => {
                 aria-expanded={open}
                 aria-label={`Profile strength — ${percent}% complete`}
                 title={`Profile strength — ${percent}% complete`}
-                className={`${iconBtnShell} h-6 w-6 ${open ? 'bg-brand-50 text-brand-600' : ''}`}
+                className={`${iconBtnShell} h-6 w-6 ${open ? 'bg-brand-50' : ''} `
+                    + `${readinessTone ? TONE_TEXT[readinessTone] : (open ? 'text-brand-600' : '')}`}
             >
                 <Info className="h-4 w-4" />
             </button>
@@ -117,6 +136,26 @@ const ProfileStrength = ({ items }) => {
                             style={{ width: `${percent}%` }}
                         />
                     </div>
+
+                    {readiness && (
+                        <div className={`mt-4 flex items-start gap-2 pt-4 text-sm ${divider}`}>
+                            <ReadinessIcon className={`mt-0.5 h-4 w-4 shrink-0 ${readinessTone ? TONE_TEXT[readinessTone] : TONE_TEXT.success}`} />
+                            {readiness.ready ? (
+                                <span className="text-slate-600">
+                                    There is enough here to build a tailored resume for every job
+                                    you are matched to.
+                                </span>
+                            ) : (
+                                <span className="text-slate-600">
+                                    <strong className="text-slate-800">Not enough to build a
+                                        tailored resume yet.</strong> Still needed:{' '}
+                                    {readiness.gaps.join(', ')}. Applications still go out — with
+                                    your uploaded resume instead of a tailored one — until this is
+                                    filled in.
+                                </span>
+                            )}
+                        </div>
+                    )}
 
                     <div className="mt-5 grid gap-x-6 gap-y-4 sm:grid-cols-2">
                         <div>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
     Send, Loader2, AlertCircle, Clock, CheckCircle2, XCircle, MinusCircle,
-    Undo2, Download, ShieldCheck, Check, X, Sparkles, GraduationCap,
+    Undo2, Download, Check, X,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -297,7 +297,7 @@ const MyProfile = () => {
         <div className="max-w-4xl">
             <div className="flex items-center gap-2">
                 <h1 className={pageTitle}>My profile</h1>
-                <ProfileStrength items={strengthItems} />
+                <ProfileStrength items={strengthItems} isComplete={isComplete} readiness={readiness} />
             </div>
             <p className={pageSubtitle}>
                 Everything here — your details and your career record — is used on every job
@@ -307,7 +307,7 @@ const MyProfile = () => {
 
             <FillWithResume onApply={applyPrefill} disabled={locked} />
 
-            {/* ── incomplete / complete banner (required identity fields) ── */}
+            {/* ── incomplete banner (required identity fields) ── */}
             {!isComplete && !locked && (
                 <div className="mt-4 flex items-start gap-2 rounded-lg border border-warning-200 bg-warning-50 p-3 text-sm text-warning-800">
                     <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -315,37 +315,6 @@ const MyProfile = () => {
                         <strong>Your profile is incomplete.</strong> Still needed:{' '}
                         {missingFields.map(fieldLabel).join(', ')}.
                     </span>
-                </div>
-            )}
-
-            {isComplete && !locked && (
-                <div className="mt-4 flex items-start gap-2 rounded-lg border border-success-200 bg-success-50 p-3 text-sm text-success-800">
-                    <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
-                    <span>Your details are complete and approved.</span>
-                </div>
-            )}
-
-            {/* ── career readiness banner ──────────────────────────────
-                A separate concern from "complete" above — this is about
-                whether there is enough here to build a TAILORED RESUME, not
-                whether your contact details are filled in. Kept as its own
-                banner rather than folded into the badge above, because the
-                two questions have different answers and conflating them
-                into one number would hide whichever one was worse. */}
-            {!locked && !readiness.ready && (
-                <div className="mt-3 flex items-start gap-2 rounded-lg border border-info-200 bg-info-50 p-3 text-sm text-info-800">
-                    <GraduationCap className="mt-0.5 h-4 w-4 shrink-0" />
-                    <span>
-                        <strong>Not enough to build a tailored resume yet.</strong> Still needed:{' '}
-                        {readiness.gaps.join(', ')}. Applications still go out — with your
-                        uploaded resume instead of a tailored one — until this is filled in.
-                    </span>
-                </div>
-            )}
-            {!locked && readiness.ready && (
-                <div className="mt-3 flex items-start gap-2 rounded-lg border border-success-200 bg-success-50 p-3 text-sm text-success-800">
-                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0" />
-                    <span>There is enough here to build a tailored resume for every job you are matched to.</span>
                 </div>
             )}
 
@@ -392,72 +361,6 @@ const MyProfile = () => {
                     </div>
                 </div>
             )}
-
-            {/* ── last review outcome ───────────────────────────── */}
-            {!locked && lastReviewed && (() => {
-                const approvedWhole = lastReviewed.status === 'APPROVED';
-                const tone = approvedWhole
-                    ? { border: 'border-success-200', bg: 'bg-success-50', head: 'text-success-900', body: 'text-success-800', icon: CheckCircle2, iconCls: 'text-success-600' }
-                    : { border: 'border-danger-200', bg: 'bg-danger-50', head: 'text-danger-900', body: 'text-danger-800', icon: XCircle, iconCls: 'text-danger-600' };
-                const Icon = tone.icon;
-
-                return (
-                    <div className={`mt-4 rounded-lg border ${tone.border} ${tone.bg} p-4`}>
-                        <div className="flex items-start gap-2">
-                            <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${tone.iconCls}`} />
-                            <div className="flex-1">
-                                <p className={`text-sm font-medium ${tone.head}`}>
-                                    {approvedWhole
-                                        ? 'Your last submission was approved'
-                                        : 'Your last submission was not approved'}
-                                </p>
-
-                                <p className={`mt-0.5 text-xs ${tone.body}`}>
-                                    Reviewed by <strong>{lastReviewed.reviewed_by_name ?? 'your agency'}</strong>
-                                    {lastReviewed.reviewed_by_role && (
-                                        <span className="ml-1 rounded bg-surface/70 px-1.5 py-0.5 text-[10px] font-medium">
-                                            {lastReviewed.reviewed_by_role.replace('_', ' ')}
-                                        </span>
-                                    )}
-                                    {lastReviewed.reviewed_at && (
-                                        <> on {new Date(lastReviewed.reviewed_at).toLocaleString()}</>
-                                    )}
-                                </p>
-
-                                {lastReviewed.fields.length > 0 && (
-                                    <ul className="mt-2 space-y-1">
-                                        {lastReviewed.fields.map((f) => (
-                                            <li key={f.field_name} className={`text-xs ${tone.body}`}>
-                                                {f.status === 'APPROVED'
-                                                    ? <Check className="mr-1 inline h-3 w-3 text-success-600" />
-                                                    : <X className="mr-1 inline h-3 w-3 text-danger-600" />}
-                                                <span className="font-medium">{fieldLabel(f.field_name)}</span>
-                                                {' → '}{f.new_display ?? '(cleared)'}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-
-                                {lastReviewed.career && (
-                                    <p className={`mt-2 text-xs ${tone.body}`}>
-                                        Your career record was part of this submission.
-                                    </p>
-                                )}
-
-                                {lastReviewed.review_note && (
-                                    <p className={`mt-2 text-xs ${tone.body}`}><em>{lastReviewed.review_note}</em></p>
-                                )}
-
-                                {!approvedWhole && (
-                                    <p className={`mt-2 text-xs ${tone.body}`}>
-                                        Update what needs fixing below and submit again.
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                );
-            })()}
 
             {/* ── the form ──────────────────────────────────────── */}
             <form onSubmit={submit} className="mt-6 space-y-6">
@@ -594,6 +497,74 @@ const MyProfile = () => {
                     )}
                 </div>
             </div>
+
+            {/* ── last review outcome — last on the page, after everything
+                else here, since it is a record of what already happened
+                rather than something to act on right now ──────────── */}
+            {!locked && lastReviewed && (() => {
+                const approvedWhole = lastReviewed.status === 'APPROVED';
+                const tone = approvedWhole
+                    ? { border: 'border-success-200', bg: 'bg-success-50', head: 'text-success-900', body: 'text-success-800', icon: CheckCircle2, iconCls: 'text-success-600' }
+                    : { border: 'border-danger-200', bg: 'bg-danger-50', head: 'text-danger-900', body: 'text-danger-800', icon: XCircle, iconCls: 'text-danger-600' };
+                const Icon = tone.icon;
+
+                return (
+                    <div className={`mt-6 rounded-lg border ${tone.border} ${tone.bg} p-4`}>
+                        <div className="flex items-start gap-2">
+                            <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${tone.iconCls}`} />
+                            <div className="flex-1">
+                                <p className={`text-sm font-medium ${tone.head}`}>
+                                    {approvedWhole
+                                        ? 'Your last submission was approved'
+                                        : 'Your last submission was not approved'}
+                                </p>
+
+                                <p className={`mt-0.5 text-xs ${tone.body}`}>
+                                    Reviewed by <strong>{lastReviewed.reviewed_by_name ?? 'your agency'}</strong>
+                                    {lastReviewed.reviewed_by_role && (
+                                        <span className="ml-1 rounded bg-surface/70 px-1.5 py-0.5 text-[10px] font-medium">
+                                            {lastReviewed.reviewed_by_role.replace('_', ' ')}
+                                        </span>
+                                    )}
+                                    {lastReviewed.reviewed_at && (
+                                        <> on {new Date(lastReviewed.reviewed_at).toLocaleString()}</>
+                                    )}
+                                </p>
+
+                                {lastReviewed.fields.length > 0 && (
+                                    <ul className="mt-2 space-y-1">
+                                        {lastReviewed.fields.map((f) => (
+                                            <li key={f.field_name} className={`text-xs ${tone.body}`}>
+                                                {f.status === 'APPROVED'
+                                                    ? <Check className="mr-1 inline h-3 w-3 text-success-600" />
+                                                    : <X className="mr-1 inline h-3 w-3 text-danger-600" />}
+                                                <span className="font-medium">{fieldLabel(f.field_name)}</span>
+                                                {' → '}{f.new_display ?? '(cleared)'}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+
+                                {lastReviewed.career && (
+                                    <p className={`mt-2 text-xs ${tone.body}`}>
+                                        Your career record was part of this submission.
+                                    </p>
+                                )}
+
+                                {lastReviewed.review_note && (
+                                    <p className={`mt-2 text-xs ${tone.body}`}><em>{lastReviewed.review_note}</em></p>
+                                )}
+
+                                {!approvedWhole && (
+                                    <p className={`mt-2 text-xs ${tone.body}`}>
+                                        Update what needs fixing below and submit again.
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 };

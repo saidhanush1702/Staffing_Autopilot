@@ -223,8 +223,14 @@ const Postings = () => {
                     {postings.map((p) => (
                         <tr key={p.id} className={tableRow}>
                             <td className={tableCell}>
-                                <p className="font-medium text-slate-900">{p.title}</p>
-                                <p className="text-xs text-slate-500">{p.company}</p>
+                                <div className="max-w-[220px]">
+                                    <p className="truncate font-medium text-slate-900" title={p.title}>
+                                        {p.title}
+                                    </p>
+                                    <p className="truncate text-xs text-slate-500" title={p.company}>
+                                        {p.company}
+                                    </p>
+                                </div>
                             </td>
                             <td className={`${tableCell} text-slate-600`}>
                                 <span className="flex items-center gap-1.5">
