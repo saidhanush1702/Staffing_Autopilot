@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     Briefcase, MapPin, Clock, ExternalLink, ChevronDown, ChevronRight,
     Sparkles, ShieldCheck, ShieldAlert, Send, Ban, Inbox, AlertCircle,
-    Gauge, UserSearch, Search, Settings2, MessageSquareQuote, Layers, FileText,
+    Gauge, UserSearch, Search, Settings2, MessageSquareQuote, Layers, FileText, Loader2, CheckCircle2,
 } from 'lucide-react';
 import api, { errorMessage, API_ROOT } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
@@ -11,7 +11,7 @@ import QueueItemDrawer from './QueueItemDrawer.jsx';
 import ContactPanel from '../contacts/ContactPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
-    card, cardPad, badge, btnSm, chip, eyebrow, searchInput, searchIcon,
+    card, cardPad, badge, btn, btnSm, chip, eyebrow, searchInput, searchIcon, checkbox,
     sectionTitle, alertShell, alertShellSm, TONE, TONE_ALERT, dividerList,
 } from '../../design/tokens.js';
 
@@ -317,6 +317,9 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
     const [q, setQ] = useState('');
     const [openRow, setOpenRow] = useState(null);
     const [manageId, setManageId] = useState(null);
+    const [selected, setSelected] = useState(() => new Set());
+    const [tailoring, setTailoring] = useState(false);
+    const [notice, setNotice] = useState(null);     // { tone, text }
 
     const endpoint = scope === 'portal'
         ? '/portal/jobs'
@@ -335,6 +338,54 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
 
     useEffect(() => { load(); }, [load]);
 
+    // A job being tailored comes back to Ready by itself a minute or so later;
+    // checking while any is in flight means the person watching sees it happen
+    // instead of having to reload.
+    const anyPreparing = Boolean(data?.jobs?.some((j) => j.status_name === 'PREPARING'));
+    useEffect(() => {
+        if (!anyPreparing) return undefined;
+        const id = setInterval(load, 8000);
+        return () => clearInterval(id);
+    }, [anyPreparing, load]);
+
+    // Only a job that is Ready, has a queue item behind it and has not been
+    // tailored can be selected. Anything the desktop app has taken, or that is
+    // already tailored or being tailored, is not offered.
+    const canTailor = (j) => Boolean(j.queue_item_id)
+        && j.status_name === 'READY'
+        && j.tailoring_state !== 'TAILORED';
+
+    const toggle = (id) => setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+    });
+
+    const tailorEndpoint = scope === 'portal' ? '/portal/jobs/tailor' : '/management/jobs/tailor';
+
+    const requestTailoring = async () => {
+        setTailoring(true);
+        setNotice(null);
+        try {
+            const { data: res } = await api.post(tailorEndpoint, { queueItemIds: [...selected] });
+            const skipped = res.skipped ?? [];
+            setNotice({
+                tone: res.requested > 0 ? 'success' : 'warning',
+                text: (res.requested > 0
+                    ? `Tailoring ${res.requested} resume${res.requested === 1 ? '' : 's'}. `
+                        + 'Each job returns to Ready with its tailored resume when it is done. '
+                    : 'Nothing was tailored. ')
+                    + skipped.map((s) => `${s.label ?? 'A job'}: ${s.reason}`).join(' '),
+            });
+            setSelected(new Set());
+            await load();
+        } catch (err) {
+            setNotice({ tone: 'danger', text: errorMessage(err, 'Could not start tailoring.') });
+        } finally {
+            setTailoring(false);
+        }
+    };
+
     const visible = useMemo(() => {
         if (!data) return [];
         const needle = q.trim().toLowerCase();
@@ -348,6 +399,10 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
     if (!data) return <PageLoader />;
 
     const { summary } = data;
+
+    const eligible = visible.filter(canTailor);
+    const allTicked = eligible.length > 0 && eligible.every((j) => selected.has(j.queue_item_id));
+    const isAdmin = user?.role === 'ORG_ADMIN';
 
     return (
         <div>
@@ -424,6 +479,52 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
                 />
             </div>
 
+            {/* ── choosing which resumes to tailor ────────────── */}
+            {notice && (
+                <div className={`mt-4 ${alertShell} ${TONE_ALERT[notice.tone]}`}>
+                    {notice.tone === 'success'
+                        ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                        : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
+                    <span>{notice.text}</span>
+                </div>
+            )}
+            {data.jobs.some(canTailor) && (
+                <div className={`mt-4 ${card} ${cardPad} flex flex-wrap items-center justify-between gap-3`}>
+                    <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-800">Tailor a resume for the jobs you choose</p>
+                        <p className="text-xs text-slate-500">
+                            Jobs are ready with the base resume. Tick the ones worth a tailored resume; only
+                            those are tailored, and each returns to Ready when done.
+                        </p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-xs text-slate-600">
+                            <input
+                                type="checkbox"
+                                className={checkbox}
+                                checked={allTicked}
+                                disabled={eligible.length === 0}
+                                onChange={() => setSelected(allTicked
+                                    ? new Set()
+                                    : new Set(eligible.map((j) => j.queue_item_id)))}
+                            />
+                            Select all shown ({eligible.length})
+                        </label>
+                        <button
+                            type="button"
+                            className={btn.primary}
+                            disabled={tailoring || selected.size === 0}
+                            onClick={requestTailoring}
+                        >
+                            {tailoring
+                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                : <Sparkles className="h-4 w-4" />}
+                            Tailor {selected.size > 0 ? selected.size : ''} selected
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* ── the jobs ────────────────────────────────────── */}
             {visible.length === 0 ? (
                 <div className={`mt-5 ${card} ${cardPad} text-center`}>
@@ -446,12 +547,27 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
                         const isOpen = openRow === key;
                         return (
                             <div key={key}>
+                              <div className="flex items-start">
+                                {data.jobs.some(canTailor) && (
+                                    <div className="flex w-12 shrink-0 justify-center pt-4">
+                                        {canTailor(job) && (
+                                            <input
+                                                type="checkbox"
+                                                className={checkbox}
+                                                checked={selected.has(job.queue_item_id)}
+                                                onChange={() => toggle(job.queue_item_id)}
+                                                aria-label={`Tailor a resume for ${job.title} at ${job.company}`}
+                                            />
+                                        )}
+                                    </div>
+                                )}
                                 <button
                                     type="button"
                                     onClick={() => setOpenRow(isOpen ? null : key)}
                                     aria-expanded={isOpen}
-                                    className="flex w-full items-start gap-3 px-5 py-4 text-left
-                                               transition-colors hover:bg-surface-sunken"
+                                    className={`flex w-full min-w-0 flex-1 items-start gap-3 py-4 pr-5 text-left
+                                               transition-colors hover:bg-surface-sunken
+                                               ${data.jobs.some(canTailor) ? 'pl-1' : 'pl-5'}`}
                                 >
                                     {isOpen
                                         ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
@@ -488,6 +604,19 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
                                                     reason={job.tailoring_skip_reason}
                                                     status={job.status_name}
                                                 />
+                                                {/* What tailoring this resume cost. Org admin
+                                                    only: the server does not send the field to
+                                                    anybody else, and this checks the role too. */}
+                                                {isAdmin && job.tailoring_cost_usd != null && (
+                                                    <span
+                                                        className="text-2xs tabular-nums text-slate-400"
+                                                        title="What the AI calls for this resume cost. Only you can see this."
+                                                    >
+                                                        {job.tailoring_cost_unknown
+                                                            ? `≥ $${job.tailoring_cost_usd.toFixed(4)} (part unpriced)`
+                                                            : `$${job.tailoring_cost_usd.toFixed(4)}`}
+                                                    </span>
+                                                )}
                                                 {job.score != null && (
                                                     <span className={`${badge} ${
                                                         job.score >= 70 ? TONE.success : TONE.warning}`}>
@@ -518,6 +647,7 @@ const ConsultantJobs = ({ consultantId = null, scope = 'management' }) => {
                                         </p>
                                     </div>
                                 </button>
+                              </div>
 
                                 {isOpen && (
                                     <JobDetail job={job} scope={scope} onManage={setManageId} />

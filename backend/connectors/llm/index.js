@@ -35,7 +35,10 @@
  * unwinds a worker mid-transaction.
  */
 import { query } from '../../db.js';
-import { stageConfig, priceCall, isStageConfigured } from '../../config/llmModels.js';
+import {
+    stageConfig, priceCall, isStageConfigured, envFallback,
+} from '../../config/llmModels.js';
+import { getOverride } from './settings.js';
 import * as anthropic from './anthropic.js';
 import * as openai from './openai.js';
 import * as gemini from './gemini.js';
@@ -72,10 +75,35 @@ export const adapterFor = (provider) => ADAPTERS[String(provider ?? '').toLowerC
 export const knownProviders = () => Object.keys(ADAPTERS);
 
 /**
+ * Why a provider/model pair cannot be used, in words a dashboard can show, or
+ * null when it can.
+ *
+ * Takes the pair rather than a stage so the same rules answer for a primary, a
+ * fallback and a candidate an administrator is about to test.
+ */
+const reasonFor = (provider, model, label) => {
+    if (!provider) {
+        return `No model provider is configured. Set LLM_PROVIDER (or LLM_${String(label).toUpperCase()}_PROVIDER).`;
+    }
+    const adapter = adapterFor(provider);
+    if (!adapter) {
+        return `Unknown model provider "${provider}". Known: ${knownProviders().join(', ')}.`;
+    }
+    if (!model) {
+        return `No model named for the ${label} stage. Set LLM_MODEL or LLM_${String(label).toUpperCase()}_MODEL.`;
+    }
+    if (!adapter.isConfigured()) {
+        return `The ${provider} provider has no API key in the environment.`;
+    }
+    return null;
+};
+
+/**
  * Is the given stage usable right now — provider named, adapter known, key set?
  *
- * Called before any work is done, so "the feature is switched off" is answered
- * without spending anything or writing a half-finished row.
+ * Environment only. This is the check that predates per-organisation settings and
+ * it is kept for callers with no organisation to ask about; anything that has an
+ * orgId should use `stageStatus`, which sees the overrides.
  */
 export const isAvailable = (stage) => {
     if (!isStageConfigured(stage)) return false;
@@ -84,26 +112,74 @@ export const isAvailable = (stage) => {
     return Boolean(adapter?.isConfigured());
 };
 
-/**
- * Why a stage is unavailable, in words a dashboard can show.
- * Returns null when it IS available.
- */
+/** Why a stage is unavailable (environment only), or null when it is available. */
 export const unavailableReason = (stage) => {
     const { provider, model } = stageConfig(stage);
-    if (!provider) {
-        return `No model provider is configured. Set LLM_PROVIDER (or LLM_${stage.toUpperCase()}_PROVIDER).`;
+    return reasonFor(provider, model, stage);
+};
+
+/**
+ * What a stage will actually run with for one organisation.
+ *
+ * Layered: the organisation's override wins field by field, then the server's
+ * environment. `temperature`, `maxOutputTokens` and `timeoutMs` stay null when
+ * nobody chose a value, and null means "send nothing" / "use the caller's own
+ * default" rather than a number of ours.
+ */
+export const resolveStage = async (orgId, stage) => {
+    const base = stageConfig(stage);
+    const o = await getOverride(orgId, stage);
+
+    const provider = (o?.provider ?? base.provider ?? '').toLowerCase();
+    const model = o?.provider ? o.model : base.model;
+
+    let fallback = null;
+    if (o?.fallbackProvider && o?.fallbackModel) {
+        fallback = { provider: o.fallbackProvider.toLowerCase(), model: o.fallbackModel };
+    } else {
+        fallback = envFallback(stage, { provider, model });
     }
-    const adapter = adapterFor(provider);
-    if (!adapter) {
-        return `Unknown model provider "${provider}". Known: ${knownProviders().join(', ')}.`;
-    }
-    if (!model) {
-        return `No model named for the ${stage} stage. Set LLM_MODEL or LLM_${stage.toUpperCase()}_MODEL.`;
-    }
-    if (!adapter.isConfigured()) {
-        return `The ${provider} provider has no API key in the environment.`;
-    }
-    return null;
+
+    return {
+        stage,
+        provider,
+        model,
+        temperature: o?.temperature ?? null,
+        maxOutputTokens: o?.maxOutputTokens ?? null,
+        timeoutMs: o?.timeoutMs ?? null,
+        fallback,
+        // What the organisation chose, versus what it inherited — the settings
+        // screen shows the difference.
+        customised: Boolean(o),
+    };
+};
+
+/**
+ * The organisation-aware version of isAvailable/unavailableReason, in one call.
+ *
+ * A stage is available when its primary works OR its fallback does: a missing key
+ * on the main provider is not "switched off" if there is a working backup. It is
+ * off only when the stage has no provider at all, which is how an organisation
+ * that never set AI up keeps the feature quietly disabled.
+ */
+export const stageStatus = async (orgId, stage) => {
+    const cfg = await resolveStage(orgId, stage);
+    const primaryReason = reasonFor(cfg.provider, cfg.model, stage);
+    const fbReason = cfg.fallback
+        ? reasonFor(cfg.fallback.provider, cfg.fallback.model, `${stage} fallback`)
+        : 'No fallback model is set.';
+
+    const primaryOk = primaryReason === null;
+    const fallbackOk = Boolean(cfg.fallback) && fbReason === null;
+    const off = !cfg.provider;
+
+    return {
+        config: cfg,
+        available: !off && (primaryOk || fallbackOk),
+        reason: (off || !(primaryOk || fallbackOk)) ? primaryReason : null,
+        primaryReason,
+        fallbackReason: cfg.fallback ? fbReason : null,
+    };
 };
 
 /* ── the money ceiling ─────────────────────────────────────────────── */
@@ -159,21 +235,14 @@ export const spendThisPeriod = async (orgId) => {
 /* ── the call itself ───────────────────────────────────────────────── */
 
 /**
- * Run one stage against whichever provider is configured for it.
- *
- * @param {string}  stage      'parse' | 'tailor' | 'check'
- * @param {string}  system     stable instructions
- * @param {string}  cacheable  large stable content, sent first so it can cache
- * @param {string}  input      the volatile part, sent last
- * @param {object}  schema     JSON Schema for the answer, optional
- * @param {number}  maxTokens
+ * One attempt against one provider/model. Validates the answer and prices it.
+ * Everything that can go wrong comes back as { ok: false, ... } — never a throw.
  */
-export const callModel = async ({
-    stage, system, cacheable, input, schema, maxTokens = 8000,
+const attempt = async ({
+    stage, label, provider, model, system, cacheable, input, schema,
+    maxTokens, temperature, timeoutMs,
 }) => {
-    const { provider, model } = stageConfig(stage);
-
-    const reason = unavailableReason(stage);
+    const reason = reasonFor(provider, model, label ?? stage);
     if (reason) {
         return {
             ok: false, provider, model, error: reason, retryable: false, costUsd: 0,
@@ -187,7 +256,7 @@ export const callModel = async ({
     // different questions and would otherwise have to guess which one it was
     // being asked.
     const res = await adapter.call({
-        stage, model, system, cacheable, input, schema, maxTokens,
+        stage, model, system, cacheable, input, schema, maxTokens, temperature, timeoutMs,
     });
     const durationMs = Date.now() - started;
 
@@ -249,6 +318,115 @@ export const callModel = async ({
         // not zero — see config/llmModels.js.
         costUsd: priceCall(provider, model, res.usage),
         durationMs,
+    };
+};
+
+/**
+ * Run one stage against whichever provider is configured for it.
+ *
+ * @param {string}  orgId      whose settings apply. Omitted → server defaults only.
+ * @param {string}  stage      'parse' | 'tailor' | 'check' | 'agent' | 'match'
+ * @param {string}  system     stable instructions
+ * @param {string}  cacheable  large stable content, sent first so it can cache
+ * @param {string}  input      the volatile part, sent last
+ * @param {object}  schema     JSON Schema for the answer, optional
+ * @param {number}  maxTokens  the caller's own ceiling; an organisation setting wins
+ *
+ * ── THE FALLBACK ──────────────────────────────────────────────────────
+ *
+ * When the main model fails for ANY reason — outage, missing key, a timeout, a
+ * truncated or unparseable answer — the same request goes once to the stage's
+ * fallback model, if one is set and usable. The result then carries
+ * `usedFallback: true` and the primary's error, and is priced against the model
+ * that actually answered, plus whatever the failed attempt was billed.
+ *
+ * A stage with no provider at all is switched OFF, not failing, and never falls
+ * back: an organisation that has not set AI up must not have it start spending
+ * on a default nobody chose.
+ */
+export const callModel = async ({
+    orgId = null, stage, system, cacheable, input, schema, maxTokens = 8000,
+}) => {
+    const cfg = await resolveStage(orgId, stage);
+    const ceiling = cfg.maxOutputTokens ?? maxTokens;
+
+    const primary = await attempt({
+        stage, provider: cfg.provider, model: cfg.model, system, cacheable, input, schema,
+        maxTokens: ceiling, temperature: cfg.temperature, timeoutMs: cfg.timeoutMs,
+    });
+    if (primary.ok) return primary;
+
+    const fb = cfg.fallback;
+    const worthTrying = Boolean(cfg.provider)
+        && Boolean(fb)
+        && !(fb.provider === cfg.provider && fb.model === cfg.model)
+        && reasonFor(fb.provider, fb.model, `${stage} fallback`) === null;
+    if (!worthTrying) return primary;
+
+    // The temperature was chosen for the primary; another vendor's scale is not
+    // the same scale, so the fallback runs on its own default.
+    const second = await attempt({
+        stage, label: `${stage} fallback`, provider: fb.provider, model: fb.model,
+        system, cacheable, input, schema,
+        maxTokens: ceiling, temperature: null, timeoutMs: cfg.timeoutMs,
+    });
+
+    const wasted = primary.costUsd ?? 0;
+    if (second.ok) {
+        return {
+            ...second,
+            costUsd: second.costUsd === null ? null : Number((second.costUsd + wasted).toFixed(6)),
+            usedFallback: true,
+            primaryError: primary.error,
+            primaryProvider: primary.provider,
+            primaryModel: primary.model,
+        };
+    }
+
+    return {
+        ...second,
+        error: `${primary.provider}/${primary.model} failed (${primary.error}) and the fallback `
+            + `${second.provider}/${second.model} also failed (${second.error})`,
+        retryable: Boolean(primary.retryable || second.retryable),
+        costUsd: Number(((second.costUsd ?? 0) + wasted).toFixed(6)),
+        usedFallback: true,
+    };
+};
+
+/**
+ * A tiny real call, for the settings screen's "Test" button.
+ *
+ * Takes the candidate values as given rather than reading saved settings, so an
+ * administrator can try a choice BEFORE saving it. It costs a fraction of a cent
+ * and is not written to the spend ledger.
+ */
+export const probeModel = async ({ provider, model, temperature = null, timeoutMs = null }) => {
+    const res = await attempt({
+        stage: 'probe',
+        label: 'probe',
+        provider: String(provider ?? '').toLowerCase(),
+        model,
+        system: 'You reply with a single JSON object and nothing else.',
+        input: 'Return {"ok": true}.',
+        schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['ok'],
+            properties: { ok: { type: 'boolean' } },
+        },
+        // Generous on purpose: a model that spends tokens reasoning before it
+        // answers would otherwise "fail" a test it would pass in real use.
+        maxTokens: 2048,
+        temperature,
+        timeoutMs: timeoutMs ?? 30_000,
+    });
+    return {
+        ok: res.ok,
+        provider: res.provider,
+        model: res.model,
+        durationMs: res.durationMs ?? null,
+        costUsd: res.costUsd ?? null,
+        error: res.ok ? null : String(res.error ?? 'Unknown error').slice(0, 400),
     };
 };
 

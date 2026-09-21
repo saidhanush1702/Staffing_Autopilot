@@ -32,7 +32,7 @@
  */
 
 /** Bumped whenever the prompt changes, so behaviour can be tied to a version. */
-export const AGENT_PROMPT_VERSION = 'agent-2026-09-14.1';
+export const AGENT_PROMPT_VERSION = 'agent-2026-09-16.1';
 
 export const AGENT_MODES = ['OFF', 'SHADOW', 'ON'];
 
@@ -55,8 +55,15 @@ export const PROFILE_KEYS = [
  * The answer's shape.
  *
  * Flat, with every property required, on purpose: nested one-of shapes are the
- * part of JSON Schema providers disagree about most, and a flat object with
- * empty strings for unused fields is accepted by all of them.
+ * part of JSON Schema providers disagree about most, and a flat object with a
+ * placeholder in the unused fields is the shape they all accept.
+ *
+ * ── ONE CORRECTION, LEARNED THE EXPENSIVE WAY ─────────────────────────
+ *
+ * That placeholder used to be an empty string everywhere, including inside an
+ * enum. Gemini refuses an empty enum value with a 400, so every agent call
+ * failed before it began. Empty strings are fine in a free-text field; inside
+ * an ENUM they need a real name. See `kind` below.
  */
 export const AGENT_ACTION_SCHEMA = {
     type: 'object',
@@ -79,8 +86,25 @@ export const AGENT_ACTION_SCHEMA = {
         },
         kind: {
             type: 'string',
-            enum: ['', ...STOP_KINDS],
-            description: 'For stop only. Otherwise "".',
+            // ── WHY "none" AND NOT "" ─────────────────────────────────
+            //
+            // This was `['', ...STOP_KINDS]`, and it worked on two providers
+            // and took the third down completely:
+            //
+            //   400 INVALID_ARGUMENT — response_schema.properties[kind]
+            //                          .enum[0]: cannot be empty
+            //
+            // Gemini rejects an empty string inside an enum outright. Every
+            // agent call failed the moment the schema was sent, so the agent
+            // never ran, and every job it would have handled fell back to a
+            // human — which reads as "the automation stopped working" rather
+            // than as a schema problem.
+            //
+            // A named sentinel is portable everywhere and keeps the enum's
+            // value as guidance. parseAction accepts "" as well, so a model
+            // that answers the old way is still understood.
+            enum: ['none', ...STOP_KINDS],
+            description: 'For stop only — one of the stop kinds. Otherwise "none".',
         },
         reason: {
             type: 'string',
@@ -103,7 +127,7 @@ WHAT MAY GO INTO A FIELD
 - Never fill a password field. Never create an account.
 
 ACTIONS
-Every reply has action, ref, source, refs, kind and reason. Use "" or [] for the ones an action does not need.
+Every reply has action, ref, source, refs, kind and reason. Use "" or [] for the ones an action does not need, and "none" for kind on anything that is not a stop.
 - fill: ref = a field ref; source = "profile:<key>" or "answer:<id>".
 - upload_resume: ref = a file field or an upload button, when the page asks for a resume or CV and RESUME is available.
 - press: ref = a control that moves the application forward: Apply, Apply manually, Next, Continue, Save and continue, a step tab, or a button that closes a cookie or information popup. Never a control that submits or sends the application, withdraws, deletes, or signs out.
@@ -237,6 +261,8 @@ export const validateAction = (raw, catalogue) => {
 
     const ref = String(raw.ref ?? '').trim();
     const reason = clip(raw.reason, 300);
+    // 'none' is the schema's word for "this field does not apply"; the
+    // internal shape keeps using '' so nothing downstream had to change.
     const out = { action, ref: '', source: '', refs: [], kind: '', reason };
 
     const needRef = () => {
@@ -288,6 +314,8 @@ export const validateAction = (raw, catalogue) => {
     }
     case 'stop': {
         const kind = String(raw.kind ?? '');
+        // 'none' never reaches here — it means "not a stop" — so it falls
+        // through to the same error as any other unusable value.
         if (!STOP_KINDS.includes(kind)) {
             return { ok: false, error: `stop needs a kind: ${STOP_KINDS.join(', ')}.` };
         }

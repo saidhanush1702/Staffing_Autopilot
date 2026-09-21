@@ -175,7 +175,9 @@ export const mechanicalFlags = (baseText, tailoredText) => {
  *
  * @returns {{ok, flags, modelChecked, provider, model, usage, costUsd, durationMs, error}}
  */
-export const checkFabrication = async ({ baseText, tailoredResume, structural = [] }) => {
+export const checkFabrication = async ({
+    baseText, tailoredResume, structural = [], orgId = null,
+}) => {
     const tailoredText = flattenResumeText(tailoredResume);
 
     const flags = mechanicalFlags(baseText, tailoredText);
@@ -195,6 +197,7 @@ export const checkFabrication = async ({ baseText, tailoredResume, structural = 
     }
 
     const res = await callModel({
+        orgId,
         stage: 'check',
         system: CHECK_SYSTEM,
         // The base resume is the same bytes for every job this consultant has,

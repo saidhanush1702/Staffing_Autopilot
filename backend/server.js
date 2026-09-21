@@ -132,6 +132,13 @@ import {
     getResumeSettings, updateResumeSettings, resumeSettingsSchema,
 } from './controllers/resumeSettingsController.js';
 import {
+    getLlmSettings, updateLlmSettings, resetLlmSettings, testLlmSettings,
+    llmSettingsSchema, llmTestSchema,
+} from './controllers/llmSettingsController.js';
+import {
+    linkCandidates, linkPosting, linkSchema,
+} from './controllers/postingLinkController.js';
+import {
     listContacts, queueItemContacts, applicationContacts, deviceQueueContacts,
     findContactNow, setDoNotContact, contactUsage, dncSchema,
 } from './controllers/contactController.js';
@@ -144,6 +151,8 @@ import {
     questionSuggestions, questionSuggestionsSchema,
 } from './controllers/questionSuggestionController.js';
 import { listConsultantJobs } from './controllers/consultantJobsController.js';
+import { requestTailoring, tailorRequestSchema } from './controllers/tailoringRequestController.js';
+import { prefillFromResume } from './controllers/profilePrefillController.js';
 import { resumeUpload } from './utils/upload.js';
 
 const app = express();
@@ -430,6 +439,20 @@ app.patch('/api/management/jobspipe/pull',
 
 app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
 app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
+
+// ── linking a job to a consultant by hand ──
+//
+// The matcher refuses jobs a recruiter can see are right — a perfect title in
+// the wrong city scores below the pass mark, and on the live pool that is most
+// of what it rejects. This is the override.
+//
+// isManagement, not isOrgAdmin: placing their own consultants is a recruiter's
+// job. The narrowing to THEIR consultants happens inside the controller, via
+// canAccessConsultant, because it cannot be expressed as a route guard.
+app.get('/api/management/postings/:id/link-candidates',
+    [verifyToken, isManagement], linkCandidates);
+app.post('/api/management/postings/:id/link',
+    [verifyToken, isManagement, validate(linkSchema)], linkPosting);
 app.get('/api/management/consultants/:id/queue', [verifyToken, isManagement], listConsultantQueue);
 
 /* ──────────────────────── the queue (portal) ───────────────────── */
@@ -488,39 +511,37 @@ app.post('/api/management/resume-reviews/:itemId/retry',
 //
 // education · experience · projects · certifications · skills
 //
-// These are SELF-SERVICE for the consultant. Everything else on a profile goes
-// through a recruiter field by field, and these deliberately do not: they are
-// the person's own history, an approval queue forty entries deep would stall
-// onboarding on somebody else's inbox, and the no-fabrication check already
-// guards the only output that matters — a claim absent from these rows cannot
-// reach a generated resume.
+// ── WHY THE CONSULTANT SIDE IS READ-ONLY HERE NOW ─────────────────────
 //
-// Management gets the same routes against a named consultant, narrowed to
-// their own people inside the controller by canAccessConsultant.
+// These used to be self-service: a consultant's own history, saved the
+// instant they touched it, on the reasoning that an approval queue forty
+// entries deep would stall onboarding on somebody else's inbox. My Profile
+// and My Career were two pages on two engines for that reason.
+//
+// The client asked for one page and one reviewer gate over EVERYTHING a
+// consultant submits — identity and career together. So the write routes
+// below moved: a consultant's edits now travel through
+// POST /api/portal/profile/change-request (profileChangeController.js),
+// exactly like phone and city always did, and this section keeps only the
+// READS a consultant needs to pre-fill that form with their current,
+// approved data.
+//
+// Management keeps instant writes below: an ORG_ADMIN or RECRUITER editing a
+// consultant's career directly needs no approval, because they ARE the
+// approver — the same precedent adminUpdateProfile already sets for identity
+// fields (controllers/profileController.js).
 
 // The skills vocabulary is shared, not tenant data — every agency would
 // otherwise rebuild the same list of what React is called.
 app.get('/api/skills/search', [verifyToken], searchSkillsEndpoint);
 
-// ── consultant, their own ──
+// ── consultant, read-only — loads the merged profile form ──
 app.get('/api/portal/profile/full', [verifyToken, isConsultant], getFullProfile);
-// Drives the "My Career" badge. Same rule the tailoring step applies, so the
-// badge and the pipeline can never disagree about what is missing.
+// The "not enough to build a resume" signal on the merged page. Reads live,
+// APPROVED data only — same rule the tailoring step applies, so this can
+// never disagree with what a job actually goes out carrying.
 app.get('/api/portal/career/readiness', [verifyToken, isConsultant], careerReadiness);
 app.get('/api/portal/profile/:section', [verifyToken, isConsultant], listSection);
-app.post('/api/portal/profile/:section',
-    [verifyToken, isConsultant, validateSection], createRow);
-app.patch('/api/portal/profile/:section/:id',
-    [verifyToken, isConsultant, validateSection], updateRow);
-app.delete('/api/portal/profile/:section/:id', [verifyToken, isConsultant], deleteRow);
-app.put('/api/portal/profile/:section/order',
-    [verifyToken, isConsultant, validate(reorderSchema)], reorderSection);
-
-app.patch('/api/portal/profile-basics',
-    [verifyToken, isConsultant, validate(basicsSchema)], updateBasics);
-app.post('/api/portal/profile-skills',
-    [verifyToken, isConsultant, validate(skillSchema)], addSkill);
-app.delete('/api/portal/profile-skills/:skillId', [verifyToken, isConsultant], removeSkill);
 
 // ── management, for a consultant they can reach ──
 app.get('/api/management/consultants/:consultantId/profile/full',
@@ -553,6 +574,16 @@ app.delete('/api/management/consultants/:consultantId/profile-skills/:skillId',
 app.get('/api/management/resume-settings', [verifyToken, isManagement], getResumeSettings);
 app.patch('/api/management/resume-settings',
     [verifyToken, isOrgAdmin, validate(resumeSettingsSchema)], updateResumeSettings);
+
+// Which model runs each AI task, and how. ORG_ADMIN only, read included: the
+// screen shows which providers have keys, which is not a recruiter's business.
+// Keys themselves never pass through here — see llmSettingsController.js.
+app.get('/api/management/llm-settings', [verifyToken, isOrgAdmin], getLlmSettings);
+app.put('/api/management/llm-settings/:stage',
+    [verifyToken, isOrgAdmin, validate(llmSettingsSchema)], updateLlmSettings);
+app.delete('/api/management/llm-settings/:stage', [verifyToken, isOrgAdmin], resetLlmSettings);
+app.post('/api/management/llm-settings/:stage/test',
+    [verifyToken, isOrgAdmin, validate(llmTestSchema)], testLlmSettings);
 
 /* ─────────────────────────── contacts ───────────────────────────── */
 //
@@ -671,6 +702,13 @@ app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
 // The consultant's own jobs. Same handler and same payload management gets —
 // the id is taken from the session, so there is nothing here to tamper with.
 app.get('/api/portal/jobs', [verifyToken, isConsultant], listConsultantJobs);
+// Tailoring is asked for, per job — see controllers/tailoringRequestController.js.
+// The consultant reaches only their own jobs; the management route checks the
+// consultant behind every item it is given.
+app.post('/api/portal/jobs/tailor',
+    [verifyToken, isConsultant, validate(tailorRequestSchema)], requestTailoring);
+app.post('/api/management/jobs/tailor',
+    [verifyToken, isManagement, validate(tailorRequestSchema)], requestTailoring);
 
 // The consultant's own view of a flagged resume. Same payload the reviewer
 // sees, minus the ability to approve it.
@@ -684,6 +722,10 @@ app.post('/api/portal/resume-reviews/:itemId/reject',
 app.get('/api/portal/applications/:id/contacts',
     [verifyToken, isConsultant], applicationContacts);
 app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
+// "Fill with resume": reads a file and returns values for the form. Saves nothing and
+// does not touch the base resume — see controllers/profilePrefillController.js.
+app.post('/api/portal/profile/prefill-from-resume',
+    [verifyToken, isConsultant], resumeUpload, prefillFromResume);
 app.post('/api/portal/profile/change-request',
     [verifyToken, isConsultant, validate(submitChangeSchema)], submitChangeRequest);
 app.delete('/api/portal/profile/change-request',

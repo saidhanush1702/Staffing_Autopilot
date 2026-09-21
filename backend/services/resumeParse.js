@@ -63,6 +63,63 @@ export const recordRun = async ({
 };
 
 /**
+ * Turn resume TEXT into the structured shape — one model call, validated, and
+ * written to the cost ledger. No file, no cache.
+ *
+ * Split out of getBaseDocument so a caller that only has text (the profile's
+ * "Fill with resume", which reads a file and keeps nothing) uses exactly the same
+ * prompt, schema, validation and ledger entry as the tailoring path. A second
+ * copy of the parse would be a second place for the two to drift apart.
+ *
+ * Never throws. Failures carry the same `reason` vocabulary as getBaseDocument.
+ *
+ * @returns {{ok: true, sections, provider, model}} | {{ok: false, reason, error, retryable}}
+ */
+export const parseResumeText = async ({ orgId, consultantId = null, text }) => {
+    const res = await callModel({
+        orgId,
+        stage: 'parse',
+        system: PARSE_SYSTEM,
+        input: `RESUME TEXT\n===========\n${text}`,
+        schema: RESUME_JSON_SCHEMA,
+        maxTokens: 16000,
+    });
+
+    await recordRun({
+        orgId,
+        consultantId,
+        stage: 'parse',
+        provider: res.provider,
+        model: res.model,
+        usage: res.usage ?? {},
+        costUsd: res.costUsd ?? null,
+        verdict: res.ok ? 'CLEAN' : 'FAILED',
+        durationMs: res.durationMs,
+        error: res.ok ? null : res.error,
+    });
+
+    if (!res.ok) {
+        return {
+            ok: false,
+            reason: res.retryable ? 'AI_FAILED' : 'LLM_NOT_CONFIGURED',
+            error: res.error,
+            retryable: res.retryable,
+        };
+    }
+
+    const validated = validateResume(res.json);
+    if (!validated.ok) {
+        return {
+            ok: false,
+            reason: 'AI_FAILED',
+            error: `The parsed resume did not match the expected shape: ${validated.error}`,
+            retryable: true,
+        };
+    }
+    return { ok: true, sections: validated.value, provider: res.provider, model: res.model };
+};
+
+/**
  * The structured form of a consultant's base resume, parsing it if needed.
  *
  * Never throws. Every failure carries a `reason` that maps directly onto
@@ -120,45 +177,9 @@ export const getBaseDocument = async ({ orgId, artifact, consultantId }) => {
     }
 
     // ── the model ──
-    const res = await callModel({
-        stage: 'parse',
-        system: PARSE_SYSTEM,
-        input: `RESUME TEXT\n===========\n${extracted.text}`,
-        schema: RESUME_JSON_SCHEMA,
-        maxTokens: 16000,
-    });
-
-    await recordRun({
-        orgId,
-        consultantId,
-        stage: 'parse',
-        provider: res.provider,
-        model: res.model,
-        usage: res.usage ?? {},
-        costUsd: res.costUsd ?? null,
-        verdict: res.ok ? 'CLEAN' : 'FAILED',
-        durationMs: res.durationMs,
-        error: res.ok ? null : res.error,
-    });
-
-    if (!res.ok) {
-        return {
-            ok: false,
-            reason: res.retryable ? 'AI_FAILED' : 'LLM_NOT_CONFIGURED',
-            error: res.error,
-            retryable: res.retryable,
-        };
-    }
-
-    const validated = validateResume(res.json);
-    if (!validated.ok) {
-        return {
-            ok: false,
-            reason: 'AI_FAILED',
-            error: `The parsed resume did not match the expected shape: ${validated.error}`,
-            retryable: true,
-        };
-    }
+    const parsed = await parseResumeText({ orgId, consultantId, text: extracted.text });
+    if (!parsed.ok) return parsed;
+    const validated = { ok: true, value: parsed.sections };
 
     // ── store ──
     const id = randomUUID();
@@ -174,7 +195,7 @@ export const getBaseDocument = async ({ orgId, artifact, consultantId }) => {
          ON CONFLICT (organization_id, sha256, parser_version) DO NOTHING`,
         [id, orgId, artifact.id, artifact.sha256,
             JSON.stringify(validated.value), extracted.text, SCHEMA_VERSION,
-            res.provider, res.model],
+            parsed.provider, parsed.model],
     );
 
     return {

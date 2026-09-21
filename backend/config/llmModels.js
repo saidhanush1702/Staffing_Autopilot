@@ -151,3 +151,101 @@ export const isStageConfigured = (stage) => {
  * strength of a match alone — see controllers/questionSuggestionController.js.
  */
 export const STAGES = ['parse', 'tailor', 'check', 'agent', 'match'];
+
+/* ── what the settings screen needs to know ────────────────────────── */
+
+/**
+ * The five AI tasks, in the words an administrator would use.
+ *
+ * `defaultMaxTokens` is the ceiling the code itself asks for. It is shown as the
+ * placeholder on the settings screen so "leave blank" has a visible meaning.
+ * `suggestedTemperature` is advice, never a default: nothing is sent to a model
+ * unless an administrator sets it.
+ */
+export const STAGE_INFO = {
+    parse: {
+        label: 'Resume reading',
+        description: 'Reads an uploaded resume and splits it into sections. Runs once per '
+            + 'resume file. It has to copy text exactly, so accuracy matters more than style.',
+        defaultMaxTokens: 16000,
+        suggestedTemperature: 0,
+    },
+    tailor: {
+        label: 'Resume tailoring',
+        description: 'Rewrites the resume for one specific job. The quality-critical step and '
+            + 'the main cost. A little variation in wording is fine; invented facts are not.',
+        defaultMaxTokens: 16000,
+        suggestedTemperature: 0.3,
+    },
+    check: {
+        label: 'Fabrication check',
+        description: 'A second, independent model compares the original resume with the tailored '
+            + 'one and flags anything invented. A comparison task, so a small model works well.',
+        defaultMaxTokens: 4000,
+        suggestedTemperature: 0,
+    },
+    agent: {
+        label: 'Form-filling agent',
+        description: 'Used on application pages no recipe recognises. Called once per page to '
+            + 'choose a single action. Many small calls, so speed and price matter most.',
+        defaultMaxTokens: 1024,
+        suggestedTemperature: 0,
+    },
+    match: {
+        label: 'Answer matching',
+        description: 'When a form words a question differently from an approved answer, proposes '
+            + 'which answer it really means. The consultant confirms; nothing is typed on its word alone.',
+        defaultMaxTokens: 1024,
+        suggestedTemperature: 0,
+    },
+};
+
+/**
+ * The providers an administrator can pick, and where each one's key lives.
+ *
+ * Keys stay in the server environment and never reach the browser; the screen
+ * only learns whether one is present. DeepSeek and Qwen speak the OpenAI dialect,
+ * so they share that adapter's key and base URL.
+ */
+export const PROVIDER_INFO = {
+    anthropic: { label: 'Anthropic (Claude)', keyEnv: 'ANTHROPIC_API_KEY', maxTemperature: 1 },
+    gemini: { label: 'Google (Gemini)', keyEnv: 'GEMINI_API_KEY', maxTemperature: 2 },
+    openai: { label: 'OpenAI', keyEnv: 'LLM_OPENAI_API_KEY', maxTemperature: 2 },
+    deepseek: {
+        label: 'DeepSeek', keyEnv: 'LLM_OPENAI_API_KEY (+ LLM_OPENAI_BASE_URL)', maxTemperature: 2,
+    },
+    qwen: {
+        label: 'Qwen', keyEnv: 'LLM_OPENAI_API_KEY (+ LLM_OPENAI_BASE_URL)', maxTemperature: 2,
+    },
+};
+
+/** Models the price table knows, grouped for a picker. */
+export const knownModels = () => Object.entries(PRICING)
+    .filter(([key]) => !key.startsWith('mock:'))
+    .map(([key, p]) => {
+        const [provider, ...rest] = key.split(':');
+        return { provider, model: rest.join(':'), inPrice: p.in, cachedPrice: p.cachedIn, outPrice: p.out };
+    });
+
+/**
+ * The fallback a stage uses when nothing has been chosen for it.
+ *
+ * Explicit environment wins (LLM_<STAGE>_FALLBACK_* then LLM_FALLBACK_*). With
+ * none set, Claude Haiku 4.5 is the default — but only once an Anthropic key
+ * exists, because a fallback that can never authenticate is not a fallback, just
+ * a second failure to report. Returns null for "no fallback".
+ */
+export const DEFAULT_FALLBACK = { provider: 'anthropic', model: 'claude-haiku-4-5' };
+
+export const envFallback = (stage, primary = {}) => {
+    const upper = String(stage).toUpperCase();
+    const provider = env(`LLM_${upper}_FALLBACK_PROVIDER`, env('LLM_FALLBACK_PROVIDER')).toLowerCase();
+    const model = env(`LLM_${upper}_FALLBACK_MODEL`, env('LLM_FALLBACK_MODEL'));
+    if (provider && model) return { provider, model };
+
+    if (env('ANTHROPIC_API_KEY')
+        && !(primary.provider === DEFAULT_FALLBACK.provider && primary.model === DEFAULT_FALLBACK.model)) {
+        return { ...DEFAULT_FALLBACK };
+    }
+    return null;
+};

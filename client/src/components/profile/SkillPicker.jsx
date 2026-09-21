@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Plus, X, Loader2, Search } from 'lucide-react';
-import api, { errorMessage } from '../../api/axios.js';
+import { Plus, X, Search } from 'lucide-react';
+import api from '../../api/axios.js';
 import { input, btnSm } from '../../design/tokens.js';
 
 /**
@@ -17,7 +17,21 @@ import { input, btnSm } from '../../design/tokens.js';
  * vocabulary, and picking one is what keeps a consultant's claim and an
  * employer's requirement the same string. Typing something genuinely new is
  * still allowed — the server checks aliases first, so "k8s" joins the
- * existing Kubernetes rather than founding a rival entry.
+ * existing Kubernetes rather than founding a rival entry — but that
+ * resolution happens on the SERVER, at submit time (services/careerApproval.js),
+ * not here. This component never calls the API to add or remove a skill; it
+ * only asks the vocabulary for SUGGESTIONS while typing. `onAdd`/`onRemove`
+ * mutate the parent's local draft, and nothing is persisted until the whole
+ * profile is submitted for approval.
+ *
+ * ── WHY EVERY SKILL NEEDS A `key` ──────────────────────────────────────
+ *
+ * A skill picked from the list has a server `skillId`. One typed fresh does
+ * not — resolving "Zorblang" to a real lkp_skills row only happens on
+ * submit — so there is no server id to build a React key or a remove-target
+ * from until then. The parent is expected to stamp a stable local `key` on
+ * every entry it keeps (see MyProfile.jsx), and this component addresses
+ * skills by that key alone, never by `skillId`.
  *
  * Suggestions are ordered by how often each skill appears in the job postings
  * the system has actually ingested, so what a consultant is offered reflects
@@ -27,12 +41,17 @@ const SkillPicker = ({ skills = [], onAdd, onRemove, disabled = false }) => {
     const [term, setTerm] = useState('');
     const [options, setOptions] = useState([]);
     const [open, setOpen] = useState(false);
-    const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [highlight, setHighlight] = useState(0);
     const boxRef = useRef(null);
 
-    const claimed = new Set(skills.map((s) => s.skill_id ?? s.id));
+    // Two different identities, both needed: skillId dedupes against
+    // SUGGESTIONS (which are always server rows), name dedupes against
+    // another typed-but-unresolved entry that happens to read the same.
+    const claimedIds = new Set(skills.map((s) => s.skillId).filter(Boolean));
+    const claimedNames = new Set(
+        skills.map((s) => (s.name ?? '').trim().toLowerCase()).filter(Boolean),
+    );
 
     /* ── suggestions ──────────────────────────────────────────────── */
 
@@ -67,29 +86,28 @@ const SkillPicker = ({ skills = [], onAdd, onRemove, disabled = false }) => {
         return () => document.removeEventListener('mousedown', onClick);
     }, []);
 
-    const add = async (option) => {
+    const add = (option) => {
         const name = option?.name ?? term.trim();
-        if (!name || busy) return;
-
-        setBusy(true);
-        setError('');
-        try {
-            // An id when it came from the list, a name when it was typed. The
-            // server resolves the second through the alias table.
-            await onAdd(option?.id ? { skillId: option.id } : { name });
-            setTerm('');
-            setOptions([]);
-            setOpen(false);
-        } catch (err) {
-            setError(errorMessage(err));
-        } finally {
-            setBusy(false);
+        if (!name) return;
+        if (claimedNames.has(name.trim().toLowerCase())) {
+            setError(`"${name}" is already on the list.`);
+            return;
         }
+
+        setError('');
+        // An id when it came from the list, a name (and nothing else) when it
+        // was typed — the parent stores exactly this shape in its draft, and
+        // it is exactly the shape services/careerApproval.js expects at
+        // submit time, so nothing translates it in between.
+        onAdd(option?.id ? { skillId: option.id, name: option.name } : { name });
+        setTerm('');
+        setOptions([]);
+        setOpen(false);
     };
 
     const onKeyDown = (e) => {
         if (!open) return;
-        const usable = options.filter((o) => !claimed.has(o.id));
+        const usable = options.filter((o) => !claimedIds.has(o.id));
 
         if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -107,7 +125,7 @@ const SkillPicker = ({ skills = [], onAdd, onRemove, disabled = false }) => {
         }
     };
 
-    const suggestions = options.filter((o) => !claimed.has(o.id));
+    const suggestions = options.filter((o) => !claimedIds.has(o.id));
 
     return (
         <div className="space-y-3">
@@ -120,15 +138,21 @@ const SkillPicker = ({ skills = [], onAdd, onRemove, disabled = false }) => {
                 )}
                 {skills.map((s) => (
                     <span
-                        key={s.skill_id ?? s.id}
+                        key={s.key}
                         className="inline-flex items-center gap-1.5 rounded-full border border-line
                                    bg-surface-2 px-3 py-1 text-sm"
                     >
                         {s.name}
+                        {/* A skill typed fresh has no server id yet — flagged
+                            rather than hidden, so the consultant knows it will
+                            be checked against the vocabulary on submit. */}
+                        {!s.skillId && (
+                            <span className="text-[10px] uppercase tracking-wide text-muted">new</span>
+                        )}
                         {!disabled && (
                             <button
                                 type="button"
-                                onClick={() => onRemove(s.skill_id ?? s.id)}
+                                onClick={() => onRemove(s.key)}
                                 className="rounded-full p-0.5 text-muted hover:text-danger-600"
                                 aria-label={`Remove ${s.name}`}
                             >
@@ -156,10 +180,6 @@ const SkillPicker = ({ skills = [], onAdd, onRemove, disabled = false }) => {
                             aria-autocomplete="list"
                             aria-expanded={open}
                         />
-                        {busy && (
-                            <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2
-                                                animate-spin text-muted" />
-                        )}
                     </div>
 
                     {open && (suggestions.length > 0 || term.trim()) && (

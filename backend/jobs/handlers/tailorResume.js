@@ -48,7 +48,7 @@ import { query, withTransaction } from '../../db.js';
 import { checkTransition } from '../../config/queueStates.js';
 import { scoreResume, postingText } from '../../config/atsScore.js';
 import { flattenResumeText } from '../../config/resumeSchema.js';
-import { spendThisPeriod, isAvailable, unavailableReason } from '../../connectors/llm/index.js';
+import { spendThisPeriod, stageStatus } from '../../connectors/llm/index.js';
 import { getBaseDocument, recordRun } from '../../services/resumeParse.js';
 import { tailorResume } from '../../services/resumeTailor.js';
 import { checkFabrication } from '../../services/fabricationCheck.js';
@@ -201,8 +201,9 @@ export const handle = async (job) => {
 
     /* ── 4 · is the feature even switched on, and is there budget ──── */
 
-    if (!isAvailable('tailor')) {
-        return finishUntailored('LLM_NOT_CONFIGURED', unavailableReason('tailor'));
+    const tailorStatus = await stageStatus(orgId, 'tailor');
+    if (!tailorStatus.available) {
+        return finishUntailored('LLM_NOT_CONFIGURED', tailorStatus.reason);
     }
 
     const budget = await spendThisPeriod(orgId);
@@ -292,7 +293,7 @@ export const handle = async (job) => {
 
     /* ── 8 · tailor ────────────────────────────────────────────────── */
 
-    const tailored = await tailorResume({ baseSections, posting: item, template });
+    const tailored = await tailorResume({ baseSections, posting: item, template, orgId });
 
     await recordRun({
         orgId,
@@ -321,6 +322,7 @@ export const handle = async (job) => {
     /* ── 9 · the independent check ─────────────────────────────────── */
 
     const check = await checkFabrication({
+        orgId,
         baseText,
         tailoredResume: tailored.resume,
         structural: tailored.structural,

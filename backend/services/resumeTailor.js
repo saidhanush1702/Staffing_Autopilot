@@ -42,8 +42,11 @@ ${JSON.stringify(sections, null, 2)}`;
  * @returns {{ok: true, resume, structural, provider, model, usage, costUsd, durationMs}}
  *        | {{ok: false, error, retryable, provider, model, usage, costUsd}}
  */
-export const tailorResume = async ({ baseSections, posting, template = null }) => {
+export const tailorResume = async ({
+    baseSections, posting, template = null, orgId = null,
+}) => {
     const res = await callModel({
+        orgId,
         stage: 'tailor',
         system: TAILOR_SYSTEM,
         // The template description rides with the base resume in the CACHEABLE

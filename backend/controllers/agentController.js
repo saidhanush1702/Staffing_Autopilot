@@ -27,9 +27,8 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db.js';
 import {
-    callModel, isAvailable, unavailableReason, spendThisPeriod,
+    callModel, stageStatus, spendThisPeriod,
 } from '../connectors/llm/index.js';
-import { stageConfig } from '../config/llmModels.js';
 import {
     AGENT_ACTION_SCHEMA, AGENT_SYSTEM_PROMPT, AGENT_PROMPT_VERSION, AGENT_MODES,
     buildCatalogue, buildTurnInput, validateAction,
@@ -165,8 +164,9 @@ export const agentStart = async (req, res, next) => {
         if (settings.agent_mode === 'OFF') {
             return res.json({ ok: false, reason: 'The AI agent is switched off for this organisation.' });
         }
-        if (!isAvailable('agent')) {
-            return res.json({ ok: false, reason: unavailableReason('agent') });
+        const agentStatus = await stageStatus(orgId, 'agent');
+        if (!agentStatus.available) {
+            return res.json({ ok: false, reason: agentStatus.reason });
         }
 
         const budget = await spendThisPeriod(orgId);
@@ -245,6 +245,7 @@ export const agentStep = async (req, res, next) => {
         });
 
         const ask = () => callModel({
+            orgId: req.device.orgId,
             stage: 'agent',
             system: AGENT_SYSTEM_PROMPT,
             cacheable: catalogue.text,
@@ -344,13 +345,14 @@ export const agentFinish = async (req, res, next) => {
 export const getAgentSettings = async (req, res, next) => {
     try {
         const s = await orgAgentSettings(req.user.orgId);
-        const { provider, model } = stageConfig('agent');
+        const status = await stageStatus(req.user.orgId, 'agent');
+        const { provider, model } = status.config;
         return res.json({
             mode: s.agent_mode,
             jobCapUsd: s.job_cap,
             maxModelCalls: s.max_calls,
-            available: isAvailable('agent'),
-            unavailableReason: unavailableReason('agent'),
+            available: status.available,
+            unavailableReason: status.reason,
             provider,
             model,
         });

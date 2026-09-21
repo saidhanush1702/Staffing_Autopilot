@@ -98,8 +98,18 @@ const EMBED_BROWSER = process.env.SMARTAPPLY_BROWSER === 'embedded';
 /** The port Electron opens so Playwright can drive its own views. */
 const CDP_PORT = Number(process.env.SMARTAPPLY_CDP_PORT ?? 9223);
 
-/** Human-paced typing (R-19). Per character, with jitter on top. */
-const TYPING = { minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400] };
+/**
+ * Human-paced typing (R-19). Per character, with jitter on top.
+ *
+ * Trimmed from the original {minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400]}
+ * — the field-to-field pace was landing well over 2s per field once a real
+ * field's character count was factored in (a 40-character address alone cost
+ * up to 5.6s at the old maxMs), and consultants watching the run felt it. Still
+ * randomised and still per-keystroke rather than instant, which is what R-19
+ * actually requires — just picking from a tighter, still-human range rather
+ * than a leisurely one.
+ */
+const TYPING = { minMs: 15, maxMs: 40, betweenFieldsMs: [150, 500] };
 
 module.exports = {
     HUB_URL,

@@ -96,6 +96,21 @@ const TailoringBadge = ({ state, reason, status = null, className = '' }) => {
     // the honest rendering of that is nothing at all.
     if (state === 'PENDING' && status !== null && status !== 'PREPARING') return null;
 
+    // Nothing went wrong and nothing was skipped: tailoring is something a
+    // person asks for, and nobody has asked for this job. Calling that "Not
+    // tailored — reason" reads like a fault; "Base resume" reads like a state.
+    if (state === 'NOT_TAILORED' && reason === 'NOT_REQUESTED') {
+        return (
+            <span
+                className={`${badge} ${TONE.neutral} ${className}`}
+                title="Ready with the consultant's base resume. Select this job to have a resume tailored for it."
+            >
+                <MinusCircle className="h-3 w-3 shrink-0" />
+                Base resume
+            </span>
+        );
+    }
+
     const { tone, icon: Icon, label, title } = spec;
     const explained = state === 'NOT_TAILORED' && SKIP_REASONS[reason];
 

@@ -21,13 +21,19 @@
  *
  * ── THE PIPELINE ──────────────────────────────────────────────────────
  *
- *   QUEUED ──► PREPARING ──► READY ──► FILLING ──► AWAITING_REVIEW ──► SUBMITTED
- *      │           │  │        ▲          │               │
- *      │           │  ▼        │          └──► PARKED_UNKNOWN
- *      │           │ RESUME_REVIEW ──┘                │
- *      │           └───────────┘                     ─┘  (answer approved)
- *      │        (retry / release)
+ *   QUEUED ──► READY ──► FILLING ──► AWAITING_REVIEW ──► SUBMITTED
+ *      │          │ ▲          │               │
+ *      │          │ │          └──► PARKED_UNKNOWN
+ *      │          ▼ │                          │
+ *      │      PREPARING ──► RESUME_REVIEW      ─┘  (answer approved)
+ *      │      (tailoring, on request)
  *      └──► SKIPPED ──► QUEUED        CANCELLED reachable from anywhere live
+ *
+ * TAILORING IS ASKED FOR, NOT AUTOMATIC. A found job goes QUEUED ──► READY
+ * carrying the base resume, and the desktop app may apply to it at once. If a
+ * person selects the job for tailoring while it is still READY, it steps back
+ * READY ──► PREPARING (invisible to the desktop app while it works), then
+ * returns to READY with the tailored resume — or to RESUME_REVIEW.
  *
  * RESUME_REVIEW is the AI stage's human gate. The fabrication check found a
  * claim it could not trace back to the base resume, so the item waits on a
@@ -63,7 +69,9 @@ const CANCELLABLE = ['QUEUED', 'PREPARING', 'RESUME_REVIEW', 'READY', 'FILLING',
     'PARKED_UNKNOWN', 'AWAITING_REVIEW', 'SKIPPED'];
 
 const TRANSITIONS = {
-    QUEUED: ['PREPARING', 'SKIPPED'],
+    // Straight to READY is the normal path now: nothing is tailored unless a
+    // person asks. PREPARING from here remains legal for the retry sweeps.
+    QUEUED: ['READY', 'PREPARING', 'SKIPPED'],
 
     // Back to QUEUED is the retry path: preparation failed, try again next
     // sweep. Straight to READY is the fallback after too many failures — the
@@ -84,7 +92,12 @@ const TRANSITIONS = {
     // FILLING is the desktop app taking it. SUBMITTED direct from READY is the
     // HUMAN lane: nothing filled the form, the consultant applied themselves
     // and reported it.
-    READY: ['FILLING', 'SUBMITTED', 'SKIPPED'],
+    //
+    // PREPARING is a person asking for this job's resume to be tailored. It is
+    // only reachable while the item is READY — once the desktop app has taken
+    // it (FILLING) the application is already in progress with whichever
+    // resume it was given.
+    READY: ['FILLING', 'SUBMITTED', 'SKIPPED', 'PREPARING'],
 
     // Back to READY covers two real cases: an expired lease from a crashed app,
     // and a LinkedIn job that turned out not to be Easy Apply and was

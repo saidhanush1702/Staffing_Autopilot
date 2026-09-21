@@ -17,6 +17,7 @@ import {
 import { canAccessConsultant } from '../utils/scope.js';
 import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction, describeChanges } from './auditLogController.js';
+import { loadLiveCareer, diffCareer } from '../services/careerApproval.js';
 
 // Every profile field, rules taken from the registry. Hand-written duplicates
 // used to live here and had already drifted — phone accepted 30 characters of
@@ -214,8 +215,31 @@ export const adminUpdateProfile = async (req, res, next) => {
 };
 
 /**
- * GET /api/portal/profile — the consultant's own live profile.
- * Includes their pending request, if any, so the UI can lock the form.
+ * The career snapshot attached to a request, with its NULL-vs-absent
+ * columns collapsed into a plain object — same shape whichever caller reads
+ * it, so the consultant-facing view and the reviewer-facing view in
+ * profileChangeController.js can never quietly drift apart.
+ */
+const careerSnapshotOf = async (requestId) => {
+    const { rows } = await query(
+        'SELECT * FROM profile_change_request_career WHERE change_request_id = $1',
+        [requestId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    const cols = ['skills', 'education', 'experience', 'projects', 'certifications'];
+    const out = {};
+    for (const c of cols) if (row[c] !== null && row[c] !== undefined) out[c] = row[c];
+    return Object.keys(out).length ? out : null;
+};
+
+/**
+ * GET /api/portal/profile — the consultant's own live profile, plus their
+ * career record and whatever is pending on either half.
+ *
+ * Includes their pending request, if any, so the UI can lock the whole form —
+ * identity fields and career sections together, one lock, as the merged page
+ * requires.
  */
 export const myProfile = async (req, res, next) => {
     try {
@@ -234,37 +258,52 @@ export const myProfile = async (req, res, next) => {
             [req.user.id],
         );
 
+        // LEFT JOIN, not INNER: a request that only touched the career record
+        // has no rows in profile_change_request_fields at all, and an INNER
+        // JOIN here made it invisible to the very consultant who submitted
+        // it — the form would show as unlocked and editable while a request
+        // sat PENDING underneath it, which is exactly backwards.
         const { rows: pending } = await query(
             `SELECT c.id, c.submitted_at, c.status,
-                    json_agg(json_build_object(
+                    COALESCE(json_agg(json_build_object(
                         'field_name', f.field_name,
                         'new_display', f.new_display,
                         'status', f.status,
                         'review_note', f.review_note
-                    ) ORDER BY f.field_name) AS fields
+                    ) ORDER BY f.field_name) FILTER (WHERE f.id IS NOT NULL), '[]') AS fields
                FROM profile_change_requests c
-               JOIN profile_change_request_fields f ON f.change_request_id = c.id
+          LEFT JOIN profile_change_request_fields f ON f.change_request_id = c.id
               WHERE c.consultant_id = $1 AND c.status = 'PENDING'
               GROUP BY c.id`,
             [req.user.id],
         );
+        if (pending[0]) {
+            pending[0].career = await careerSnapshotOf(pending[0].id);
+            // Nothing has moved live yet, so a diff against the current
+            // record is exactly right — this is the same summary the
+            // reviewer sees on their queue (profileChangeController.js), so
+            // a consultant never finds out what they submitted from a
+            // different, disagreeing description of it.
+            if (pending[0].career) {
+                const live = await loadLiveCareer(req.user.id);
+                pending[0].careerSummary = diffCareer(live, pending[0].career).summary;
+            }
+        }
 
         // The most recent reviewed request, so the consultant sees the outcome
         // and — importantly — WHO decided it and in what role.
         const { rows: lastReviewed } = await query(
             `SELECT c.id, c.status, c.reviewed_at, c.review_note,
                     rev.name AS reviewed_by_name, rev.role AS reviewed_by_role,
-                    COUNT(f.id) FILTER (WHERE f.status = 'APPROVED')::int AS approved_count,
-                    COUNT(f.id) FILTER (WHERE f.status = 'REJECTED')::int AS rejected_count,
-                    json_agg(json_build_object(
+                    COALESCE(json_agg(json_build_object(
                         'field_name', f.field_name,
                         'old_display', f.old_display,
                         'new_display', f.new_display,
                         'status', f.status,
                         'review_note', f.review_note
-                    ) ORDER BY f.field_name) AS fields
+                    ) ORDER BY f.field_name) FILTER (WHERE f.id IS NOT NULL), '[]') AS fields
                FROM profile_change_requests c
-               JOIN profile_change_request_fields f ON f.change_request_id = c.id
+          LEFT JOIN profile_change_request_fields f ON f.change_request_id = c.id
           LEFT JOIN users rev ON rev.id = c.reviewed_by
               WHERE c.consultant_id = $1 AND c.status NOT IN ('PENDING', 'WITHDRAWN')
               GROUP BY c.id, rev.name, rev.role
@@ -272,6 +311,7 @@ export const myProfile = async (req, res, next) => {
               LIMIT 1`,
             [req.user.id],
         );
+        if (lastReviewed[0]) lastReviewed[0].career = await careerSnapshotOf(lastReviewed[0].id);
 
         return res.json({
             profile,

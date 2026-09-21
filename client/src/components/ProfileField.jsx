@@ -1,4 +1,6 @@
-import { Upload, FileText, Loader2 } from 'lucide-react';
+import {
+    Upload, FileText, Loader2, CheckCircle2, AlertCircle,
+} from 'lucide-react';
 import { useState } from 'react';
 import api, { errorMessage } from '../api/axios.js';
 import { input, btnSm } from '../design/tokens.js';
@@ -8,8 +10,14 @@ import { input, btnSm } from '../design/tokens.js';
  *
  * Adding a new field to backend/config/profileFields.js makes it appear here
  * automatically — nothing in this component needs to change.
+ *
+ * `filled` drives the small tick/exclamation mark beside the label — the same
+ * per-field signal the Profile strength popover summarises, repeated here so
+ * it reads right where you are typing rather than only in a summary elsewhere.
  */
-const ProfileField = ({ name, field, value, onChange, lookups, disabled, currentFileName }) => {
+const ProfileField = ({
+    name, field, value, onChange, lookups, disabled, currentFileName, filled = false,
+}) => {
     const [uploading, setUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
     const [uploadedName, setUploadedName] = useState('');
@@ -37,9 +45,14 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
     };
 
     const label = (
-        <span className="text-sm font-medium text-slate-700">
-            {field.label}
-            {field.required && <span className="ml-1 text-danger-500">*</span>}
+        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700">
+            <span>
+                {field.label}
+                {field.required && <span className="ml-1 text-danger-500">*</span>}
+            </span>
+            {filled
+                ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success-600" aria-label="Filled in" />
+                : <AlertCircle className="h-3.5 w-3.5 shrink-0 text-warning-500" aria-label="Not filled in" />}
         </span>
     );
 

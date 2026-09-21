@@ -57,8 +57,6 @@ import {
     clampCycleHours, runsPerDay, MIN_CYCLE_HOURS, MAX_CYCLE_HOURS,
 } from '../config/discoverySchedule.js';
 import { logAction } from './auditLogController.js';
-import { enqueueOnce } from '../jobs/worker.js';
-import { KIND as TAILOR_KIND } from '../jobs/handlers/tailorResume.js';
 
 /**
  * Share of the monthly budget scheduled runs may not touch.
@@ -438,42 +436,65 @@ export const upsertPosting = async (client, {
     return { id: postingId, isNew };
 };
 
-/* ── the readiness gate, where the daily cap is spent ─────────────────── */
+/* ── the readiness gate ───────────────────────────────────────────────── */
 
 /**
- * Promote QUEUED items to READY, up to each consultant's daily cap.
+ * Release QUEUED items to READY.
  *
- * ── WHY THE CAP LIVES HERE AND NOT AT QUEUE CREATION ──────────────────
+ * ── TAILORING IS NO LONGER PART OF THIS STEP ──────────────────────────
  *
- * A slot is spent when an item becomes genuinely available to apply to. The
- * discovery cycle creates items before anything has prepared them, so counting
- * at creation would let a failed preparation consume a consultant's whole day
- * without a single application going out.
+ * This used to send every waiting item through the AI stage — parse, tailor,
+ * fabrication check, render — before it could be READY. It does not any more.
+ * A found job goes straight to READY carrying the consultant's base resume,
+ * marked NOT_REQUESTED, and the desktop app (BOT / AGENT lane) or the
+ * consultant (HUMAN lane) can act on it immediately.
  *
- * ── WHERE THE AI STAGE SITS ───────────────────────────────────────────
+ * Tailoring is something a person asks for, job by job, from the consultant's
+ * job list (see controllers/tailoringRequestController.js). Only those jobs
+ * step back to PREPARING, get a tailored resume, and return to READY. That is
+ * the whole point of the change: an agency's spend now follows the jobs
+ * somebody decided were worth it, not every job the matcher happened to find.
  *
- * Exactly here, between QUEUED and READY — and as of Phase 7 it is real. This
- * function no longer marks anything READY itself. It moves waiting items to
- * PREPARING and queues one background job each; the worker parses the base
- * resume, tailors it against the job description, checks the result for
- * fabrication, renders the PDF, and only then moves the item to READY — or to
- * RESUME_REVIEW, when a claim needs a person to look at it first.
+ * The four-hour discovery cycle still never calls a model. Nothing on this path
+ * does.
  *
- * The four-hour discovery cycle still never calls a model. It queues work and
- * returns; every paid call happens on the worker, outside this cycle, where a
- * slow provider cannot hold up discovery.
+ * ── WHY THE FUNCTION IS STILL CALLED promoteToReady ───────────────────
  *
- * NOTHING IS LOST IF THE WORKER IS OFF. An item left at PREPARING is swept back
- * to QUEUED by expireUnprepared() after the organisation's
- * unprepared_expiry_hours, so a deployment that never switched the worker on
- * accumulates queued work rather than losing it.
- *
- * ── "TODAY" IS THE AGENCY'S DAY ───────────────────────────────────────
- *
- * Counted in the organisation's own timezone, not the server's. Staffing
- * benches are frequently offshore, and a cap that resets at 17:00 local is not
- * a daily cap.
+ * It still promotes QUEUED items to READY, and the discovery run record, the
+ * JobsPipe listener and the maintenance sweep all call it by this name.
  */
+
+/**
+ * One item, QUEUED → READY, in the caller's transaction.
+ *
+ * Shared with the manual link so a hand-linked job takes exactly the same road
+ * as a discovered one. Returns false when the item was no longer QUEUED —
+ * somebody moved it first, which is not ours to undo.
+ */
+export const releaseItemToReady = async (client, { orgId, itemId, statusId }) => {
+    const { rowCount } = await client.query(
+        `UPDATE queue_items
+            SET status_id = $2,
+                tailoring_state = 'NOT_TAILORED',
+                tailoring_skip_reason = 'NOT_REQUESTED',
+                preparation_error = NULL,
+                prepared_at = now(),
+                became_ready_at = now()
+          WHERE id = $1 AND status_id = $3`,
+        [itemId, statusId.READY, statusId.QUEUED],
+    );
+    if (rowCount === 0) return false;
+
+    await client.query(
+        `INSERT INTO queue_item_transitions
+            (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [uuidv4(), orgId, itemId, statusId.QUEUED, statusId.READY,
+            'Ready with the base resume — resume tailoring is chosen per job'],
+    );
+    return true;
+};
+
 export const promoteToReady = async (orgId) => {
     const { rows: statuses } = await query('SELECT id, name FROM lkp_queue_statuses');
     const statusId = Object.fromEntries(statuses.map((r) => [r.name, r.id]));
@@ -510,48 +531,14 @@ export const promoteToReady = async (orgId) => {
         );
 
         for (const row of waiting) {
-            // The move and the job are written in ONE transaction on purpose.
-            // An item at PREPARING with no job queued for it is invisible work
-            // that sits there until a sweep eventually returns it; a job queued
-            // for an item that never moved would be picked up, find the item
-            // still QUEUED, and decline to touch it. Neither half is any use
-            // without the other.
-            await withTransaction(async (client) => {
-                const { rowCount } = await client.query(
-                    `UPDATE queue_items
-                        SET status_id = $2, tailoring_state = 'PENDING',
-                            tailoring_skip_reason = NULL, preparation_error = NULL
-                      WHERE id = $1 AND status_id = $3`,
-                    [row.id, statusId.PREPARING, statusId.QUEUED],
-                );
-                // Somebody moved it between the SELECT and here. Not an error —
-                // just not ours to prepare.
-                if (rowCount === 0) return;
-
-                await client.query(
-                    `INSERT INTO queue_item_transitions
-                        (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
-                     VALUES ($1,$2,$3,$4,$5,$6)`,
-                    [uuidv4(), orgId, row.id, statusId.QUEUED, statusId.PREPARING,
-                        'Queued for resume tailoring'],
-                );
-
-                await enqueueOnce({
-                    orgId,
-                    kind: TAILOR_KIND,
-                    payload: { queueItemId: row.id },
-                    dedupeOn: 'queueItemId',
-                }, client);
-
-                promoted += 1;
-            });
+            const released = await withTransaction((client) => releaseItemToReady(client, {
+                orgId, itemId: row.id, statusId,
+            }));
+            if (released) promoted += 1;
         }
     }
 
-    // `promoted` now counts items sent INTO preparation rather than items made
-    // ready. The name is kept because the discovery run record and the
-    // maintenance sweep both read it, and the quantity it measures — work
-    // released on this pass — is the same one either way.
+    // `promoted` counts items released to READY on this pass.
     //
     // heldByCap is always 0, and has been since the daily cap was removed. It
     // stays because callers read it, and a field that exists and is always zero

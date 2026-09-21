@@ -8,7 +8,7 @@ import Pagination from '../../components/Pagination.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
-import { card, cardPad, inputBase, fieldLabel, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
 
 const FILTERS = [
     { key: 'PENDING', label: 'Awaiting review' },
@@ -184,7 +184,6 @@ const AnswerInbox = () => {
 
     return (
         <div>
-            <h1 className={pageTitle}>Answer approvals</h1>
             <p className={pageSubtitle}>
                 Answers become usable on job applications only once approved. Salary and
                 work-authorization answers are decided by an organization admin.

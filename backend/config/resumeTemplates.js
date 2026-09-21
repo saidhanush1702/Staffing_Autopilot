@@ -17,14 +17,28 @@
  * the content itself costs. Here the layout is code: it is identical on every
  * run, and the model cannot break it because it never sees it.
  *
- * ── WHY ALL THREE ARE SINGLE-COLUMN ───────────────────────────────────
+ * ── HOW THE THREE ACTUALLY DIFFER ─────────────────────────────────────
  *
- * Because every one of them has to survive an applicant tracking system, and
- * two columns are the single most reliable way to make a resume unreadable to
- * one — the parser reads across, so a sidebar's first line lands in the middle
- * of the first body line and both become nonsense. The templates differ in
- * ORDER and EMPHASIS, which is what actually changes how a resume reads, and
- * not in devices that would cost the consultant an interview.
+ *                 CLASSIC          TECHNICAL         ENTRY_LEVEL
+ *   name          centred          left              centred, larger
+ *   header rule   full width       thin              none — space instead
+ *   headings      hairline under   accent dash       shaded strip
+ *   density       roomy            tight             open
+ *   leads with    experience       skills, projects  education, projects
+ *
+ * ── WHY ALL THREE ARE STILL SINGLE-COLUMN ─────────────────────────────
+ *
+ * Because every one has to survive an applicant tracking system, and two
+ * columns are the single most reliable way to make a resume unreadable to one
+ * — the parser reads across, so a sidebar's first line lands in the middle of
+ * the first body line and both become nonsense.
+ *
+ * Everything in the table above is safe under that constraint: a rule is a
+ * drawn line, a shaded strip is a drawn rectangle with real text on top, and
+ * alignment is alignment. A parser pulls identical words out of all three. The
+ * devices that would make them look MORE different — sidebars, tables, icons,
+ * text boxes — are exactly the devices that would cost the consultant the
+ * interview, so they are not on the table at any price.
  */
 
 export const DEFAULT_TEMPLATE = 'CLASSIC';
@@ -61,7 +75,14 @@ export const TEMPLATES = {
             headingSize: 11,
             bodySize: 10,
             nameSize: 18,
-            accentRule: true,
+            // The conventional resume: name over the middle, a firm rule under
+            // it, and a hairline under every heading.
+            headerAlign: 'center',
+            headerRule: true,
+            headerRuleWidth: 1,
+            headingStyle: 'rule',
+            headingGap: 0.6,
+            afterHeadingGap: 0.5,
         },
     },
 
@@ -82,10 +103,18 @@ export const TEMPLATES = {
         maxBulletsPerRole: 5,
         maxProjects: 5,
         style: {
-            headingSize: 11,
+            headingSize: 10.5,
             bodySize: 9.5,
             nameSize: 17,
-            accentRule: true,
+            // Set left and run tight. No full-width rules anywhere — each
+            // heading gets a short accent dash instead, which reads as denser
+            // and buys back the space a skills-and-projects resume needs.
+            headerAlign: 'left',
+            headerRule: true,
+            headerRuleWidth: 0.5,
+            headingStyle: 'plain',
+            headingGap: 0.45,
+            afterHeadingGap: 0.35,
         },
     },
 
@@ -111,8 +140,16 @@ export const TEMPLATES = {
         style: {
             headingSize: 11,
             bodySize: 10,
-            nameSize: 18,
-            accentRule: true,
+            nameSize: 20,
+            // A bigger name and no rule under it — a graduate's page has less
+            // on it, so the whitespace is doing the separating. Headings sit in
+            // a shaded strip, which gives an otherwise sparse page some
+            // structure without adding anything a parser cannot read.
+            headerAlign: 'center',
+            headerRule: false,
+            headingStyle: 'band',
+            headingGap: 0.75,
+            afterHeadingGap: 0.55,
         },
     },
 };
@@ -129,6 +166,17 @@ export const templateOptions = () => TEMPLATE_NAMES.map((name) => ({
     label: TEMPLATES[name].label,
     description: TEMPLATES[name].description,
     sections: TEMPLATES[name].sections,
+    // The preview highlights these, so an admin can see at a glance where a
+    // template puts the weight rather than inferring it from the order.
+    emphasis: TEMPLATES[name].emphasis,
+    // The layout knobs the thumbnail mirrors. Sent rather than duplicated in
+    // the client so the preview cannot drift into showing a page the renderer
+    // does not actually produce.
+    style: {
+        headerAlign: TEMPLATES[name].style.headerAlign,
+        headerRule: TEMPLATES[name].style.headerRule,
+        headingStyle: TEMPLATES[name].style.headingStyle,
+    },
     isDefault: name === DEFAULT_TEMPLATE,
 }));
 

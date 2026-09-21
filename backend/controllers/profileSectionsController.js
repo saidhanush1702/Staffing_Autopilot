@@ -44,7 +44,7 @@ const bullets = Joi.array().items(Joi.string().trim().max(2000)).max(20).default
  * Each section: its table, the columns a caller may write, and the shape they
  * must satisfy. Nothing outside this registry reaches the database.
  */
-const SECTIONS = {
+export const SECTIONS = {
     education: {
         table: 'consultant_education',
         label: 'education',

@@ -41,6 +41,9 @@ export const tailoredDir = (orgId) => path.join(UPLOAD_ROOT, orgId, 'tailored');
 
 const PAGE_MARGIN = 54;          // 0.75in — generous enough not to look cramped
 const RULE_COLOUR = '#999999';
+// The strip behind a heading in the banded template. Light enough that
+// black text on it still prints and photocopies cleanly.
+const BAND_COLOUR = '#ededed';
 
 /**
  * Type sizes, supplied by the template.
@@ -50,7 +53,11 @@ const RULE_COLOUR = '#999999';
  * makes the config a lie. They are threaded through instead, so the denser
  * templates can genuinely run a little tighter and fit one page.
  */
-const DEFAULT_STYLE = { bodySize: 10, headingSize: 11, nameSize: 18 };
+const DEFAULT_STYLE = {
+    bodySize: 10, headingSize: 11, nameSize: 18,
+    headingStyle: 'rule', headerAlign: 'center', headerRule: true,
+    headingGap: 0.6, afterHeadingGap: 0.5,
+};
 
 /** Headings, in the wording a parser expects to meet. */
 const SECTION_LABELS = {
@@ -89,21 +96,71 @@ const dateRange = (start, end) => {
 
 /* ── the sections ──────────────────────────────────────────────────── */
 
+/**
+ * ── THREE HEADING TREATMENTS ──────────────────────────────────────────
+ *
+ * The templates used to differ only in which order the sections came out,
+ * which meant all three printed a document that looked identical. They now
+ * differ in the page furniture as well:
+ *
+ *   rule   heading with a hairline under it, full width    (Classic)
+ *   plain  heading with a short accent dash before it       (Technical)
+ *   band   heading set inside a light shaded strip          (Entry level)
+ *
+ * ── WHY THESE THREE AND NOT SOMETHING BOLDER ──────────────────────────
+ *
+ * Every one is still a line of real text in document order. A rule is a drawn
+ * line and a band is a drawn rectangle with text on top — neither is a table,
+ * a text box or an image, so an applicant tracking system pulls exactly the
+ * same words out of all three. The devices that would make these look more
+ * different from one another are precisely the devices that would stop a
+ * parser reading them at all.
+ */
 const sectionHeadingS = (doc, label, st) => {
     if (doc.y > doc.page.height - doc.page.margins.bottom - 60) doc.addPage();
 
-    doc.moveDown(0.6);
-    doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
-        .text(label, { characterSpacing: 0.6 });
+    doc.moveDown(st.headingGap ?? 0.6);
 
-    // A hairline rule, drawn rather than typed. A row of dashes would be read
-    // as text and land in the middle of the extracted content.
-    const y = doc.y + 2;
-    doc.moveTo(doc.page.margins.left, y)
-        .lineTo(doc.page.width - doc.page.margins.right, y)
-        .lineWidth(0.5).strokeColor(RULE_COLOUR).stroke();
+    const left = doc.page.margins.left;
+    const right = doc.page.width - doc.page.margins.right;
 
-    doc.moveDown(0.5);
+    if (st.headingStyle === 'band') {
+        // The strip is drawn first and the heading set on top of it.
+        const pad = 3;
+        const top = doc.y;
+        doc.rect(left, top, right - left, st.headingSize + pad * 2).fill(BAND_COLOUR);
+        doc.fillColor('#000000')
+            .font('Helvetica-Bold').fontSize(st.headingSize)
+            .text(label, left + 6, top + pad, {
+                characterSpacing: 0.8, width: right - left - 12,
+            });
+        doc.y = top + st.headingSize + pad * 2;
+    } else if (st.headingStyle === 'plain') {
+        // A short accent dash ahead of the heading, text indented past it. No
+        // full-width rule, which is what makes this template read denser.
+        const top = doc.y;
+        const dash = 14;
+        doc.moveTo(left, top + st.headingSize * 0.55)
+            .lineTo(left + dash, top + st.headingSize * 0.55)
+            .lineWidth(1.6).strokeColor('#000000').stroke();
+
+        doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
+            .text(label, left + dash + 5, top, { characterSpacing: 0.9 });
+    } else {
+        doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
+            .text(label, { characterSpacing: 0.6 });
+
+        // A hairline rule, drawn rather than typed. A row of dashes would be
+        // read as text and land in the middle of the extracted content.
+        const y = doc.y + 2;
+        doc.moveTo(left, y).lineTo(right, y)
+            .lineWidth(0.5).strokeColor(RULE_COLOUR).stroke();
+    }
+
+    doc.moveDown(st.afterHeadingGap ?? 0.5);
+    // Back to the left margin: the band and dash variants both moved the
+    // cursor, and the body that follows must not inherit their indent.
+    doc.x = left;
     doc.font('Helvetica').fontSize(st.bodySize).fillColor('#000000');
 };
 
@@ -229,31 +286,48 @@ const RENDERERS = {
 
 /* ── the whole document ────────────────────────────────────────────── */
 
+/**
+ * The name block — centred or left-set, ruled or not, by template.
+ *
+ * Contact details stay plain text on one line in every variant, separated by
+ * their own punctuation. Icons would look better and carry nothing into the
+ * text a parser extracts: a phone glyph is not the word "phone", so the number
+ * would arrive with no idea what it is.
+ */
 const renderHeader = (doc, contact, st) => {
-    doc.font('Helvetica-Bold').fontSize(st.nameSize).fillColor('#000000')
-        .text(contact?.name ?? '', { align: 'center' });
+    const align = st.headerAlign ?? 'center';
+    const left = doc.page.margins.left;
+    const right = doc.page.width - doc.page.margins.right;
 
-    // Contact details as plain text on one line, labelled by their own
-    // punctuation. Icons would carry none of this into the extracted text.
+    doc.font('Helvetica-Bold').fontSize(st.nameSize).fillColor('#000000')
+        .text(contact?.name ?? '', { align });
+
     const line = [contact?.location, contact?.phone, contact?.email]
         .filter(Boolean).join('  |  ');
     if (line) {
         doc.moveDown(0.25);
-        doc.font('Helvetica').fontSize(st.bodySize).text(line, { align: 'center' });
+        doc.font('Helvetica').fontSize(st.bodySize).text(line, { align });
     }
 
     const links = (contact?.links ?? []).filter(Boolean);
     if (links.length > 0) {
         doc.font('Helvetica').fontSize(st.bodySize - 1)
-            .text(links.join('  |  '), { align: 'center' });
+            .text(links.join('  |  '), { align });
     }
 
     doc.moveDown(0.4);
-    const y = doc.y;
-    doc.moveTo(doc.page.margins.left, y)
-        .lineTo(doc.page.width - doc.page.margins.right, y)
-        .lineWidth(1).strokeColor('#000000').stroke();
-    doc.moveDown(0.3);
+
+    if (st.headerRule !== false) {
+        const y = doc.y;
+        doc.moveTo(left, y).lineTo(right, y)
+            .lineWidth(st.headerRuleWidth ?? 1).strokeColor('#000000').stroke();
+        doc.moveDown(0.3);
+    } else {
+        // No rule here — the whitespace does the separating, which is what
+        // gives the entry-level template its more open feel.
+        doc.moveDown(0.2);
+    }
+    doc.x = left;
 };
 
 /**

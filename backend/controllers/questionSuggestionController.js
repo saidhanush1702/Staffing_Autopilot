@@ -22,7 +22,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db.js';
 import {
-    callModel, isAvailable, unavailableReason, spendThisPeriod,
+    callModel, stageStatus, spendThisPeriod,
 } from '../connectors/llm/index.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
 import { catalogueFor } from './agentController.js';
@@ -75,7 +75,8 @@ export const questionSuggestions = async (req, res, next) => {
         const { orgId, consultantId } = req.device;
         const none = (why) => res.json({ suggestions: [], unavailable: why ?? null });
 
-        if (!isAvailable('match')) return none(unavailableReason('match'));
+        const matchStatus = await stageStatus(orgId, 'match');
+        if (!matchStatus.available) return none(matchStatus.reason);
         if ((await spendThisPeriod(orgId)).exhausted) return none('This month’s AI budget is used up.');
 
         const catalogue = await catalogueFor(req.device);
@@ -105,6 +106,7 @@ export const questionSuggestions = async (req, res, next) => {
 
         const started = Date.now();
         const reply = await callModel({
+            orgId,
             stage: 'match',
             system: MATCH_SYSTEM_PROMPT,
             // The approved answers are the stable half, identical for every

@@ -22,8 +22,8 @@ const MyJobs = () => (
     <div className="mx-auto max-w-5xl">
         <h1 className={pageTitle}>My jobs</h1>
         <p className={pageSubtitle}>
-            Every job matched to you, what stage it has reached, and what was sent —
-            including whether your resume was tailored for it.
+            Every job matched to you, what stage it has reached, and what was sent.
+            Jobs are ready with your base resume — tick the ones you want a tailored resume for.
         </p>
 
         <div className="mt-6">

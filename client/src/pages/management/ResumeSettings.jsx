@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
+import TemplatePreview from '../../components/profile/TemplatePreview.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
     card, cardPad, cardPadRoomy, pageTitle, pageSubtitle, btn,
@@ -186,13 +187,19 @@ const ResumeSettings = () => {
                                     </p>
                                     {active && <Check className="h-4 w-4 shrink-0 text-brand-600" />}
                                 </div>
-                                <p className="mt-2 text-sm text-muted">{t.description}</p>
 
-                                {/* The running order is the real difference between
-                                    the three, so it is shown rather than described. */}
-                                <p className="mt-3 text-xs text-muted">
-                                    {t.sections.slice(0, 5).join(' → ')}
-                                </p>
+                                {/* The page itself, in this template's running
+                                    order. Section names read as a list tell
+                                    nobody what the document looks like. */}
+                                <div className="mt-3">
+                                    <TemplatePreview
+                                        sections={t.sections}
+                                        emphasis={t.emphasis ?? []}
+                                        style={t.style ?? {}}
+                                    />
+                                </div>
+
+                                <p className="mt-3 text-sm text-muted">{t.description}</p>
                             </button>
                         );
                     })}

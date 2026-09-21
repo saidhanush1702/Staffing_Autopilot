@@ -24,7 +24,7 @@ export const name = 'anthropic';
 export const isConfigured = () => env('ANTHROPIC_API_KEY').length > 0;
 
 export const call = async ({
-    model, system, cacheable, input, schema, maxTokens = 8000,
+    model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
 }) => {
     const apiKey = env('ANTHROPIC_API_KEY');
     if (!apiKey) {
@@ -53,6 +53,10 @@ export const call = async ({
         messages: [{ role: 'user', content }],
     };
 
+    // Sent only when an administrator chose a value: some models reject or
+    // ignore it, so silence is the safe default.
+    if (temperature !== null && temperature !== undefined) body.temperature = temperature;
+
     if (schema) {
         body.output_config = {
             format: { type: 'json_schema', schema },
@@ -66,7 +70,7 @@ export const call = async ({
             'anthropic-version': env('ANTHROPIC_VERSION', '2023-06-01'),
         },
         body,
-        timeoutMs: numEnv('LLM_TIMEOUT_MS', 120_000),
+        timeoutMs: timeoutMs ?? numEnv('LLM_TIMEOUT_MS', 120_000),
     });
     if (!res.ok) return res;
 

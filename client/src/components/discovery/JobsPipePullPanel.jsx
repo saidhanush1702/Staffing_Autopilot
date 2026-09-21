@@ -457,9 +457,9 @@ const JobsPipePullPanel = ({ canEdit }) => {
                         </div>
                         <p className="mt-1 max-w-xl text-xs text-slate-500">
                             A second door into the same pool. Pulls jobs published in the last
-                            day or two and runs them through the same de-duplication, matcher
-                            and AI preparation as a Google Jobs run — nothing here changes
-                            the provider above.
+                            day or two and runs them through the same de-duplication and
+                            matcher as a Google Jobs run — nothing here changes the provider
+                            above.
                         </p>
                     </div>
 
@@ -881,7 +881,7 @@ const JobsPipePullPanel = ({ canEdit }) => {
                             <th className={tableHeadCell}>Returned</th>
                             <th className={tableHeadCell}>New</th>
                             <th className={tableHeadCell}>Queued</th>
-                            <th className={tableHeadCell}>Prepared</th>
+                            <th className={tableHeadCell}>Ready</th>
                             <th className={tableHeadCell}>Median age</th>
                             <th className={tableHeadCell}>&lt;24h</th>
                             <th className={tableHeadCell}>Took</th>
@@ -1011,8 +1011,9 @@ const JobsPipePullPanel = ({ canEdit }) => {
                 >
                     <p className="text-sm text-slate-600">
                         This is a <strong>real</strong> request. Anything it finds is stored,
-                        matched against every active consultant, and queued — which also hands
-                        work to the AI preparation stage.
+                        matched against every active consultant, and queued — each match
+                        goes to that consultant's Ready list (resumes are tailored later, per
+                        job, when someone chooses).
                     </p>
                     <p className={`mt-2 ${alertShellSm} ${TONE_ALERT.warning}`}>
                         <Coins className="mt-0.5 h-3.5 w-3.5 shrink-0" />

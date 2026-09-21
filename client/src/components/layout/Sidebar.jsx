@@ -4,7 +4,7 @@ import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
     PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks, Webhook,
-    GraduationCap, FileCog,
+    FileCog, Cpu,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -33,11 +33,11 @@ import {
  * on you is under Review" and have that stay true as the app grows.
  *
  * `badge` names a counter fetched below:
- *   approvals   pending profile change requests awaiting this reviewer
+ *   approvals   pending profile changes AND answers awaiting this reviewer,
+ *               combined — the two queues share one sidebar link now (see
+ *               pages/management/Approvals.jsx), so one number covers both;
+ *               each section still shows its own count once you are inside it
  *   incomplete  required profile fields the consultant still has to fill
- *   answers     answers this reviewer can actually act on (locked sensitive
- *               items are excluded, so the badge never sends a recruiter to an
- *               inbox where nothing is clickable)
  *   unanswered  questions the consultant has not answered yet
  */
 const NAV_GROUPS = [
@@ -73,17 +73,15 @@ const NAV_GROUPS = [
         label: 'Review',
         roles: ['ORG_ADMIN', 'RECRUITER'],
         items: [
+            // Profile changes and answer approvals live behind one link now —
+            // see pages/management/Approvals.jsx for the two sections inside
+            // it. Resume review is no longer linked here; its route (and the
+            // RESUME_REVIEW application state it clears) still exists at
+            // /management/resume-reviews for anyone who navigates there
+            // directly, it just is not a sidebar destination any more.
             {
                 to: '/management/approvals', label: 'Approvals', icon: ClipboardCheck,
                 roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'approvals',
-            },
-            {
-                to: '/management/answers', label: 'Answer approvals', icon: MessageSquare,
-                roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'answers',
-            },
-            {
-                to: '/management/resume-reviews', label: 'Resume review', icon: ShieldAlert,
-                roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'resumeReviews',
             },
         ],
     },
@@ -108,22 +106,22 @@ const NAV_GROUPS = [
             { to: '/management/devices', label: 'Desktop Access', icon: Laptop, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/costs', label: 'Running Costs', icon: Coins, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/resume-settings', label: 'Resume Generation', icon: FileCog, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            // Which model runs each AI task, and how. The owner's call, so a
+            // recruiter never sees the link.
+            { to: '/management/ai-models', label: 'AI Models', icon: Cpu, roles: ['ORG_ADMIN'] },
         ],
     },
     {
         label: 'My account',
         roles: ['CONSULTANT'],
         items: [
+            // Identity AND career together — skills, experience, projects,
+            // education, the base resume, contact details. One page, one
+            // submission, one approval; see pages/portal/MyProfile.jsx for
+            // why the two used to be separate and are not any more.
             {
                 to: '/portal/profile', label: 'My Profile', icon: UserCircle,
                 roles: ['CONSULTANT'], badge: 'incomplete',
-            },
-            // Skills, experience, projects, education — what their tailored
-            // resumes are built from. Separate from My Profile because these
-            // save immediately, where profile fields are proposed and reviewed.
-            {
-                to: '/portal/career', label: 'My Career', icon: GraduationCap,
-                roles: ['CONSULTANT'], badge: 'careerGaps',
             },
             // Every job matched to them, and what happened to it. The same
             // screen their recruiter sees, minus the management actions.
@@ -165,8 +163,7 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
     const { user } = useAuth();
     const location = useLocation();
     const [badges, setBadges] = useState({
-        approvals: 0, incomplete: 0, answers: 0, unanswered: 0,
-        resumeReviews: 0, myResumeReviews: 0, careerGaps: 0,
+        approvals: 0, incomplete: 0, unanswered: 0, myResumeReviews: 0,
     });
     const [collapsed, setCollapsed] = useState(() => {
         try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
@@ -182,41 +179,36 @@ const Sidebar = ({ open = false, onClose = () => {} }) => {
         if (!user) return;
         try {
             if (user.role === 'ORG_ADMIN' || user.role === 'RECRUITER') {
-                const [changes, answers, reviews] = await Promise.all([
+                const [changes, answers] = await Promise.all([
                     api.get('/management/profile-changes/count'),
                     api.get('/management/answers/count'),
-                    api.get('/management/resume-reviews/count'),
                 ]);
                 setBadges((b) => ({
                     ...b,
-                    approvals: changes.data.pending,
-                    // Flagged resumes hold an application at RESUME_REVIEW, so
-                    // this count is work that is actively blocked, not a backlog.
-                    resumeReviews: reviews.data.count,
-                    // `pending` counts only what THIS reviewer can act on. A
-                    // recruiter's badge deliberately excludes locked sensitive
-                    // items — sending them to an inbox where nothing is
-                    // clickable would be worse than no badge.
-                    answers: answers.data.pending,
+                    // One combined number for the one sidebar link. `pending`
+                    // on the answers side counts only what THIS reviewer can
+                    // act on — locked sensitive items are excluded, so the
+                    // badge never sends a recruiter to a queue where nothing
+                    // is clickable.
+                    approvals: changes.data.pending + answers.data.pending,
                 }));
             } else if (user.role === 'CONSULTANT') {
-                const [me, unanswered, reviews, career] = await Promise.all([
+                const [me, unanswered, reviews] = await Promise.all([
                     api.get('/portal/me'),
                     api.get('/portal/answers/count'),
                     api.get('/portal/resume-reviews/count'),
-                    api.get('/portal/career/readiness'),
                 ]);
                 setBadges((b) => ({
                     ...b,
+                    // The required-identity-field count. "Not enough to build
+                    // a tailored resume yet" is a real, separate concern — see
+                    // the banner inside My Profile itself — but it is shown
+                    // there rather than as a second sidebar number, so this
+                    // badge keeps meaning one thing: fields your recruiter
+                    // needs from you.
                     incomplete: me.data.missingFields.length,
                     unanswered: unanswered.data.outstanding,
                     myResumeReviews: reviews.data.count,
-                    // Kept separate from `incomplete` on purpose. That badge
-                    // counts the profile fields a recruiter approves; this one
-                    // counts what is missing before a resume can be BUILT.
-                    // Merging them would put a number on My Profile that points
-                    // at a gap on a different screen.
-                    careerGaps: career.data.count,
                 }));
             }
         } catch { /* a stale badge must never break the shell */ }

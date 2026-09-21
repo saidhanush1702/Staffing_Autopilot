@@ -25,6 +25,33 @@ export const listPostings = async (req, res, next) => {
         const sourceId = req.query.sourceId ? Number(req.query.sourceId) : null;
         const limit = Math.min(Number(req.query.limit ?? 50), 200);
 
+        // ── SORTING, FROM A FIXED SET ─────────────────────────────────
+        //
+        // The column is chosen from a lookup, never interpolated from the
+        // query string. `ORDER BY ${req.query.sort}` is the shape of every
+        // SQL injection that survives parameterised values — the parameters
+        // are safe and the column name is not a parameter.
+        //
+        // `ingested` is first_seen_at: when this posting entered OUR pool.
+        // `posted` is the employer's own date, which arrives coarse from some
+        // sources and null from others — so ingestion is the default, being
+        // the only one we can vouch for.
+        const SORTS = {
+            ingested: 'p.first_seen_at',
+            posted: 'p.posted_at',
+            company: 'p.company',
+            title: 'p.title',
+            seen: 'p.last_seen_at',
+        };
+        const sortKey = SORTS[req.query.sort] ? req.query.sort : 'ingested';
+        const sortCol = SORTS[sortKey];
+        const dir = String(req.query.dir ?? '').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+        // NULLS LAST in both directions: a posting whose date we never learned
+        // belongs at the bottom of the list either way, not at the top of the
+        // ascending one pretending to be the oldest thing we have.
+        const orderBy = `${sortCol} ${dir} NULLS LAST, p.id`;
+
         // ── WHERE DID THIS POSTING COME FROM, AND WHEN WAS IT PUBLISHED ──
         //
         // Three ingestion doors now write into this pool and they are NOT
@@ -74,11 +101,16 @@ export const listPostings = async (req, res, next) => {
                 AND ($2::text IS NULL OR p.company ILIKE '%' || $2 || '%'
                                       OR p.title   ILIKE '%' || $2 || '%')
                 AND ($3::int IS NULL OR p.first_source_id = $3)
-              ORDER BY p.first_seen_at DESC
+              ORDER BY ${orderBy}
               LIMIT $4`,
             [req.user.orgId, search, sourceId, limit],
         );
-        return res.json({ postings: rows });
+        return res.json({
+            postings: rows,
+            // Echoed so the screen can show what it is actually sorted by
+            // rather than assuming its own state matched the server's.
+            sort: { key: sortKey, dir: dir.toLowerCase() },
+        });
     } catch (err) {
         return next(err);
     }

@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import {
-    Plus, Pencil, Trash2, ChevronUp, ChevronDown, Loader2, Check, X,
+    Plus, Pencil, Trash2, ChevronUp, ChevronDown, Check, X,
+    CheckCircle2, AlertCircle,
 } from 'lucide-react';
-import api, { errorMessage } from '../../api/axios.js';
 import {
     PROFILE_SECTIONS, emptyRow, validateRow, toPayload,
 } from '../../config/profileSections.js';
@@ -20,26 +20,45 @@ import { card, cardPad, input, btn, btnSm } from '../../design/tokens.js';
  * not, and a consultant would meet four subtly different forms in the same
  * sitting.
  *
+ * ── WHY THIS EDITS LOCAL STATE, NOT THE SERVER ─────────────────────────
+ *
+ * Add, edit, delete and reorder used to be four instant API calls — this
+ * section was self-service, saved the moment a consultant touched it. It is
+ * now part of the merged profile: everything a consultant changes, identity
+ * and career together, goes to the server ONCE, as one submission for
+ * approval (see pages/portal/MyProfile.jsx). So this component only ever
+ * mutates the array its parent gave it, via `onChange`, and nothing here
+ * calls the API at all.
+ *
+ * ── WHY EVERY ROW NEEDS A `key` ─────────────────────────────────────────
+ *
+ * A row loaded from the live, approved record has a server `id`. A row just
+ * added in this sitting does not — nothing is persisted until submit — so
+ * there is no server id to edit or delete it by. The parent stamps a stable
+ * local `key` on every row (the server id when there is one, a generated one
+ * when there is not — see MyProfile.jsx), and this component addresses rows
+ * by that key alone.
+ *
  * ── WHY ORDER IS EDITABLE ─────────────────────────────────────────────
  *
  * This is the order the resume prints in, and the order the tailoring step
  * starts from before it reorders for a specific job. A consultant who wants
- * their most relevant role first should be able to say so.
+ * their most relevant role first should be able to say so. Order lives
+ * entirely in array position now — moving a row just reorders the array —
+ * which is exactly what the server turns back into a `position` column when
+ * the submission is approved.
  */
 const SectionEditor = ({
-    section, items, basePath, onChanged, disabled = false,
+    section, items, onChange, disabled = false,
 }) => {
     const def = PROFILE_SECTIONS[section];
-    const [editing, setEditing] = useState(null);     // row id, or 'new'
+    const [editing, setEditing] = useState(null);     // a row's key, or 'new'
     const [draft, setDraft] = useState({});
     const [errors, setErrors] = useState({});
-    const [saving, setSaving] = useState(false);
-    const [error, setError] = useState('');
 
     const startNew = () => {
         setDraft(emptyRow(section));
         setErrors({});
-        setError('');
         setEditing('new');
     };
 
@@ -57,58 +76,38 @@ const SectionEditor = ({
         }
         setDraft(d);
         setErrors({});
-        setError('');
-        setEditing(row.id);
+        setEditing(row.key);
     };
 
     const cancel = () => { setEditing(null); setDraft({}); setErrors({}); };
 
-    const save = async () => {
+    const save = () => {
         const found = validateRow(section, draft);
         if (Object.keys(found).length > 0) { setErrors(found); return; }
 
-        setSaving(true);
-        setError('');
-        try {
-            const payload = toPayload(section, draft);
-            if (editing === 'new') await api.post(`${basePath}/${section}`, payload);
-            else await api.patch(`${basePath}/${section}/${editing}`, payload);
-            cancel();
-            await onChanged();
-        } catch (err) {
-            setError(errorMessage(err));
-        } finally {
-            setSaving(false);
+        const payload = toPayload(section, draft);
+
+        if (editing === 'new') {
+            const key = (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            onChange([...items, { ...payload, key }]);
+        } else {
+            onChange(items.map((row) => (row.key === editing ? { ...row, ...payload } : row)));
         }
+        cancel();
     };
 
-    const remove = async (id) => {
-        setSaving(true);
-        try {
-            await api.delete(`${basePath}/${section}/${id}`);
-            await onChanged();
-        } catch (err) {
-            setError(errorMessage(err));
-        } finally {
-            setSaving(false);
-        }
+    const remove = (key) => {
+        onChange(items.filter((row) => row.key !== key));
     };
 
-    const move = async (index, delta) => {
+    const move = (index, delta) => {
         const next = [...items];
         const to = index + delta;
         if (to < 0 || to >= next.length) return;
         [next[index], next[to]] = [next[to], next[index]];
-
-        setSaving(true);
-        try {
-            await api.put(`${basePath}/${section}/order`, { ids: next.map((r) => r.id) });
-            await onChanged();
-        } catch (err) {
-            setError(errorMessage(err));
-        } finally {
-            setSaving(false);
-        }
+        onChange(next);
     };
 
     /* ── one input ─────────────────────────────────────────────────── */
@@ -186,13 +185,11 @@ const SectionEditor = ({
             <div className="grid gap-4 sm:grid-cols-2">
                 {def.fields.map(field)}
             </div>
-            {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
             <div className="mt-4 flex gap-2">
-                <button type="button" className={btn.primary} onClick={save} disabled={saving}>
-                    {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                    Save
+                <button type="button" className={btn.primary} onClick={save}>
+                    <Check className="h-4 w-4" /> Save
                 </button>
-                <button type="button" className={btn.ghost} onClick={cancel} disabled={saving}>
+                <button type="button" className={btn.ghost} onClick={cancel}>
                     <X className="h-4 w-4" /> Cancel
                 </button>
             </div>
@@ -202,11 +199,14 @@ const SectionEditor = ({
     return (
         <section className="space-y-3">
             <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold">
+                <h3 className="inline-flex items-center gap-1.5 text-base font-semibold">
                     {def.label}
                     {items.length > 0 && (
-                        <span className="ml-2 text-sm font-normal text-muted">{items.length}</span>
+                        <span className="text-sm font-normal text-muted">{items.length}</span>
                     )}
+                    {items.length > 0
+                        ? <CheckCircle2 className="h-4 w-4 shrink-0 text-success-600" aria-label="At least one added" />
+                        : <AlertCircle className="h-4 w-4 shrink-0 text-warning-500" aria-label="Nothing added yet" />}
                 </h3>
                 {!disabled && editing !== 'new' && (
                     <button type="button" className={btnSm.ghost} onClick={startNew}>
@@ -224,10 +224,10 @@ const SectionEditor = ({
             )}
 
             {items.map((row, i) => (
-                editing === row.id ? (
-                    <div key={row.id}>{form}</div>
+                editing === row.key ? (
+                    <div key={row.key}>{form}</div>
                 ) : (
-                    <div key={row.id} className={`${card} ${cardPad} flex items-start justify-between gap-4`}>
+                    <div key={row.key} className={`${card} ${cardPad} flex items-start justify-between gap-4`}>
                         <div className="min-w-0">
                             <p className="truncate font-medium">{def.title(row) || '—'}</p>
                             <p className="truncate text-sm text-muted">{def.subtitle(row)}</p>
@@ -236,23 +236,23 @@ const SectionEditor = ({
                         {!disabled && (
                             <div className="flex shrink-0 items-center gap-1">
                                 {/* This is the order the resume prints in. */}
-                                <button type="button" onClick={() => move(i, -1)} disabled={i === 0 || saving}
+                                <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
                                     className="rounded p-1.5 text-muted hover:text-ink disabled:opacity-30"
                                     aria-label="Move up">
                                     <ChevronUp className="h-4 w-4" />
                                 </button>
                                 <button type="button" onClick={() => move(i, 1)}
-                                    disabled={i === items.length - 1 || saving}
+                                    disabled={i === items.length - 1}
                                     className="rounded p-1.5 text-muted hover:text-ink disabled:opacity-30"
                                     aria-label="Move down">
                                     <ChevronDown className="h-4 w-4" />
                                 </button>
-                                <button type="button" onClick={() => startEdit(row)} disabled={saving}
+                                <button type="button" onClick={() => startEdit(row)}
                                     className="rounded p-1.5 text-muted hover:text-ink"
                                     aria-label="Edit">
                                     <Pencil className="h-4 w-4" />
                                 </button>
-                                <button type="button" onClick={() => remove(row.id)} disabled={saving}
+                                <button type="button" onClick={() => remove(row.key)}
                                     className="rounded p-1.5 text-muted hover:text-danger-600"
                                     aria-label="Delete">
                                     <Trash2 className="h-4 w-4" />

@@ -244,6 +244,39 @@ export const listConsultantJobs = async (req, res, next) => {
 
         const jobs = rows.map((row) => ({ ...row, stage: STAGE_OF(row) }));
 
+        // ── WHAT EACH RESUME COST — ORG_ADMIN ONLY ────────────────────────
+        //
+        // The sum of every model call made for the job: the tailoring itself, the
+        // fabrication check, and any retry or fallback attempt. Attached ONLY when
+        // the caller is an org admin. It is not merely hidden in the interface —
+        // for anybody else the field does not exist in the response, because a
+        // number a recruiter or consultant should not see is not made safe by a
+        // component that chooses not to draw it.
+        //
+        // `tailoring_cost_unknown` is true when any call was made on a model whose
+        // price the table does not know. Showing a partial sum as the whole would
+        // be a quiet lie, so the screen says "unknown" instead.
+        if (req.user.role === 'ORG_ADMIN') {
+            const itemIds = jobs.map((j) => j.queue_item_id).filter(Boolean);
+            if (itemIds.length > 0) {
+                const { rows: costs } = await query(
+                    `SELECT queue_item_id,
+                            COALESCE(SUM(cost_usd), 0)::float8      AS cost,
+                            BOOL_OR(cost_usd IS NULL)               AS unknown
+                       FROM resume_tailoring_runs
+                      WHERE organization_id = $1 AND queue_item_id = ANY($2::char(36)[])
+                      GROUP BY queue_item_id`,
+                    [req.user.orgId, itemIds],
+                );
+                const byItem = new Map(costs.map((c) => [c.queue_item_id, c]));
+                for (const job of jobs) {
+                    const c = byItem.get(job.queue_item_id);
+                    job.tailoring_cost_usd = c ? c.cost : null;
+                    job.tailoring_cost_unknown = c ? c.unknown : false;
+                }
+            }
+        }
+
         // Counted from the rows just returned rather than by a second set of
         // COUNT queries: two round trips can disagree with each other, and a
         // total that does not match the list underneath it is the kind of bug

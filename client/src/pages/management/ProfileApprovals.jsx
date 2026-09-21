@@ -2,7 +2,7 @@ import { useEffect, useState, Fragment } from 'react';
 import {
     Check, X, Loader2, AlertCircle, Inbox, ArrowRight,
     ChevronRight, ChevronDown, Clock, CheckCircle2, XCircle, MinusCircle,
-    XOctagon, PauseCircle, UserX,
+    XOctagon, PauseCircle, UserX, GraduationCap, Plus, Minus,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -10,12 +10,22 @@ import Pagination from '../../components/Pagination.jsx';
 import TableShell from '../../components/TableShell.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { badge, TONE, pageTitle, pageSubtitle, btn } from '../../design/tokens.js';
+import { PROFILE_SECTIONS } from '../../config/profileSections.js';
+import { badge, TONE, pageSubtitle, btn } from '../../design/tokens.js';
 
 /**
  * Profile change approvals — ORG_ADMIN and RECRUITER.
  *
- * One collapsed row per request; expand to review each field individually.
+ * ── WHY ONE DECISION PER REQUEST, NOT ONE PER FIELD ────────────────────
+ *
+ * This screen used to let a reviewer approve nine fields and reject a tenth.
+ * Since My Profile and My Career merged into one page and one submission
+ * (see pages/portal/MyProfile.jsx), that granularity stopped making sense —
+ * there is no sensible per-skill checkbox on a submission a consultant meant
+ * as one coherent update. So the action here is now ONE Approve / Reject for
+ * the whole thing, with a review note. Every individual change is still
+ * listed, read-only, so the reviewer can see exactly what they are deciding.
+ *
  * A recruiter only ever receives requests from consultants currently assigned
  * to them — narrowed server-side in listChangeRequests(), not here.
  */
@@ -23,7 +33,10 @@ import { badge, TONE, pageTitle, pageSubtitle, btn } from '../../design/tokens.j
 const STATUS_STYLE = {
     PENDING: { icon: Clock, cls: 'bg-warning-50 text-warning-700', text: 'Pending' },
     APPROVED: { icon: CheckCircle2, cls: 'bg-success-50 text-success-700', text: 'Approved' },
-    PARTIALLY_APPROVED: { icon: MinusCircle, cls: 'bg-info-50 text-info-700', text: 'Partly approved' },
+    // Historical only — new reviews never produce this any more, see the
+    // header comment above. Old rows from before the merge can still carry
+    // it, and the tab stays so that history remains findable.
+    PARTIALLY_APPROVED: { icon: MinusCircle, cls: 'bg-info-50 text-info-700', text: 'Partly approved (old)' },
     REJECTED: { icon: XCircle, cls: 'bg-danger-50 text-danger-700', text: 'Rejected' },
     WITHDRAWN: { icon: MinusCircle, cls: 'bg-slate-100 text-slate-600', text: 'Withdrawn' },
     // Nobody judged these values — the consultant was terminated, so the
@@ -43,6 +56,85 @@ const StatusPill = ({ status }) => {
     );
 };
 
+/**
+ * A row's content, stripped of the columns that never carry a real change
+ * (id, position, timestamps) so two rows that read identically to a human
+ * compare as identical here too.
+ */
+const contentOf = (row) => {
+    const { id: _id, position: _p, created_at: _c, updated_at: _u, ...rest } = row;
+    return JSON.stringify(rest);
+};
+
+/**
+ * What actually changed in one career section, for display.
+ *
+ * Computed client-side from the `live` and `snapshot` arrays the list
+ * endpoint already sends — the same two arrays profileChangeController.js
+ * derived its own summary text from, just re-diffed here so the reviewer can
+ * see the actual entries, not only a count.
+ */
+const sectionDiff = (name, live = [], proposed = []) => {
+    const def = PROFILE_SECTIONS[name];
+    const liveSigs = new Map(live.map((r) => [contentOf(r), r]));
+    const proposedSigs = new Map(proposed.map((r) => [contentOf(r), r]));
+
+    const added = [...proposedSigs.entries()]
+        .filter(([sig]) => !liveSigs.has(sig)).map(([, r]) => def.title(r));
+    const removed = [...liveSigs.entries()]
+        .filter(([sig]) => !proposedSigs.has(sig)).map(([, r]) => def.title(r));
+
+    return { added, removed, label: def.label };
+};
+
+const skillsDiff = (live = [], proposed = []) => {
+    const liveIds = new Map(live.map((s) => [s.skill_id, s.name]));
+    const proposedIds = new Map(proposed.map((s) => [s.skillId, s.name]));
+    const added = [...proposedIds.entries()].filter(([id]) => !liveIds.has(id)).map(([, n]) => n);
+    const removed = [...liveIds.entries()].filter(([id]) => !proposedIds.has(id)).map(([, n]) => n);
+    return { added, removed, label: 'Skills' };
+};
+
+/** The career record, laid out as a readable diff. Nothing here is clickable — see the header comment on why. */
+const CareerDiff = ({ career }) => {
+    if (!career?.snapshot) return null;
+    const { live, snapshot } = career;
+
+    const diffs = [
+        ...(snapshot.skills ? [skillsDiff(live.skills, snapshot.skills)] : []),
+        ...['education', 'experience', 'projects', 'certifications']
+            .filter((n) => snapshot[n])
+            .map((n) => sectionDiff(n, live[n], snapshot[n])),
+    ].filter((d) => d.added.length || d.removed.length);
+
+    if (diffs.length === 0) return null;
+
+    return (
+        <div className="px-6 py-3">
+            <p className="flex items-center gap-1.5 text-sm font-medium text-slate-700">
+                <GraduationCap className="h-4 w-4 text-slate-400" /> Career record
+            </p>
+            <div className="mt-2 space-y-1.5">
+                {diffs.map((d) => (
+                    <div key={d.label} className="text-sm">
+                        <span className="w-44 shrink-0 font-medium text-slate-600">{d.label}: </span>
+                        {d.added.map((name) => (
+                            <span key={`+${name}`} className="mr-2 inline-flex items-center gap-0.5 text-success-700">
+                                <Plus className="h-3 w-3" />{name}
+                            </span>
+                        ))}
+                        {d.removed.map((name) => (
+                            <span key={`-${name}`} className="mr-2 inline-flex items-center gap-0.5 text-danger-700 line-through">
+                                <Minus className="h-3 w-3" />{name}
+                            </span>
+                        ))}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 const ProfileApprovals = () => {
     const { user } = useAuth();
     const [requests, setRequests] = useState(null);
@@ -52,7 +144,7 @@ const ProfileApprovals = () => {
     const [tab, setTab] = useState('PENDING');
     const [expanded, setExpanded] = useState({});
 
-    const [decisions, setDecisions] = useState({});
+    const [notes, setNotes] = useState({});
     const [submitting, setSubmitting] = useState(null);
     const [rowError, setRowError] = useState({});
 
@@ -65,7 +157,6 @@ const ProfileApprovals = () => {
             setRequests(reqRes.data.requests);
             setPage(reqRes.data.page);
             setSchema(schRes.data);
-            setDecisions({});
         } catch (err) {
             setError(errorMessage(err));
         }
@@ -75,47 +166,15 @@ const ProfileApprovals = () => {
 
     const toggle = (id) => setExpanded((e) => ({ ...e, [id]: !e[id] }));
 
-    const decide = (reqId, fieldName, decision) =>
-        setDecisions((d) => ({
-            ...d,
-            [reqId]: { ...d[reqId], [fieldName]: { ...d[reqId]?.[fieldName], decision } },
-        }));
-
-    const setNote = (reqId, fieldName, note) =>
-        setDecisions((d) => ({
-            ...d,
-            [reqId]: { ...d[reqId], [fieldName]: { ...d[reqId]?.[fieldName], note } },
-        }));
-
-    const decideAll = (req, decision) =>
-        setDecisions((d) => ({
-            ...d,
-            [req.id]: Object.fromEntries(
-                req.fields.map((f) => [f.field_name, { ...d[req.id]?.[f.field_name], decision }]),
-            ),
-        }));
-
     const label = (n) => schema?.fields?.[n]?.label ?? n;
 
-    const submit = async (req) => {
-        const chosen = decisions[req.id] ?? {};
-        const missing = req.fields.filter((f) => !chosen[f.field_name]?.decision);
-        if (missing.length) {
-            setRowError((e) => ({
-                ...e,
-                [req.id]: `Decide every field first — still open: ${missing.map((f) => label(f.field_name)).join(', ')}`,
-            }));
-            return;
-        }
+    const decide = async (req, decision) => {
         setSubmitting(req.id);
         setRowError((e) => ({ ...e, [req.id]: '' }));
         try {
             await api.post(`/management/profile-changes/${req.id}/review`, {
-                decisions: req.fields.map((f) => ({
-                    fieldName: f.field_name,
-                    decision: chosen[f.field_name].decision,
-                    note: chosen[f.field_name].note || null,
-                })),
+                decision,
+                reviewNote: notes[req.id] || null,
             });
             await load(tab);
         } catch (err) {
@@ -131,19 +190,17 @@ const ProfileApprovals = () => {
     const TABS = [
         { key: 'PENDING', label: 'Pending' },
         { key: 'APPROVED', label: 'Approved' },
-        { key: 'PARTIALLY_APPROVED', label: 'Partly approved' },
         { key: 'REJECTED', label: 'Rejected' },
         { key: 'ALL', label: 'All' },
     ];
 
     return (
         <div>
-            <h1 className={pageTitle}>Profile approvals</h1>
             <p className={pageSubtitle}>
                 {user?.role === 'RECRUITER'
-                    ? 'Change requests from the consultants assigned to you.'
-                    : 'Change requests from every consultant in this organization.'}
-                {' '}Nothing takes effect until approved.
+                    ? 'Submissions from the consultants assigned to you.'
+                    : 'Submissions from every consultant in this organization.'}
+                {' '}Each is reviewed as a whole — nothing takes effect until you approve it.
             </p>
 
             <div className="mt-6 border-b border-line">
@@ -172,7 +229,7 @@ const ProfileApprovals = () => {
                     <p className="text-sm text-slate-500">Nothing here.</p>
                     {tab === 'PENDING' && (
                         <p className="text-xs text-slate-400">
-                            Requests appear when a consultant submits profile changes.
+                            Requests appear when a consultant submits their profile for approval.
                         </p>
                     )}
                 </div>
@@ -196,7 +253,6 @@ const ProfileApprovals = () => {
                         <tbody className="divide-y divide-line-soft">
                             {requests.map((req) => {
                                 const isOpen = Boolean(expanded[req.id]);
-                                const chosen = decisions[req.id] ?? {};
                                 const readOnly = req.status !== 'PENDING';
 
                                 return (
@@ -241,17 +297,11 @@ const ProfileApprovals = () => {
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">
-                                                    {req.field_count} change{req.field_count === 1 ? '' : 's'}
+                                                    {req.field_count} field{req.field_count === 1 ? '' : 's'}
                                                 </span>
-                                                {readOnly && (
-                                                    <span className="ml-2 text-xs text-slate-500">
-                                                        {req.approved_count > 0 && (
-                                                            <span className="text-success-600">{req.approved_count} ✓</span>
-                                                        )}
-                                                        {req.approved_count > 0 && req.rejected_count > 0 && ' · '}
-                                                        {req.rejected_count > 0 && (
-                                                            <span className="text-danger-600">{req.rejected_count} ✗</span>
-                                                        )}
+                                                {req.has_career_changes && (
+                                                    <span className="ml-1.5 inline-flex items-center gap-1 rounded bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
+                                                        <GraduationCap className="h-3 w-3" /> career
                                                     </span>
                                                 )}
                                             </td>
@@ -276,97 +326,69 @@ const ProfileApprovals = () => {
                                             <tr className="bg-surface-raised">
                                                 <td colSpan={7} className="px-0 py-0">
                                                     <div className="border-y border-line bg-surface">
+                                                        {/* Every individual change, read-only — the decision
+                                                            below covers all of it at once. */}
                                                         <div className="divide-y divide-line-soft">
-                                                            {req.fields.map((f) => {
-                                                                const d = chosen[f.field_name]?.decision
-                                                                    ?? (readOnly ? f.status : null);
-                                                                return (
-                                                                    <div key={f.field_name} className="px-6 py-3">
-                                                                        <div className="flex flex-wrap items-center gap-3">
-                                                                            <span className="w-44 shrink-0 text-sm font-medium text-slate-700">
-                                                                                {label(f.field_name)}
+                                                            {req.fields.map((f) => (
+                                                                <div key={f.field_name} className="px-6 py-3">
+                                                                    <div className="flex flex-wrap items-center gap-3">
+                                                                        <span className="w-44 shrink-0 text-sm font-medium text-slate-700">
+                                                                            {label(f.field_name)}
+                                                                        </span>
+                                                                        <span className="flex flex-1 items-center gap-2 text-sm">
+                                                                            <span className="text-slate-400 line-through">
+                                                                                {f.old_display ?? '(empty)'}
                                                                             </span>
-                                                                            <span className="flex flex-1 items-center gap-2 text-sm">
-                                                                                <span className="text-slate-400 line-through">
-                                                                                    {f.old_display ?? '(empty)'}
-                                                                                </span>
-                                                                                <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
-                                                                                <span className="font-medium text-slate-900">
-                                                                                    {f.new_display ?? '(cleared)'}
-                                                                                </span>
+                                                                            <ArrowRight className="h-3.5 w-3.5 text-slate-400" />
+                                                                            <span className="font-medium text-slate-900">
+                                                                                {f.new_display ?? '(cleared)'}
                                                                             </span>
-
-                                                                            {readOnly ? (
-                                                                                <span className={`rounded px-2 py-0.5 text-xs font-medium ${f.status === 'APPROVED' ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'}`}>
-                                                                                    {f.status}
-                                                                                </span>
-                                                                            ) : (
-                                                                                <span className="flex gap-1">
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => decide(req.id, f.field_name, 'APPROVED')}
-                                                                                        title="Approve this field"
-                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'APPROVED' ? 'border-success-500 bg-success-100 text-success-700' : 'border-slate-300 text-slate-500 hover:bg-success-50'}`}
-                                                                                    >
-                                                                                        <Check className="h-3.5 w-3.5" />
-                                                                                    </button>
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => decide(req.id, f.field_name, 'REJECTED')}
-                                                                                        title="Reject this field"
-                                                                                        className={`rounded-lg border p-1.5 transition-colors ${d === 'REJECTED' ? 'border-danger-500 bg-danger-100 text-danger-700' : 'border-slate-300 text-slate-500 hover:bg-danger-50'}`}
-                                                                                    >
-                                                                                        <X className="h-3.5 w-3.5" />
-                                                                                    </button>
-                                                                                </span>
-                                                                            )}
-                                                                        </div>
-
-                                                                        {!readOnly && d === 'REJECTED' && (
-                                                                            <input
-                                                                                value={chosen[f.field_name]?.note ?? ''}
-                                                                                onChange={(e) => setNote(req.id, f.field_name, e.target.value)}
-                                                                                placeholder="Why? The consultant will see this."
-                                                                                className="mt-2 w-full max-w-md rounded-lg border border-danger-200 px-3 py-1.5 text-xs outline-none focus:border-danger-400"
-                                                                            />
-                                                                        )}
-                                                                        {readOnly && f.review_note && (
-                                                                            <p className="mt-1 text-xs text-slate-500">
-                                                                                Note: {f.review_note}
-                                                                            </p>
+                                                                        </span>
+                                                                        {readOnly && (
+                                                                            <span className={`rounded px-2 py-0.5 text-xs font-medium ${f.status === 'APPROVED' ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'}`}>
+                                                                                {f.status}
+                                                                            </span>
                                                                         )}
                                                                     </div>
-                                                                );
-                                                            })}
+                                                                </div>
+                                                            ))}
                                                         </div>
 
+                                                        <CareerDiff career={req.career} />
+
                                                         {!readOnly && (
-                                                            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-slate-50 px-6 py-3">
-                                                                <div className="flex gap-2">
+                                                            <div className="border-t border-line bg-slate-50 px-6 py-3">
+                                                                <textarea
+                                                                    value={notes[req.id] ?? ''}
+                                                                    onChange={(e) => setNotes((n) => ({ ...n, [req.id]: e.target.value }))}
+                                                                    placeholder="Note for the consultant (optional — required if you reject)"
+                                                                    rows={2}
+                                                                    className="w-full max-w-xl rounded-lg border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-brand-400"
+                                                                />
+                                                                <div className="mt-2 flex flex-wrap items-center gap-2">
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => decideAll(req, 'APPROVED')}
-                                                                        className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs text-slate-600 hover:bg-success-50"
+                                                                        onClick={() => decide(req, 'APPROVED')}
+                                                                        disabled={submitting === req.id}
+                                                                        className={btn.primary}
                                                                     >
-                                                                        Approve all
+                                                                        {submitting === req.id
+                                                                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                                                                            : <Check className="h-4 w-4" />}
+                                                                        Approve
                                                                     </button>
                                                                     <button
                                                                         type="button"
-                                                                        onClick={() => decideAll(req, 'REJECTED')}
-                                                                        className="rounded-lg border border-slate-300 bg-surface px-3 py-1.5 text-xs text-slate-600 hover:bg-danger-50"
+                                                                        onClick={() => decide(req, 'REJECTED')}
+                                                                        disabled={submitting === req.id}
+                                                                        className="inline-flex items-center gap-1.5 rounded-lg border border-danger-300 bg-surface px-3 py-1.5 text-sm text-danger-700 hover:bg-danger-50 disabled:opacity-50"
                                                                     >
-                                                                        Reject all
+                                                                        <X className="h-4 w-4" /> Reject
                                                                     </button>
+                                                                    <span className="text-xs text-slate-400">
+                                                                        Approving applies everything above at once — there is no per-field decision any more.
+                                                                    </span>
                                                                 </div>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => submit(req)}
-                                                                    disabled={submitting === req.id}
-                                                                    className={btn.primary}
-                                                                >
-                                                                    {submitting === req.id && <Loader2 className="h-4 w-4 animate-spin" />}
-                                                                    Submit review
-                                                                </button>
                                                             </div>
                                                         )}
 

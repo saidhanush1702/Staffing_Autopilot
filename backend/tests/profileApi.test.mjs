@@ -1,21 +1,29 @@
 /**
- * Phase 8 — the career-record API.
+ * Phase 8/9 — the career-record CRUD, as MANAGEMENT now uses it.
  *
  *   node tests/profileApi.test.mjs
  *
- * Calls the controller handlers directly with stand-in req/res objects rather
- * than over HTTP.
+ * These handlers (createRow, updateRow, addSkill, …) were originally reached
+ * by both the consultant and management routes — a consultant's own instant
+ * self-service, and a recruiter editing directly. Phase 9 retired the
+ * consultant-facing ROUTES in favour of the merged approval workflow (see
+ * tests/profileMerge.test.mjs): a consultant's edits now travel through
+ * POST /portal/profile/change-request and are applied by
+ * services/careerApproval.js on approval, not by these handlers directly.
  *
- * ── WHY NOT THROUGH HTTP ──────────────────────────────────────────────
+ * The handlers themselves are unchanged and still real — an ORG_ADMIN or
+ * RECRUITER editing a consultant's career directly needs no approval, since
+ * they ARE the approver, so this suite still exercises live production code.
+ * It calls the controller functions directly with stand-in req/res objects
+ * rather than over HTTP, for the same reason as before: the risk here is the
+ * SQL these handlers build from a column registry, which is equally visible
+ * whether the call arrives through Express or not, and going through HTTP
+ * would mean booting a server and minting tokens to test the same statements.
  *
- * The risk in this controller is the SQL, not the routing. It builds column
- * lists and placeholder strings from a registry, so a mistake shows up as a
- * malformed query — and that is visible whether the call arrives through
- * Express or not. Going through HTTP would mean booting a server and minting
- * tokens to test the same statements, and would test Express rather than this.
- *
- * The scope checks ARE exercised, because those are the other thing worth
- * proving: a consultant must not be able to touch another consultant's rows.
+ * The scope checks below still use a CONSULTANT-shaped caller. That branch of
+ * resolveTarget() is no longer reachable from any route, but the ownership
+ * check itself — one consultant must never touch another's rows — is the same
+ * logic management's calls run through, so it is still worth proving.
  */
 import { randomUUID } from 'node:crypto';
 import { query, pool } from '../db.js';

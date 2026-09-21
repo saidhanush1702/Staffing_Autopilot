@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
-    Briefcase, Search, ExternalLink, Users, Eye, MapPin, Repeat, Clock,
+    Briefcase, Search, ExternalLink, Users, Eye, MapPin, Repeat, Clock, ArrowUpDown, ArrowUp, ArrowDown, UserPlus
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
+import LinkToConsultant from '../../components/postings/LinkToConsultant.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import {
     inputBase, badge, btnSm, sectionTitle, TONE, pageTitle, pageSubtitle,
@@ -89,10 +90,20 @@ const Postings = () => {
     const [detail, setDetail] = useState(null);
     const [loadingDetail, setLoadingDetail] = useState(false);
 
-    const load = async (term = '') => {
+    // Newest ingested first: the question people open this screen with is
+    // "what came in?", and the answer is worthless in any other order.
+    const [sort, setSort] = useState({ key: 'ingested', dir: 'desc' });
+    const [linking, setLinking] = useState(null);
+
+    const load = async (term = search, s = sort) => {
         try {
             const { data } = await api.get('/management/postings', {
-                params: { search: term || undefined, limit: 100 },
+                params: {
+                    search: term || undefined,
+                    sort: s.key,
+                    dir: s.dir,
+                    limit: 100,
+                },
             });
             setPostings(data.postings);
         } catch (err) {
@@ -101,6 +112,23 @@ const Postings = () => {
     };
 
     useEffect(() => { load(); }, []);
+
+    /**
+     * Clicking a column sorts by it. Clicking the one already sorted flips it.
+     *
+     * Sorted on the SERVER, not in the browser: the list is capped at 100 rows
+     * out of hundreds, so sorting what arrived would reorder a page rather than
+     * change which page it is — "oldest first" would show the oldest of the
+     * newest hundred, which is a different and wrong answer.
+     */
+    const sortBy = (key) => {
+        const next = sort.key === key
+            ? { key, dir: sort.dir === 'desc' ? 'asc' : 'desc' }
+            : { key, dir: 'desc' };
+        setSort(next);
+        setPostings(null);
+        load(search, next);
+    };
 
     const open = async (id) => {
         setLoadingDetail(true);
@@ -112,6 +140,26 @@ const Postings = () => {
         } finally {
             setLoadingDetail(false);
         }
+    };
+
+    /** A column header that sorts, showing which way it is pointing. */
+    const SortHead = ({ label, sortKey }) => {
+        const active = sort.key === sortKey;
+        const Icon = !active ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown;
+        return (
+            <th className={tableHeadCell}>
+                <button
+                    type="button"
+                    onClick={() => sortBy(sortKey)}
+                    className={`inline-flex items-center gap-1 transition
+                                ${active ? 'text-slate-900' : 'hover:text-slate-700'}`}
+                    aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+                >
+                    {label}
+                    <Icon className={`h-3 w-3 ${active ? '' : 'opacity-40'}`} />
+                </button>
+            </th>
+        );
     };
 
     if (error) return <p className="text-sm text-danger-700">{error}</p>;
@@ -144,10 +192,11 @@ const Postings = () => {
             <TableShell className="mt-4" minWidth={1060}>
                 <thead className={tableHead}>
                     <tr>
-                        <th className={tableHeadCell}>Job</th>
+                        <SortHead label="Job" sortKey="title" />
                         <th className={tableHeadCell}>Location</th>
                         <th className={tableHeadCell}>Pay</th>
-                        <th className={tableHeadCell}>Posted</th>
+                        <SortHead label="Posted" sortKey="posted" />
+                        <SortHead label="Ingested" sortKey="ingested" />
                         <th className={tableHeadCell}>Source &amp; run</th>
                         <th className={tableHeadCell}>Seen</th>
                         <th className={tableHeadCell}>Matched</th>
@@ -157,7 +206,7 @@ const Postings = () => {
                 <tbody className={tableBody}>
                     {postings.length === 0 && (
                         <tr>
-                            <td colSpan={8} className="px-4 py-12 text-center">
+                            <td colSpan={9} className="px-4 py-12 text-center">
                                 <Briefcase className="mx-auto h-8 w-8 text-slate-300" />
                                 <p className="mt-2 text-sm text-slate-500">
                                     {search ? 'No postings match that.' : 'No postings found yet.'}
@@ -203,6 +252,21 @@ const Postings = () => {
                                         </span>
                                     );
                                 })()}
+                            </td>
+
+                            {/* ── when WE first saw it ──────────────────
+                                Distinct from "Posted", and the one to trust:
+                                the employer's date arrives coarse from some
+                                sources and absent from others, while this is
+                                a fact about our own pool. */}
+                            <td className={`${tableCell} whitespace-nowrap`}>
+                                <span
+                                    className="text-xs text-slate-600"
+                                    title={new Date(p.first_seen_at).toLocaleString()}
+                                >
+                                    {new Date(p.first_seen_at).toLocaleDateString(undefined,
+                                        { day: 'numeric', month: 'short', year: '2-digit' })}
+                                </span>
                             </td>
                             <td className={`${tableCell} whitespace-nowrap`}>
                                 {(() => {
@@ -258,14 +322,40 @@ const Postings = () => {
                                 )}
                             </td>
                             <td className={`${tableCell} text-right`}>
-                                <button type="button" onClick={() => open(p.id)} className={btnSm.secondary}>
-                                    <Eye className="h-3.5 w-3.5" /> Open
-                                </button>
+                                <div className="flex justify-end gap-2">
+                                    {/* The override for everything the matcher
+                                        refused — which, on a pool sourced wider
+                                        than the bench is searching, is most of
+                                        it. */}
+                                    <button
+                                        type="button"
+                                        onClick={() => setLinking(p)}
+                                        className={btnSm.ghost}
+                                        title="Put this job in a consultant's queue"
+                                    >
+                                        <UserPlus className="h-3.5 w-3.5" /> Link
+                                    </button>
+                                    <button type="button" onClick={() => open(p.id)} className={btnSm.secondary}>
+                                        <Eye className="h-3.5 w-3.5" /> Open
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                     ))}
                 </tbody>
             </TableShell>
+
+            {linking && (
+                <LinkToConsultant
+                    posting={linking}
+                    onClose={() => setLinking(null)}
+                    // Reload so the row's "matched / queued" count reflects
+                    // what just happened, without closing the dialog — a
+                    // recruiter placing one job with three consultants should
+                    // not have to reopen it twice.
+                    onLinked={() => load()}
+                />
+            )}
 
             {(detail || loadingDetail) && (
                 <Modal

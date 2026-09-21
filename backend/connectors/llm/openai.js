@@ -35,7 +35,7 @@ const apiKey = () => env('LLM_OPENAI_API_KEY', env('OPENAI_API_KEY'));
 export const isConfigured = () => apiKey().length > 0;
 
 export const call = async ({
-    model, system, cacheable, input, schema, maxTokens = 8000,
+    model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
 }) => {
     const key = apiKey();
     if (!key) {
@@ -54,6 +54,7 @@ export const call = async ({
     messages.push({ role: 'user', content: input });
 
     const body = { model, messages, max_tokens: maxTokens };
+    if (temperature !== null && temperature !== undefined) body.temperature = temperature;
 
     if (schema) {
         // json_schema is the strict mode; a vendor that does not implement it
@@ -68,7 +69,7 @@ export const call = async ({
         url: `${baseUrl().replace(/\/+$/, '')}/v1/chat/completions`,
         headers: { authorization: `Bearer ${key}` },
         body,
-        timeoutMs: numEnv('LLM_TIMEOUT_MS', 120_000),
+        timeoutMs: timeoutMs ?? numEnv('LLM_TIMEOUT_MS', 120_000),
     });
     if (!res.ok) return res;
 

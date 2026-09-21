@@ -68,13 +68,37 @@ const stripSchema = (node) => {
     const out = {};
     for (const [key, value] of Object.entries(source)) {
         if (UNSUPPORTED.has(key)) continue;
+
+        // ── AN EMPTY ENUM VALUE IS A 400, NOT A WARNING ───────────────
+        //
+        //   GenerateContentRequest.generation_config.response_schema
+        //     .properties[kind].enum[0]: cannot be empty
+        //
+        // A flat schema that uses "" to mean "this field does not apply" is a
+        // reasonable thing to write, is accepted by other providers, and takes
+        // this one down on every single call. That is not hypothetical: the
+        // form-filling agent shipped with exactly that schema and never ran
+        // once, which read as broken automation rather than a rejected request.
+        //
+        // So empty values are dropped here rather than trusted not to appear.
+        // If that empties the list, the enum goes with it — an unconstrained
+        // string still passes our own validation, and a weaker hint to the
+        // model beats a request the provider refuses to read at all.
+        if (key === 'enum' && Array.isArray(value)) {
+            const usable = value
+                .filter((v) => v !== null && v !== undefined && String(v).trim() !== '')
+                .map((v) => String(v));
+            if (usable.length > 0) out[key] = usable;
+            continue;
+        }
+
         out[key] = stripSchema(value);
     }
     return out;
 };
 
 export const call = async ({
-    model, system, cacheable, input, schema, maxTokens = 8000,
+    model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
 }) => {
     const key = apiKey();
     if (!key) {
@@ -95,6 +119,9 @@ export const call = async ({
         contents: [{ role: 'user', parts }],
         generationConfig: { maxOutputTokens: maxTokens },
     };
+    if (temperature !== null && temperature !== undefined) {
+        body.generationConfig.temperature = temperature;
+    }
     if (system) body.systemInstruction = { parts: [{ text: system }] };
     if (schema) {
         body.generationConfig.responseMimeType = 'application/json';
@@ -108,7 +135,7 @@ export const call = async ({
         url: `${base.replace(/\/+$/, '')}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
         headers: { 'x-goog-api-key': key },
         body,
-        timeoutMs: numEnv('LLM_TIMEOUT_MS', 120_000),
+        timeoutMs: timeoutMs ?? numEnv('LLM_TIMEOUT_MS', 120_000),
     });
     if (!res.ok) return res;
 
