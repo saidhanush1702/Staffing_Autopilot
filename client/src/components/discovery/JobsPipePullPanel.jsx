@@ -13,6 +13,7 @@ import {
     tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShell,
     alertShellSm, input, fieldLabel, checkbox, codeChip,
 } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * ── THE JOBSPIPE PULL PATH, ON THE DISCOVERY SCREEN ───────────────────
@@ -914,7 +915,7 @@ const JobsPipePullPanel = ({ canEdit }) => {
                                         {isOpen
                                             ? <ChevronDown className="mr-1 inline h-3.5 w-3.5 text-slate-400" />
                                             : <ChevronRight className="mr-1 inline h-3.5 w-3.5 text-slate-400" />}
-                                        {new Date(r.started_at).toLocaleString()}
+                                        {formatDateTime(r.started_at)}
                                         <span className="ml-1 text-xs text-slate-400">
                                             {r.trigger === 'MANUAL' ? 'manual' : 'scheduled'}
                                         </span>

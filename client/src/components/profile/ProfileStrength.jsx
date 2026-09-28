@@ -41,24 +41,42 @@ const TIER = (pct) => {
     return { tone: 'danger', label: 'Just getting started' };
 };
 
-const Row = ({ item, onNavigate }) => (
-    <button
-        type="button"
-        onClick={() => {
-            document.getElementById(item.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            onNavigate();
-        }}
-        className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm
-                   text-slate-700 transition-colors hover:bg-surface-raised"
-    >
-        {item.filled
-            ? <CheckCircle2 className={`h-4 w-4 shrink-0 ${TONE_TEXT.success}`} />
-            : <AlertCircle className={`h-4 w-4 shrink-0 ${TONE_TEXT.warning}`} />}
-        <span className={item.filled ? 'text-slate-700' : 'text-slate-500'}>{item.label}</span>
-    </button>
-);
+/**
+ * `readOnly` drops the click-to-scroll behaviour: a viewer looking at
+ * someone else's profile (an org admin or recruiter) has no form on the
+ * page to jump to — there is nothing here for them to go fix — so the row
+ * is a plain line, not a button pretending to navigate somewhere.
+ */
+const Row = ({ item, onNavigate, readOnly }) => {
+    const icon = item.filled
+        ? <CheckCircle2 className={`h-4 w-4 shrink-0 ${TONE_TEXT.success}`} />
+        : <AlertCircle className={`h-4 w-4 shrink-0 ${TONE_TEXT.warning}`} />;
+    const label = <span className={item.filled ? 'text-slate-700' : 'text-slate-500'}>{item.label}</span>;
 
-const ProfileStrength = ({ items, isComplete, readiness }) => {
+    if (readOnly) {
+        return (
+            <div className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-sm">
+                {icon}{label}
+            </div>
+        );
+    }
+
+    return (
+        <button
+            type="button"
+            onClick={() => {
+                document.getElementById(item.anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                onNavigate();
+            }}
+            className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm
+                       text-slate-700 transition-colors hover:bg-surface-raised"
+        >
+            {icon}{label}
+        </button>
+    );
+};
+
+const ProfileStrength = ({ items, isComplete, readiness, readOnly = false }) => {
     const [open, setOpen] = useState(false);
     const ref = useRef(null);
 
@@ -162,7 +180,7 @@ const ProfileStrength = ({ items, isComplete, readiness }) => {
                             <p className={eyebrow}>Required for approval</p>
                             <div className="mt-1.5 space-y-0.5">
                                 {required.map((item) => (
-                                    <Row key={item.key} item={item} onNavigate={() => setOpen(false)} />
+                                    <Row key={item.key} item={item} readOnly={readOnly} onNavigate={() => setOpen(false)} />
                                 ))}
                             </div>
                         </div>
@@ -170,7 +188,7 @@ const ProfileStrength = ({ items, isComplete, readiness }) => {
                             <p className={eyebrow}>Recommended — strengthens your matches</p>
                             <div className="mt-1.5 space-y-0.5">
                                 {recommended.map((item) => (
-                                    <Row key={item.key} item={item} onNavigate={() => setOpen(false)} />
+                                    <Row key={item.key} item={item} readOnly={readOnly} onNavigate={() => setOpen(false)} />
                                 ))}
                             </div>
                         </div>

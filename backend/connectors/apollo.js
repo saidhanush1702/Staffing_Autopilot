@@ -20,16 +20,33 @@
  * Nothing else is needed, and adding more would be adding surface area to a
  * paid API for no current caller.
  *
- * ── ONE THING TO VERIFY BEFORE THIS IS TRUSTED ────────────────────────
+ * ── VERIFIED AGAINST LIVE APOLLO — `npm run verify:apollo` ─────────────
  *
- * The request and response shapes below follow Apollo's documented contract.
- * They have NOT yet been checked against live responses, because no key is in
- * the environment yet. `normalisePerson` is written defensively — every field
- * is optional and every access is guarded — so an unexpected shape yields a
- * thin contact rather than a crash. When APOLLO_API_KEY lands, run one call of
- * each operation and reconcile the parsed result against the raw body. That
- * step is a gate, not a formality: a silently mis-parsed contact is worse than
- * no contact, because somebody will email it.
+ * Run that after touching this file or rotating the key. It makes exactly
+ * two real calls (one matchPerson, one searchPeople) and prints Apollo's raw
+ * response next to what normalisePerson() extracted, so a field-mapping
+ * mistake is caught by eye rather than discovered later as a badly-shaped
+ * contact — see scripts/verify-apollo.mjs for why those two calls and not
+ * more.
+ *
+ * The first real run against this key found three transport bugs, all now
+ * fixed: Apollo takes every parameter as a URL query string, never a JSON
+ * body, on both endpoints, despite both being POST requests; the search
+ * endpoint is `/mixed_people/api_search`, not `/mixed_people/search`; and
+ * its domain filter is `q_organization_domains_list`, not
+ * `q_organization_domains`. All three were silent failures before the fix —
+ * wrong path 404s, and params in the wrong place mean Apollo receives no
+ * identifying information at all, not an error.
+ *
+ * `normalisePerson`'s field mapping is checked against Apollo's documented
+ * response shape and a synthetic payload, but NOT yet against a genuine
+ * live "found" response: this key is on Apollo's Free plan, which returns
+ * `403 API_INACCESSIBLE` for both endpoints before any credit is spent —
+ * "not included in your Free plan... even with a master key. All paid
+ * plans include full API access." No code change here fixes that; it needs
+ * a paid Apollo plan. Re-run `npm run verify:apollo` once one is in place,
+ * and reconcile the raw body against the parsed result one more time before
+ * trusting a contact this pulls in.
  */
 import { postJson, env, numEnv } from './llm/transport.js';
 
@@ -82,7 +99,28 @@ export const normalisePerson = (p) => {
     };
 };
 
-const request = async (path, body) => {
+/**
+ * Apollo takes every parameter on these two endpoints as a URL query string,
+ * never as a JSON body — confirmed against Apollo's own published examples
+ * for both `/people/match` and `/mixed_people/api_search`, despite both being
+ * POST requests. An array value repeats the key with `[]`, which is Apollo's
+ * documented convention (`person_titles[]=a&person_titles[]=b`), not the
+ * comma-joined or JSON-array form other APIs use.
+ */
+const toQueryString = (params) => {
+    const usp = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value === undefined || value === null) return;
+        if (Array.isArray(value)) {
+            value.forEach((v) => { if (v !== undefined && v !== null) usp.append(`${key}[]`, v); });
+        } else {
+            usp.append(key, value);
+        }
+    });
+    return usp.toString();
+};
+
+const request = async (path, params) => {
     const key = apiKey();
     if (!key) {
         return {
@@ -92,12 +130,16 @@ const request = async (path, body) => {
         };
     }
 
+    const qs = toQueryString(params);
+
     return postJson({
-        url: `${baseUrl()}${path}`,
+        url: `${baseUrl()}${path}${qs ? `?${qs}` : ''}`,
         // The key goes in a header. It must never reach the URL, because the URL
         // is what gets written to contact_lookups and shown to operators.
         headers: { 'x-api-key': key, accept: 'application/json' },
-        body,
+        // Apollo reads nothing from the body, but postJson always sends one —
+        // an empty object costs nothing and keeps that layer's contract intact.
+        body: {},
         timeoutMs: numEnv('APOLLO_TIMEOUT_MS', 20_000),
     });
 };
@@ -142,9 +184,15 @@ export const TALENT_TITLES = [
 export const searchPeople = async ({
     company, domain, location, titles = TALENT_TITLES, limit = 2,
 }) => {
-    const res = await request('/api/v1/mixed_people/search', {
-        q_organization_domains: domain ? [domain] : undefined,
-        organization_names: domain ? undefined : [company],
+    // `company` is passed through as a keyword fallback for when there is no
+    // domain, but this endpoint has no documented "organization name" filter —
+    // only a domain, an Apollo organization id, or free-text keywords. Without
+    // a domain the search is scoped by title and location only, which is
+    // broader than intended. `knownDomain()` upstream exists specifically to
+    // avoid landing here domain-less as often as possible.
+    const res = await request('/api/v1/mixed_people/api_search', {
+        q_organization_domains_list: domain ? [domain] : undefined,
+        q_keywords: domain ? undefined : company,
         person_titles: titles,
         person_locations: location ? [location] : undefined,
         page: 1,

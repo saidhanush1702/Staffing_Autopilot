@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, RefreshCw, Loader2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import { card } from '../../design/tokens.js';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * Collapsible audit panel, dropped at the bottom of every module page:
@@ -112,7 +113,7 @@ const AuditLogPanel = ({ module }) => {
                                     </span>
                                     <span className="text-sm text-slate-700">{log.entity_name ?? log.entity_type}</span>
                                     <span className="ml-auto text-xs text-slate-400">
-                                        {new Date(log.created_at).toLocaleString()}
+                                        {formatDateTime(log.created_at)}
                                     </span>
                                 </div>
                                 {log.description && (

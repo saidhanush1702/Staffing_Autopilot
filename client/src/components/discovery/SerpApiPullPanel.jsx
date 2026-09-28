@@ -11,6 +11,7 @@ import {
     card, cardPad, badge, btn, btnSm, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, codeChip,
     tableHead, tableHeadCell, tableBody, tableRow, tableCell, alertShellSm, alertShell,
 } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * ── THE SERPAPI (GOOGLE JOBS) TAB ─────────────────────────────────────
@@ -258,7 +259,7 @@ const SerpApiPullPanel = ({ canEdit, refreshKey = 0 }) => {
                     <div>
                         <p className="text-xs uppercase tracking-wide text-slate-400">Last success</p>
                         <p className="text-sm text-slate-700">
-                            {provider.lastSuccessAt ? new Date(provider.lastSuccessAt).toLocaleString() : '—'}
+                            {provider.lastSuccessAt ? formatDateTime(provider.lastSuccessAt) : '—'}
                         </p>
                     </div>
                 </div>
@@ -436,7 +437,7 @@ const SerpApiPullPanel = ({ canEdit, refreshKey = 0 }) => {
                                             {isOpen
                                                 ? <ChevronDown className="mr-1 inline h-3.5 w-3.5 text-slate-400" />
                                                 : <ChevronRight className="mr-1 inline h-3.5 w-3.5 text-slate-400" />}
-                                            {new Date(r.started_at).toLocaleString()}
+                                            {formatDateTime(r.started_at)}
                                             <span className="ml-1 text-xs text-slate-400">
                                                 {r.trigger === 'SCHEDULED' ? 'scheduled' : 'manual'}
                                                 {r.triggered_by_name ? ` · ${r.triggered_by_name}` : ''}

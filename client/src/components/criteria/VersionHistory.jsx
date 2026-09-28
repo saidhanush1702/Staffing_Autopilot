@@ -5,6 +5,7 @@ import Modal, { ModalActions } from '../ui/Modal.jsx';
 import CriteriaView, { VersionByline, describeLocation, describePay } from './CriteriaView.jsx';
 import { card, cardPad, sectionTitle, btnSm, badge, TONE, TONE_ALERT, tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty, alertShellSm } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /** Added / removed between two string lists, in one pass. */
 const listDiff = (before, after) => ({
@@ -184,7 +185,7 @@ const VersionHistory = ({ consultantId, versions, currentVersion, canEdit, onRes
                                     <p className="text-xs text-slate-400">{v.createdByRole}</p>
                                 </td>
                                 <td className={`${tableCell} whitespace-nowrap text-slate-500`}>
-                                    {new Date(v.createdAt).toLocaleString()}
+                                    {formatDateTime(v.createdAt)}
                                 </td>
                                 <td className={`${tableCell} text-xs text-slate-500`}>
                                     {v.titleCount} titles · {v.keywordCount} keywords · {v.locationCount} locations

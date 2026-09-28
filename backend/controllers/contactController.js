@@ -43,6 +43,12 @@ export const dncSchema = Joi.object({
     undo: Joi.boolean().default(false),
 });
 
+export const providerSettingsSchema = Joi.object({
+    isEnabled: Joi.boolean(),
+    monthlyBudget: Joi.number().integer().min(0).max(100_000),
+    rateLimitMs: Joi.number().integer().min(0).max(60_000),
+}).min(1);
+
 /* ── shared shaping ────────────────────────────────────────────────── */
 
 /**
@@ -353,6 +359,66 @@ export const setDoNotContact = async (req, res, next) => {
     }
 };
 
+/* ── the provider's settings for this agency ──────────────────────── */
+
+/**
+ * PATCH /api/management/contacts/provider — ORG_ADMIN only.
+ *
+ * The switch that starts this agency spending Apollo credits, plus its
+ * monthly ceiling and pacing. Apollo is registered with `fetch_mode =
+ * 'ENRICHMENT'` (migration 045), not `PROVIDER`, so it is deliberately NOT
+ * reachable through `PATCH /api/management/discovery/sources/:id` — that
+ * route's non-PROVIDER branch writes to the GLOBAL `lkp_job_sources` row,
+ * which would switch Apollo on for every tenant on the installation at once.
+ * This route writes only `organization_providers`, the same per-agency row
+ * `providerState` already reads, so "enabled" always means "enabled for one
+ * agency" and nothing that shares this database is ever silently billed for
+ * another tenant's decision.
+ */
+export const updateProviderSettings = async (req, res, next) => {
+    try {
+        const { isEnabled, monthlyBudget, rateLimitMs } = req.body;
+
+        const { rows } = await query(
+            `UPDATE organization_providers op
+                SET is_enabled    = COALESCE($2, op.is_enabled),
+                    monthly_budget = COALESCE($3, op.monthly_budget),
+                    rate_limit_ms  = COALESCE($4, op.rate_limit_ms),
+                    -- switching back on clears the old failure streak, so
+                    -- health reflects the new attempt rather than whatever
+                    -- outage caused it to be turned off last time.
+                    consecutive_failures = CASE WHEN $2 IS TRUE THEN 0 ELSE op.consecutive_failures END,
+                    last_error = CASE WHEN $2 IS TRUE THEN NULL ELSE op.last_error END
+              WHERE op.organization_id = $1
+                AND op.source_id = (SELECT id FROM lkp_job_sources WHERE name = 'APOLLO')
+          RETURNING op.is_enabled, op.monthly_budget, op.rate_limit_ms`,
+            [req.user.orgId, isEnabled ?? null, monthlyBudget ?? null, rateLimitMs ?? null],
+        );
+        const row = rows[0];
+        if (!row) {
+            return res.status(404).json({
+                error: 'No Apollo provider row for this organisation. Run the migrations.',
+            });
+        }
+
+        await audit(
+            req,
+            'Updated Contact Provider Settings',
+            `Apollo: ${row.is_enabled ? 'on' : 'off'}, `
+            + `budget ${row.monthly_budget} credits/month, `
+            + `${row.rate_limit_ms}ms between calls.`,
+        );
+
+        return res.json({
+            enabled: row.is_enabled,
+            budget: row.monthly_budget,
+            rateLimitMs: row.rate_limit_ms,
+        });
+    } catch (err) {
+        return next(err);
+    }
+};
+
 /* ── cost ──────────────────────────────────────────────────────────── */
 
 /**
@@ -392,6 +458,7 @@ export const contactUsage = async (req, res, next) => {
                 budget: state.budget,
                 used: state.used,
                 remaining: state.remaining,
+                rateLimitMs: state.rateLimitMs,
             },
             month: {
                 ...stats,

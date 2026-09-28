@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-    Search, AlertCircle, UserSearch, Coins, Database, ShieldOff,
+    Search, AlertCircle, UserSearch, Coins, Database, ShieldOff, Zap, Save,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -8,9 +8,11 @@ import Pagination from '../../components/Pagination.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import StatCard from '../../components/ui/StatCard.jsx';
 import ContactCard from '../../components/contacts/ContactCard.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 import {
-    card, cardPad, searchInput, searchIcon, input, fieldLabel,
-    pageTitle, pageSubtitle, alertShell, TONE_ALERT,
+    card, cardPad, searchInput, searchIcon, input, fieldLabel, badge, TONE,
+    btnSm, toggleTrack, toggleTrackOn, toggleTrackOff, toggleKnob, toggleKnobOn, toggleKnobOff,
+    pageTitle, pageSubtitle, alertShell, TONE_ALERT, sectionTitle,
 } from '../../design/tokens.js';
 
 /**
@@ -36,6 +38,9 @@ import {
  * the control, not an oversight.
  */
 const Contacts = () => {
+    const { user } = useAuth();
+    const isAdmin = user?.role === 'ORG_ADMIN';
+
     const [rows, setRows] = useState(null);
     const [page, setPage] = useState(null);
     const [currentPage, setCurrentPage] = useState(1);
@@ -46,6 +51,9 @@ const Contacts = () => {
     const [target, setTarget] = useState(null);
     const [reason, setReason] = useState('');
     const [busy, setBusy] = useState(false);
+
+    const [providerDraft, setProviderDraft] = useState(null);
+    const [savingProvider, setSavingProvider] = useState(false);
 
     const load = useCallback(async (p = 1, search = '') => {
         try {
@@ -62,16 +70,44 @@ const Contacts = () => {
         }
     }, []);
 
-    useEffect(() => { load(1, ''); }, [load]);
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const { data } = await api.get('/management/contacts/usage');
-                setUsage(data);
-            } catch { /* the tiles are context, not the page */ }
-        })();
+    const loadUsage = useCallback(async () => {
+        try {
+            const { data } = await api.get('/management/contacts/usage');
+            setUsage(data);
+        } catch { /* the tiles are context, not the page */ }
     }, []);
+
+    useEffect(() => { load(1, ''); }, [load]);
+    useEffect(() => { loadUsage(); }, [loadUsage]);
+
+    const toggleProvider = async () => {
+        if (!usage) return;
+        setSavingProvider(true);
+        try {
+            await api.patch('/management/contacts/provider', { isEnabled: !usage.provider.enabled });
+            await loadUsage();
+        } catch (err) {
+            setError(errorMessage(err));
+        } finally {
+            setSavingProvider(false);
+        }
+    };
+
+    const saveProviderDraft = async () => {
+        setSavingProvider(true);
+        try {
+            await api.patch('/management/contacts/provider', {
+                monthlyBudget: providerDraft.budget,
+                rateLimitMs: providerDraft.rateLimitMs,
+            });
+            setProviderDraft(null);
+            await loadUsage();
+        } catch (err) {
+            setError(errorMessage(err));
+        } finally {
+            setSavingProvider(false);
+        }
+    };
 
     /** Debounced so typing a company name is not one request per keystroke. */
     useEffect(() => {
@@ -141,13 +177,112 @@ const Contacts = () => {
                 </div>
             )}
 
-            {usage && !usage.provider.enabled && (
+            {usage && !usage.provider.configured && (
+                <div className={`mt-4 ${alertShell} ${TONE_ALERT.warning}`}>
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    <span>
+                        No Apollo key is set in the server environment, so no contact lookups
+                        can run yet, even once switched on here.
+                    </span>
+                </div>
+            )}
+
+            {usage && !isAdmin && !usage.provider.enabled && (
                 <div className={`mt-4 ${alertShell} ${TONE_ALERT.info}`}>
                     <AlertCircle className="h-4 w-4 shrink-0" />
                     <span>
                         Contact discovery is switched off for this organisation, so no new
                         contacts are being found. Anything below was found earlier.
                     </span>
+                </div>
+            )}
+
+            {usage && isAdmin && (
+                <div className={`mt-4 ${card} ${cardPad}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h2 className={`flex items-center gap-2 ${sectionTitle}`}>
+                                <Zap className="h-4 w-4 text-slate-400" />
+                                Apollo (contact enrichment)
+                                <span className={`${badge} ${usage.provider.enabled ? TONE.success : TONE.neutral}`}>
+                                    {usage.provider.enabled ? 'On' : 'Off'}
+                                </span>
+                            </h2>
+                            <p className="mt-1 max-w-xl text-xs text-slate-500">
+                                Finds the hiring contact for a job, once an application goes out.
+                                Off by default — switching this on is the moment this agency starts
+                                spending Apollo credits.
+                            </p>
+                        </div>
+
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={usage.provider.enabled}
+                            aria-label="Apollo contact discovery"
+                            disabled={savingProvider}
+                            onClick={toggleProvider}
+                            className={`${toggleTrack} ${usage.provider.enabled ? toggleTrackOn : toggleTrackOff}`}
+                        >
+                            <span className={`${toggleKnob} ${usage.provider.enabled ? toggleKnobOn : toggleKnobOff}`} />
+                        </button>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 border-t border-line-soft pt-4 sm:grid-cols-2">
+                        <div>
+                            <label className={fieldLabel} htmlFor="apollo-budget">
+                                Monthly budget (credits)
+                            </label>
+                            <input
+                                id="apollo-budget"
+                                type="number"
+                                min={0}
+                                value={providerDraft?.budget ?? usage.provider.budget}
+                                onChange={(e) => setProviderDraft({
+                                    budget: Number(e.target.value),
+                                    rateLimitMs: providerDraft?.rateLimitMs ?? usage.provider.rateLimitMs,
+                                })}
+                                className={input}
+                            />
+                            <p className="mt-1 text-xs text-slate-400">
+                                Used {usage.provider.used} · {usage.provider.remaining} left this month.
+                            </p>
+                        </div>
+
+                        <div>
+                            <label className={fieldLabel} htmlFor="apollo-rate-limit">
+                                Milliseconds between calls
+                            </label>
+                            <input
+                                id="apollo-rate-limit"
+                                type="number"
+                                min={0}
+                                value={providerDraft?.rateLimitMs ?? usage.provider.rateLimitMs}
+                                onChange={(e) => setProviderDraft({
+                                    rateLimitMs: Number(e.target.value),
+                                    budget: providerDraft?.budget ?? usage.provider.budget,
+                                })}
+                                className={input}
+                            />
+                            <p className="mt-1 text-xs text-slate-400">
+                                Paces the search-then-enrich pair inside one lookup.
+                            </p>
+                        </div>
+                    </div>
+
+                    {providerDraft && (
+                        <div className="mt-4 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={saveProviderDraft}
+                                disabled={savingProvider}
+                                className={btnSm.primary}
+                            >
+                                <Save className="h-3.5 w-3.5" />
+                                Save settings
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 

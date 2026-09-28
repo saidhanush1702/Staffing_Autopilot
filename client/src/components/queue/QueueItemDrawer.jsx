@@ -7,6 +7,7 @@ import api, { errorMessage } from '../../api/axios.js';
 import TailoringBadge from './TailoringBadge.jsx';
 import ContactPanel from '../contacts/ContactPanel.jsx';
 import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * One queue item, everything known about it, and what may be done to it.
@@ -274,7 +275,7 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                                             <p className="text-xs text-slate-500">{h.reason}</p>
                                         )}
                                         <p className="text-xs text-slate-400">
-                                            {new Date(h.created_at).toLocaleString()}
+                                            {formatDateTime(h.created_at)}
                                             {h.performed_by_name
                                                 ? ` · ${h.performed_by_name}`
                                                 : ' · automatic'}

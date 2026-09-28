@@ -9,12 +9,18 @@ import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import ResumePreview from '../../components/ResumePreview.jsx';
+import ProfileField from '../../components/ProfileField.jsx';
+import SkillPicker from '../../components/profile/SkillPicker.jsx';
+import CareerSectionView from '../../components/profile/CareerSectionView.jsx';
+import ProfileStrength from '../../components/profile/ProfileStrength.jsx';
 import CriteriaEditor from '../../components/criteria/CriteriaEditor.jsx';
 import ConsultantAnswers from '../../components/answers/ConsultantAnswers.jsx';
 import ConsultantJobs from '../../components/queue/ConsultantJobs.jsx';
 import ConsultantApplications from '../../components/queue/ConsultantApplications.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { SECTION_ORDER, PROFILE_SECTIONS } from '../../config/profileSections.js';
 import { card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShell } from '../../design/tokens.js';
+import { formatDate } from '../../utils/datetime.js';
 
 /** Sub-tabs of one consultant's workspace. Phase 3 adds Search Criteria. */
 /**
@@ -57,6 +63,9 @@ const ConsultantDetail = () => {
     const { user } = useAuth();
     const [data, setData] = useState(null);
     const [schema, setSchema] = useState(null);
+    const [lookups, setLookups] = useState(null);
+    const [career, setCareer] = useState(null);
+    const [readiness, setReadiness] = useState(null);
     const [error, setError] = useState('');
     const [tab, setTab] = useState('JOBS');
 
@@ -64,8 +73,17 @@ const ConsultantDetail = () => {
         Promise.all([
             api.get(`/management/consultants/${id}`),
             api.get('/profile-schema'),
+            api.get('/lookups'),
+            // Same "is there enough here for a tailored resume" data the
+            // consultant sees on their own profile — read-only here, since
+            // this screen never proposes changes on their behalf.
+            api.get(`/management/consultants/${id}/profile/full`),
+            api.get(`/management/consultants/${id}/career/readiness`),
         ])
-            .then(([d, s]) => { setData(d.data); setSchema(s.data); })
+            .then(([d, s, lk, full, ready]) => {
+                setData(d.data); setSchema(s.data); setLookups(lk.data);
+                setCareer(full.data); setReadiness(ready.data);
+            })
             .catch((err) => setError(errorMessage(err)));
     }, [id]);
 
@@ -79,11 +97,43 @@ const ConsultantDetail = () => {
             </div>
         );
     }
-    if (!data || !schema) return <PageLoader />;
+    if (!data || !schema || !lookups || !career || !readiness) return <PageLoader />;
 
     const { profile, missingFields, isComplete } = data;
     const fieldLabel = (n) => schema.fields[n]?.label ?? n;
     const location = [profile.city, profile.state].filter(Boolean).join(', ');
+
+    // Mirrors MyProfile.jsx's own split. `base_resume_artifact_id` is left out
+    // of both — it already has its own dedicated preview further down this
+    // page, and a second, disabled file-upload box next to it would just be
+    // the same fact shown two different, worse ways.
+    const identityFields = schema.consultantEditable.filter(
+        (n) => n !== 'base_resume_artifact_id'
+            && !['headline', 'summary', 'github_url', 'portfolio_url', 'coding_profile_url'].includes(n),
+    );
+    const aboutFields = schema.consultantEditable.filter(
+        (n) => ['headline', 'summary', 'github_url', 'portfolio_url', 'coding_profile_url'].includes(n),
+    );
+
+    // Mirrors the checklist MyProfile.jsx builds for the consultant's own
+    // view — one row per identity field the consultant may edit, plus one
+    // per career section — read from the LIVE profile and career record
+    // rather than a draft, since there is no in-progress edit to reflect here.
+    const isFilled = (v) => v !== null && v !== undefined && String(v).trim() !== '';
+    const strengthItems = [
+        ...schema.consultantEditable.map((n) => ({
+            key: n, label: fieldLabel(n), required: schema.fields[n]?.required ?? false,
+            filled: isFilled(profile[n]),
+        })),
+        {
+            key: 'skills', label: 'Skills', required: false,
+            filled: (career.skills ?? []).length > 0,
+        },
+        ...SECTION_ORDER.map((name) => ({
+            key: name, label: PROFILE_SECTIONS[name].label, required: false,
+            filled: (career[name] ?? []).length > 0,
+        })),
+    ];
 
     return (
         <div>
@@ -97,7 +147,10 @@ const ConsultantDetail = () => {
 
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                    <h1 className={pageTitle}>{profile.name}</h1>
+                    <div className="flex items-center gap-2">
+                        <h1 className={pageTitle}>{profile.name}</h1>
+                        <ProfileStrength items={strengthItems} isComplete={isComplete} readiness={readiness} readOnly />
+                    </div>
                     <p className={pageSubtitle}>{profile.email}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -203,7 +256,7 @@ const ConsultantDetail = () => {
                             <Row
                                 icon={CheckCircle2} label="Consent on file"
                                 value={profile.consent_on_file
-                                    ? `Signed${profile.consent_signed_at ? ` ${new Date(profile.consent_signed_at).toLocaleDateString()}` : ''}`
+                                    ? `Signed${profile.consent_signed_at ? ` ${formatDate(profile.consent_signed_at)}` : ''}`
                                     : 'Not signed'}
                                 muted={!profile.consent_on_file}
                             />
@@ -225,7 +278,7 @@ const ConsultantDetail = () => {
                         {profile.resume_uploaded_at && (
                             <span className="flex items-center gap-1 text-xs text-slate-400">
                                 <Clock className="h-3 w-3" />
-                                {new Date(profile.resume_uploaded_at).toLocaleDateString()}
+                                {formatDate(profile.resume_uploaded_at)}
                             </span>
                         )}
                     </div>
@@ -235,6 +288,66 @@ const ConsultantDetail = () => {
                         uploadedAt={profile.resume_uploaded_at}
                     />
                 </div>
+            </div>
+
+            {/* ── everything the consultant filled in themselves ─────
+                Same fields, same components, same grouping as their own
+                My Profile page — just disabled, since changes here go
+                through the consultant's own submission and this screen's
+                approval queue, never edited directly from a viewer. */}
+            <div className="mt-6 space-y-6">
+                <div className={`${card} ${cardPad}`}>
+                    <p className="text-sm font-medium text-slate-700">Details</p>
+                    <div className="mt-3 grid gap-5 sm:grid-cols-2">
+                        {identityFields.map((name) => (
+                            <ProfileField
+                                key={name}
+                                name={name}
+                                field={schema.fields[name]}
+                                value={profile[name]}
+                                onChange={() => {}}
+                                lookups={lookups}
+                                disabled
+                                filled={isFilled(profile[name])}
+                            />
+                        ))}
+                    </div>
+                </div>
+
+                <div className={`${card} ${cardPad}`}>
+                    <p className="text-sm font-medium text-slate-700">About</p>
+                    <div className="mt-3 grid gap-5 sm:grid-cols-2">
+                        {aboutFields.map((name) => (
+                            <div key={name} className={name === 'summary' ? 'sm:col-span-2' : ''}>
+                                <ProfileField
+                                    name={name}
+                                    field={schema.fields[name]}
+                                    value={profile[name]}
+                                    onChange={() => {}}
+                                    lookups={lookups}
+                                    disabled
+                                    filled={isFilled(profile[name])}
+                                />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <div className={`${card} ${cardPad}`}>
+                    <p className="text-sm font-medium text-slate-700">Skills</p>
+                    <div className="mt-3">
+                        <SkillPicker
+                            skills={(career.skills ?? []).map((s) => ({
+                                key: String(s.skill_id ?? s.name), skillId: s.skill_id, name: s.name,
+                            }))}
+                            disabled
+                        />
+                    </div>
+                </div>
+
+                {SECTION_ORDER.map((name) => (
+                    <CareerSectionView key={name} section={name} items={career[name] ?? []} />
+                ))}
             </div>
             </>
             )}

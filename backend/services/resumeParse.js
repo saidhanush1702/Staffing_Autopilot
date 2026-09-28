@@ -107,6 +107,17 @@ export const parseResumeText = async ({ orgId, consultantId = null, text }) => {
         };
     }
 
+    // Some resumes carry their whole "Summary" section as one long bulleted
+    // list rather than a short paragraph — the model reads it faithfully,
+    // and the schema's 4000-character cap then rejects the ENTIRE document
+    // over one field, even though mapParsedResume() was always going to
+    // truncate this same field to this same length a step later. A read
+    // that succeeded should not fail here for a reason the next step already
+    // handles — so this clamps it first instead of discarding a clean parse.
+    if (typeof res.json?.summary === 'string' && res.json.summary.length > 4000) {
+        res.json.summary = res.json.summary.slice(0, 4000);
+    }
+
     const validated = validateResume(res.json);
     if (!validated.ok) {
         return {

@@ -14,6 +14,7 @@ import {
     card, cardPad, badge, btn, btnSm, chip, eyebrow, searchInput, searchIcon, checkbox,
     sectionTitle, alertShell, alertShellSm, TONE, TONE_ALERT, dividerList,
 } from '../../design/tokens.js';
+import { formatDate, formatDateTime } from '../../utils/datetime.js';
 
 /**
  * ── ONE CONSULTANT, EVERY JOB, THE WHOLE STORY ────────────────────────
@@ -70,8 +71,8 @@ const payText = (job) => {
     return `$${n(job.pay_min ?? job.pay_max)}${unit}`;
 };
 
-const when = (iso) => (iso ? new Date(iso).toLocaleDateString() : null);
-const whenExact = (iso) => (iso ? new Date(iso).toLocaleString() : null);
+const when = (iso) => (iso ? formatDate(iso) : null);
+const whenExact = (iso) => (iso ? formatDateTime(iso) : null);
 
 /* ── the expanded detail ───────────────────────────────────────────── */
 

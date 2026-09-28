@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
+import { schedulerTimezone } from '../config/discoverySchedule.js';
 import { checkTransition } from '../config/queueStates.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
 import { findOrCreateQuestion } from './questionController.js';
@@ -761,10 +762,10 @@ export const reportBoardStatus = async (req, res, next) => {
         if (state === 'BOT_CHECK') {
             // End of the agency's day, not the server's.
             const { rows } = await query(
-                `SELECT (date_trunc('day', now() AT TIME ZONE COALESCE(timezone, 'UTC'))
-                         + interval '1 day') AT TIME ZONE COALESCE(timezone, 'UTC') AS eod
+                `SELECT (date_trunc('day', now() AT TIME ZONE COALESCE(timezone, $2))
+                         + interval '1 day') AT TIME ZONE COALESCE(timezone, $2) AS eod
                    FROM organizations WHERE id = $1`,
-                [req.device.orgId],
+                [req.device.orgId, schedulerTimezone()],
             );
             pausedUntil = rows[0]?.eod ?? null;
         } else if (state === 'SESSION_EXPIRED') {

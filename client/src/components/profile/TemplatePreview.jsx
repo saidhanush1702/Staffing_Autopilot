@@ -112,11 +112,15 @@ const BODY = {
 /**
  * A heading, set the way its template sets it.
  *
- * The three treatments are the most visible difference between the templates,
+ * The four treatments are the most visible difference between the templates,
  * so getting them right here is most of what makes the thumbnails worth having.
+ * `accent`, when the template names one (MODERN's navy), overrides the tone
+ * that would otherwise come from `lead` — a template's own colour is not
+ * conditional on which section is being emphasised.
  */
-const Heading = ({ label, style, lead }) => {
-    const tone = lead ? 'text-brand-600' : 'text-slate-700';
+const Heading = ({ label, style, lead, accent }) => {
+    const tone = accent ? '' : (lead ? 'text-brand-600' : 'text-slate-700');
+    const toneStyle = accent ? { color: accent } : undefined;
     const type = 'text-[6px] leading-[1.35] font-semibold tracking-[0.09em]';
 
     // A shaded strip with the heading set inside it.
@@ -126,31 +130,29 @@ const Heading = ({ label, style, lead }) => {
                 className={`rounded-[1px] px-[4px] py-[2px]
                             ${lead ? 'bg-brand-100' : 'bg-slate-100'}`}
             >
-                <p className={`${type} ${tone}`}>{label}</p>
+                <p className={`${type} ${tone}`} style={toneStyle}>{label}</p>
             </div>
         );
     }
 
-    // A short accent dash ahead of the heading, nothing under it.
-    if (style === 'plain') {
-        return (
-            <div className="flex items-center gap-[4px]">
-                <div
-                    className={`h-[1.5px] w-[10px] shrink-0 rounded-full
-                                ${lead ? 'bg-brand-500' : 'bg-slate-600'}`}
-                />
-                <p className={`${type} ${tone}`}>{label}</p>
-            </div>
-        );
+    // Bold and underlined, colon-suffixed — no drawn rule.
+    if (style === 'underline') {
+        return <p className={`${type} ${tone} underline`} style={toneStyle}>{label}:</p>;
     }
 
-    // The default: heading with a hairline rule under it, full width.
+    // Bold text with a trailing colon, no adornment at all — the plainest.
+    if (style === 'label') {
+        return <p className={`${type} ${tone}`} style={toneStyle}>{label}:</p>;
+    }
+
+    // The default 'rule': heading with a hairline rule under it, full width.
+    // The rule takes the same accent colour as the heading when one is set.
     return (
         <>
-            <p className={`${type} ${tone}`}>{label}</p>
+            <p className={`${type} ${tone}`} style={toneStyle}>{label}</p>
             <div
-                className={`mt-[1.5px] h-[0.5px] w-full
-                            ${lead ? 'bg-brand-300' : 'bg-slate-300'}`}
+                className={`mt-[1.5px] h-[0.5px] w-full ${accent ? '' : (lead ? 'bg-brand-300' : 'bg-slate-300')}`}
+                style={accent ? { backgroundColor: accent, opacity: 0.7 } : undefined}
             />
         </>
     );
@@ -158,19 +160,24 @@ const Heading = ({ label, style, lead }) => {
 
 const TemplatePreview = ({ sections = [], emphasis = [], style = {} }) => {
     const {
-        headerAlign = 'center', headerRule = true, headingStyle = 'rule',
+        headerAlign = 'center', headerRule = true, headerRuleWidth = 1,
+        headingStyle = 'rule', headingColor, nameColor, fontFamily,
     } = style;
 
     const centred = headerAlign === 'center';
-    // The banded template sets a larger name and lets space do the separating,
-    // so it needs more room between sections to read as open rather than empty.
+    // Compact templates (a coloured 'rule', or the plain 'label' treatment)
+    // need less room between sections to read as tight rather than sparse;
+    // 'band' is roomier because the shading itself needs breathing space.
     const gap = headingStyle === 'band' ? 'space-y-[7px]'
-        : headingStyle === 'plain' ? 'space-y-[5px]' : 'space-y-[6px]';
+        : (headingStyle === 'label' || (headingStyle === 'rule' && headingColor)) ? 'space-y-[5px]'
+            : 'space-y-[6px]';
+
+    const serif = fontFamily === 'times' ? 'font-serif' : '';
 
     return (
         <div
-            className="w-full overflow-hidden rounded-sm border border-line bg-surface
-                       px-[9%] py-[6%] shadow-xs"
+            className={`w-full overflow-hidden rounded-sm border border-line bg-surface
+                       px-[9%] py-[6%] shadow-xs ${serif}`}
             // US Letter, the size the renderer actually sets.
             style={{ aspectRatio: '8.5 / 11' }}
             aria-hidden="true"
@@ -178,10 +185,11 @@ const TemplatePreview = ({ sections = [], emphasis = [], style = {} }) => {
             {/* ── the name block ────────────────────────────────────── */}
             <div className={centred ? 'text-center' : 'text-left'}>
                 <div
-                    className={`h-[5px] rounded-full bg-slate-500
+                    className={`h-[5px] rounded-full ${nameColor ? '' : 'bg-slate-500'}
                                 ${centred ? 'mx-auto' : ''}`}
-                    // The entry-level template sets a noticeably larger name.
-                    style={{ width: headerRule === false ? '52%' : '44%' }}
+                    // MODERN sets a noticeably larger name; the colour comes
+                    // from the template when it names one (MODERN's navy).
+                    style={{ width: headerRule === false ? '52%' : '44%', backgroundColor: nameColor }}
                 />
                 {/* Contact details as plain text on one line — not icons. A
                     phone glyph carries nothing into the text an applicant
@@ -195,9 +203,8 @@ const TemplatePreview = ({ sections = [], emphasis = [], style = {} }) => {
 
             {headerRule !== false ? (
                 <div
-                    className="mt-[4px] w-full bg-slate-400"
-                    // Classic rules firmly; technical keeps it hairline.
-                    style={{ height: headingStyle === 'plain' ? '0.5px' : '1px' }}
+                    className={`mt-[4px] w-full ${headingColor ? '' : 'bg-slate-400'}`}
+                    style={{ height: `${Math.max(0.5, headerRuleWidth)}px`, backgroundColor: headingColor }}
                 />
             ) : (
                 // No rule — the whitespace separates the header instead.
@@ -217,6 +224,7 @@ const TemplatePreview = ({ sections = [], emphasis = [], style = {} }) => {
                                 label={label}
                                 style={headingStyle}
                                 lead={emphasis.includes(key)}
+                                accent={headingColor}
                             />
                             <div className="mt-[3px]">
                                 {Body ? <Body /> : <Line w={80} />}

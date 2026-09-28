@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import { card, cardPad, badge, sectionTitle, TONE, TONE_ALERT, TONE_TEXT, readout, readoutLarge, readoutLabel, btnSm, input, fieldLabel, toggleTrack, toggleTrackOn, toggleTrackOff, toggleKnob, toggleKnobOn, toggleKnobOff, alertShellSm, alertShell } from '../../design/tokens.js';
+import { formatDate, formatTime, formatDateTime } from '../../utils/datetime.js';
 
 const two = (n) => String(n).padStart(2, '0');
 
@@ -205,9 +206,9 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                     <p className={`flex items-center gap-1.5 ${readoutLabel}`}>
                         <Clock className="h-3.5 w-3.5" /> Current time
                     </p>
-                    <p className={`mt-1 ${readoutLarge}`}>{clock.toLocaleTimeString()}</p>
+                    <p className={`mt-1 ${readoutLarge}`}>{formatTime(clock)}</p>
                     <p className="mt-0.5 text-xs text-slate-400">
-                        {clock.toLocaleDateString(undefined, {
+                        {formatDate(clock, {
                             weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
                         })}
                     </p>
@@ -241,10 +242,10 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                     {live && data.nextRunAt ? (
                         <>
                             <p className={`mt-1 text-lg ${readout}`}>
-                                {new Date(data.nextRunAt).toLocaleTimeString()}
+                                {formatTime(data.nextRunAt)}
                             </p>
                             <p className="mt-0.5 text-xs text-slate-400">
-                                {new Date(data.nextRunAt).toLocaleDateString(undefined, {
+                                {formatDate(data.nextRunAt, {
                                     weekday: 'short', day: 'numeric', month: 'short',
                                 })}
                             </p>
@@ -254,7 +255,7 @@ const SchedulePanel = ({ canEdit, onCycleFired }) => {
                     )}
                     {data.lastScheduledRunAt && (
                         <p className="mt-1 text-xs text-slate-400">
-                            Last automatic run {new Date(data.lastScheduledRunAt).toLocaleString()}
+                            Last automatic run {formatDateTime(data.lastScheduledRunAt)}
                         </p>
                     )}
                 </div>

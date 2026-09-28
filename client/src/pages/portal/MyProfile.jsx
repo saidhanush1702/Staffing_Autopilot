@@ -14,6 +14,7 @@ import { SECTION_ORDER, PROFILE_SECTIONS } from '../../config/profileSections.js
 import {
     TONE_ALERT, card, cardPad, cardPadRoomy, pageTitle, pageSubtitle, btn, alertShell,
 } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * My Profile — everything about a consultant, one page, one approval.
@@ -328,7 +329,7 @@ const MyProfile = () => {
                                 Your profile is awaiting approval
                             </p>
                             <p className="mt-0.5 text-xs text-info-700">
-                                Submitted {new Date(pendingRequest.submitted_at).toLocaleString()}
+                                Submitted {formatDateTime(pendingRequest.submitted_at)}
                                 {recruiter && ` · waiting on ${recruiter.name}`}
                             </p>
 
@@ -527,7 +528,7 @@ const MyProfile = () => {
                                         </span>
                                     )}
                                     {lastReviewed.reviewed_at && (
-                                        <> on {new Date(lastReviewed.reviewed_at).toLocaleString()}</>
+                                        <> on {formatDateTime(lastReviewed.reviewed_at)}</>
                                     )}
                                 </p>
 

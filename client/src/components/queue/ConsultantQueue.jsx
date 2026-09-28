@@ -8,6 +8,7 @@ import QueueItemDrawer from './QueueItemDrawer.jsx';
 import TailoringBadge from './TailoringBadge.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, sectionTitle, inputBase, TONE, TONE_ALERT, cardInteractive, alertShellSm } from '../../design/tokens.js';
+import { formatDate } from '../../utils/datetime.js';
 
 /**
  * What the queue can be filtered to.
@@ -176,7 +177,7 @@ const ConsultantQueue = ({ consultantId }) => {
                                 {item.source_label && <span>via {item.source_label}</span>}
                                 <span className="flex items-center gap-1">
                                     <Clock className="h-3.5 w-3.5" />
-                                    {new Date(item.queued_at).toLocaleDateString()}
+                                    {formatDate(item.queued_at)}
                                 </span>
                             </p>
 

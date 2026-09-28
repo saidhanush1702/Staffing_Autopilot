@@ -6,6 +6,7 @@ import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import { card, cardPad, inputBase, fieldLabel, btn, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
+import { formatDate } from '../../utils/datetime.js';
 
 const STATUS_TONE = {
     PENDING: 'info',
@@ -134,8 +135,8 @@ const MyAnswers = () => {
                         {a.reviewed_at
                             ? `Reviewed by ${a.reviewed_by_name ?? 'a reviewer'}`
                               + (a.reviewed_by_role ? ` (${a.reviewed_by_role})` : '')
-                              + ` on ${new Date(a.reviewed_at).toLocaleDateString()}`
-                            : `Submitted ${new Date(a.answered_at).toLocaleDateString()} — awaiting review`}
+                              + ` on ${formatDate(a.reviewed_at)}`
+                            : `Submitted ${formatDate(a.answered_at)} — awaiting review`}
                     </p>
                     {a.status_name !== 'PENDING' && (
                         <button

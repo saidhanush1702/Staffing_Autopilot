@@ -17,28 +17,40 @@
  * the content itself costs. Here the layout is code: it is identical on every
  * run, and the model cannot break it because it never sees it.
  *
+ * ── WHERE THESE THREE CAME FROM ────────────────────────────────────────
+ *
+ * Not invented — traced from three resumes actual consultants were placed
+ * with, the kind of document a staffing bench really produces: dense,
+ * bullet-heavy, built to survive both a recruiter's skim and an applicant
+ * tracking system's parse. Each template below reproduces one of them —
+ * its font, its heading treatment, its bullet density, its running order —
+ * as closely as a single-column, table-free page can.
+ *
  * ── HOW THE THREE ACTUALLY DIFFER ─────────────────────────────────────
  *
- *                 CLASSIC          TECHNICAL         ENTRY_LEVEL
- *   name          centred          left              centred, larger
- *   header rule   full width       thin              none — space instead
- *   headings      hairline under   accent dash       shaded strip
- *   density       roomy            tight             open
- *   leads with    experience       skills, projects  education, projects
+ *                 CLASSIC              TECHNICAL            MODERN
+ *   font          serif (Times)        sans (Helvetica)     sans (Helvetica)
+ *   margins       0.5"  — dense        1"    — roomy         0.55" — compact
+ *   body align    justified            justified             left
+ *   headings      bold + underlined    bold label, plain     bold, coloured
+ *                 "Heading:"           "Heading:"            rule underneath
+ *   role sub-head "Roles and           "Responsibilities:"   none — bullets
+ *                 Responsibilities:"                          follow the date
+ *   bullets/role  up to 14             up to 12              up to 6
+ *   accent colour none (black only)    none (black only)     navy #0C2340
  *
- * ── WHY ALL THREE ARE STILL SINGLE-COLUMN ─────────────────────────────
+ * ── WHY ALL THREE ARE STILL SINGLE-COLUMN, TABLE-FREE ─────────────────
  *
  * Because every one has to survive an applicant tracking system, and two
- * columns are the single most reliable way to make a resume unreadable to one
- * — the parser reads across, so a sidebar's first line lands in the middle of
- * the first body line and both become nonsense.
- *
- * Everything in the table above is safe under that constraint: a rule is a
- * drawn line, a shaded strip is a drawn rectangle with real text on top, and
- * alignment is alignment. A parser pulls identical words out of all three. The
- * devices that would make them look MORE different — sidebars, tables, icons,
- * text boxes — are exactly the devices that would cost the consultant the
- * interview, so they are not on the table at any price.
+ * columns — or a real multi-column table — are the single most reliable way
+ * to make a resume unreadable to one: the parser reads across, so a sidebar's
+ * first line lands in the middle of the first body line and both become
+ * nonsense. One of the three source documents used an actual Word table for
+ * its skills grid; the renderer reproduces the READING result (a bold
+ * category followed by its items, one line each) rather than the table
+ * itself, which is what a parser sees anyway once Word's own text extraction
+ * runs — so nothing about the look is lost and nothing about the safety is
+ * given up.
  */
 
 export const DEFAULT_TEMPLATE = 'CLASSIC';
@@ -49,107 +61,141 @@ export const DEFAULT_TEMPLATE = 'CLASSIC';
  *
  * `emphasis` is guidance passed to the model — which sections carry the weight
  * for this shape of candidate. It changes wording and selection, never facts.
+ *
+ * `style.roleBulletsLabel`, when set, is a bold sub-heading the renderer
+ * prints between a role's date line and its bullets — "Roles and
+ * Responsibilities:" is not a section, it is furniture inside the experience
+ * section, and it is exactly what two of the three source resumes did.
  */
 export const TEMPLATES = {
     /**
-     * The default, and the right answer for most people.
-     *
-     * Employment history first and in reverse order, which is what a recruiter
-     * scanning for "what have they done lately" is looking for, and what every
-     * applicant tracking system is tuned to read.
+     * Traced from a nine-year solution architect's resume: dense, formal,
+     * serif, every heading underlined. The format a long, cert-heavy IT
+     * career gets written in — it says everything and trusts the reader to
+     * skim, rather than trimming to a page.
      */
     CLASSIC: {
         name: 'CLASSIC',
-        label: 'Classic chronological',
+        label: 'Classic dense (serif)',
         description:
-            'Work history first, most recent at the top. The layout recruiters '
-            + 'and applicant tracking systems expect. Best for anyone with two '
-            + 'or more years of experience.',
-        sections: ['summary', 'skills', 'experience', 'projects', 'education', 'certifications', 'additional'],
-        emphasis: ['experience'],
-        // How many bullets a role may carry. A ceiling rather than a target:
-        // the model drops the least relevant, it never invents more.
-        maxBulletsPerRole: 6,
+            'Times New Roman, justified, bold-underlined headings, narrow 0.5" '
+            + 'margins. Work history first with long, detailed bullet lists per '
+            + 'role. The dense, formal format for a long, certification-heavy '
+            + 'career where the point is to say everything.',
+        sections: ['summary', 'skills', 'certifications', 'experience', 'projects', 'education', 'additional'],
+        emphasis: ['experience', 'skills'],
+        // A ceiling, not a target — long enough that a senior consultant's
+        // real bullet count is rarely the thing trimmed.
+        maxBulletsPerRole: 14,
         maxProjects: 3,
         style: {
-            headingSize: 11,
-            bodySize: 10,
+            fontFamily: 'times',
+            // 0.5" — the narrowest of the three, which is most of why this
+            // one reads as denser than the others at the same body size.
+            margin: 36,
+            headingSize: 11.5,
+            bodySize: 10.5,
             nameSize: 18,
-            // The conventional resume: name over the middle, a firm rule under
-            // it, and a hairline under every heading.
-            headerAlign: 'center',
+            justify: true,
+            // A left-set stack of name / phone / email / title, the way a
+            // letterhead reads — not centred, which is the technical
+            // template's move.
+            headerAlign: 'left',
             headerRule: true,
             headerRuleWidth: 1,
-            headingStyle: 'rule',
-            headingGap: 0.6,
-            afterHeadingGap: 0.5,
+            // Bold, underlined, colon-suffixed — no drawn rule, no shading.
+            headingStyle: 'underline',
+            headingGap: 0.5,
+            afterHeadingGap: 0.35,
+            roleBulletsLabel: 'Roles and Responsibilities:',
         },
     },
 
     /**
-     * For engineers whose skills and shipped work matter more than the logos
-     * on their employment history — contractors, specialists, anyone whose
-     * last three roles were all the same title.
+     * Traced from a production-support engineer's resume: sans-serif, one
+     * roomy inch of margin on every side, skills bulleted right after the
+     * summary. Built for someone whose stack — Kubernetes, WebLogic, AWS —
+     * is the headline, and whose work history is a long string of similar
+     * production-support roles.
      */
     TECHNICAL: {
         name: 'TECHNICAL',
-        label: 'Technical, skills first',
+        label: 'Technical, skills-forward (sans)',
         description:
-            'Skills and projects lead, work history follows. Best for hands-on '
-            + 'engineers, contractors and specialists where the stack matters '
-            + 'more than the job titles.',
-        sections: ['summary', 'skills', 'projects', 'experience', 'certifications', 'education', 'additional'],
-        emphasis: ['skills', 'projects'],
-        maxBulletsPerRole: 5,
-        maxProjects: 5,
+            'Arial, justified, plain bold headings, a full 1" margin. Skills '
+            + 'bulleted right after the summary, education and certifications '
+            + 'ahead of the work history. Best for infrastructure, support and '
+            + 'platform engineers whose stack is the headline.',
+        sections: ['summary', 'skills', 'education', 'certifications', 'experience', 'projects', 'additional'],
+        emphasis: ['skills', 'experience'],
+        maxBulletsPerRole: 12,
+        maxProjects: 4,
         style: {
-            headingSize: 10.5,
-            bodySize: 9.5,
-            nameSize: 17,
-            // Set left and run tight. No full-width rules anywhere — each
-            // heading gets a short accent dash instead, which reads as denser
-            // and buys back the space a skills-and-projects resume needs.
+            fontFamily: 'helvetica',
+            // 1" — the roomiest of the three.
+            margin: 72,
+            headingSize: 11,
+            bodySize: 10,
+            nameSize: 16,
+            justify: true,
             headerAlign: 'left',
             headerRule: true,
-            headerRuleWidth: 0.5,
-            headingStyle: 'plain',
-            headingGap: 0.45,
+            headerRuleWidth: 0.75,
+            // Bold heading text with a trailing colon — no underline, no
+            // rule, no shading. The plainest of the three.
+            headingStyle: 'label',
+            headingGap: 0.5,
             afterHeadingGap: 0.35,
+            roleBulletsLabel: 'Responsibilities:',
+            // Each skill line gets a bullet marker ahead of it, unlike the
+            // other two templates.
+            skillsBulleted: true,
         },
     },
 
     /**
-     * For freshers and career changers.
-     *
-     * Education first because it is the strongest thing they have, and
-     * projects above employment because a graduate's projects are their
-     * evidence. The empty-experience case is normal here rather than a
-     * failure, which is exactly why this template exists.
+     * Traced from a Salesforce developer's resume: compact, sans-serif, a
+     * navy accent colour on the name and every heading rule. Built for two
+     * to five years of experience where the page is meant to look current —
+     * tight spacing, small type, quantified bullets, nothing wasted.
      */
-    ENTRY_LEVEL: {
-        name: 'ENTRY_LEVEL',
-        label: 'Entry level / fresher',
+    MODERN: {
+        name: 'MODERN',
+        label: 'Modern compact (colour accent)',
         description:
-            'Education and projects lead, work history last. Best for recent '
-            + 'graduates and career changers, where coursework and personal '
-            + 'projects are the real evidence.',
-        sections: ['summary', 'education', 'skills', 'projects', 'certifications', 'experience', 'additional'],
-        emphasis: ['education', 'projects'],
-        maxBulletsPerRole: 4,
-        maxProjects: 6,
+            'Arial, left-aligned, compact spacing, a navy rule under every '
+            + 'heading. Summary, skills and experience lead; short, '
+            + 'quantified bullets. Best for two to five years of experience, '
+            + 'where the page needs to read as current and tightly edited.',
+        sections: ['summary', 'skills', 'experience', 'projects', 'certifications', 'education', 'additional'],
+        emphasis: ['summary', 'experience'],
+        // A hard ceiling on purpose — this template is built to stay tight,
+        // not to grow with the role.
+        maxBulletsPerRole: 6,
+        maxProjects: 3,
         style: {
-            headingSize: 11,
-            bodySize: 10,
-            nameSize: 20,
-            // A bigger name and no rule under it — a graduate's page has less
-            // on it, so the whitespace is doing the separating. Headings sit in
-            // a shaded strip, which gives an otherwise sparse page some
-            // structure without adding anything a parser cannot read.
+            fontFamily: 'helvetica',
+            // ~0.6" — tight, which is what lets the compact spacing below
+            // still read as generous rather than cramped.
+            margin: 42,
+            headingSize: 10.5,
+            bodySize: 9.5,
+            nameSize: 19,
+            justify: false,
             headerAlign: 'center',
-            headerRule: false,
-            headingStyle: 'band',
-            headingGap: 0.75,
-            afterHeadingGap: 0.55,
+            headerRule: true,
+            headerRuleWidth: 1.2,
+            // Bold heading with a thin coloured rule underneath — the only
+            // template of the three that draws a colour anywhere.
+            headingStyle: 'rule',
+            headingColor: '#0C2340',
+            ruleColor: '#0C2340',
+            nameColor: '#0C2340',
+            bodyColor: '#262626',
+            headingGap: 0.4,
+            afterHeadingGap: 0.25,
+            // Bullets follow the date line directly — no sub-heading.
+            roleBulletsLabel: null,
         },
     },
 };
@@ -173,9 +219,13 @@ export const templateOptions = () => TEMPLATE_NAMES.map((name) => ({
     // the client so the preview cannot drift into showing a page the renderer
     // does not actually produce.
     style: {
+        fontFamily: TEMPLATES[name].style.fontFamily,
         headerAlign: TEMPLATES[name].style.headerAlign,
         headerRule: TEMPLATES[name].style.headerRule,
+        headerRuleWidth: TEMPLATES[name].style.headerRuleWidth,
         headingStyle: TEMPLATES[name].style.headingStyle,
+        headingColor: TEMPLATES[name].style.headingColor,
+        nameColor: TEMPLATES[name].style.nameColor,
     },
     isDefault: name === DEFAULT_TEMPLATE,
 }));

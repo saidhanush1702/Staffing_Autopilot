@@ -28,6 +28,11 @@
  * The consultant's own visual design is not preserved — that was a deliberate
  * decision, recorded as D1 in the plan. What IS preserved is the thing that
  * carries meaning: their section order, their headings, and their voice.
+ *
+ * A colour, a font family and a margin ARE preserved, per template — that is
+ * furniture, not design-in-the-ATS-hostile sense. A navy rule under a heading
+ * or Times New Roman instead of Arial is still one column of real text in
+ * document order; a parser extracts identical words either way.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,24 +44,46 @@ import { getTemplate } from '../config/resumeTemplates.js';
 /** Where tailored files live — deliberately not beside the base resumes. */
 export const tailoredDir = (orgId) => path.join(UPLOAD_ROOT, orgId, 'tailored');
 
-const PAGE_MARGIN = 54;          // 0.75in — generous enough not to look cramped
+const DEFAULT_MARGIN = 54;       // 0.75in — the fallback when a template sets none
 const RULE_COLOUR = '#999999';
-// The strip behind a heading in the banded template. Light enough that
-// black text on it still prints and photocopies cleanly.
-const BAND_COLOUR = '#ededed';
 
 /**
- * Type sizes, supplied by the template.
+ * PDFKit's 14 standard fonts cover both families the three templates need,
+ * with no font file to embed or license: Times for the serif template,
+ * Helvetica for the two sans ones. A template names a family, never a font —
+ * so "what font does CLASSIC use" has one answer, here.
+ */
+const FONT_FAMILIES = {
+    times: {
+        regular: 'Times-Roman', bold: 'Times-Bold',
+        italic: 'Times-Italic', boldItalic: 'Times-BoldItalic',
+    },
+    helvetica: {
+        regular: 'Helvetica', bold: 'Helvetica-Bold',
+        italic: 'Helvetica-Oblique', boldItalic: 'Helvetica-BoldOblique',
+    },
+};
+const fontsFor = (st) => FONT_FAMILIES[st.fontFamily] ?? FONT_FAMILIES.helvetica;
+
+/**
+ * Type sizes and colours, supplied by the template.
  *
  * A module-level constant was the obvious first cut, and it meant every
- * template printed at identical size no matter what its config said — which
- * makes the config a lie. They are threaded through instead, so the denser
- * templates can genuinely run a little tighter and fit one page.
+ * template printed identically no matter what its config said — which makes
+ * the config a lie. They are threaded through instead, so CLASSIC genuinely
+ * runs in Times New Roman at 0.5" margins while MODERN runs in Helvetica with
+ * a navy accent, rather than all three sharing one look with different labels.
  */
 const DEFAULT_STYLE = {
+    fontFamily: 'helvetica',
+    margin: DEFAULT_MARGIN,
     bodySize: 10, headingSize: 11, nameSize: 18,
+    justify: false,
     headingStyle: 'rule', headerAlign: 'center', headerRule: true,
     headingGap: 0.6, afterHeadingGap: 0.5,
+    headingColor: '#000000', ruleColor: RULE_COLOUR,
+    bodyColor: '#000000', nameColor: '#000000',
+    roleBulletsLabel: null, skillsBulleted: false,
 };
 
 /** Headings, in the wording a parser expects to meet. */
@@ -97,24 +124,22 @@ const dateRange = (start, end) => {
 /* ── the sections ──────────────────────────────────────────────────── */
 
 /**
- * ── THREE HEADING TREATMENTS ──────────────────────────────────────────
+ * ── FOUR HEADING TREATMENTS, ONE PER SOURCE FORMAT ─────────────────────
  *
- * The templates used to differ only in which order the sections came out,
- * which meant all three printed a document that looked identical. They now
- * differ in the page furniture as well:
+ *   underline  bold heading, underlined, colon-suffixed — no drawn rule
+ *              (CLASSIC)
+ *   label      bold heading, colon-suffixed, no adornment at all
+ *              (TECHNICAL)
+ *   rule       bold heading, optionally coloured, with a thin drawn rule
+ *              underneath — colour comes from the template (MODERN's navy)
+ *   band       heading set inside a light shaded strip — kept for a template
+ *              that wants it; none of the three current ones do
  *
- *   rule   heading with a hairline under it, full width    (Classic)
- *   plain  heading with a short accent dash before it       (Technical)
- *   band   heading set inside a light shaded strip          (Entry level)
+ * ── WHY THESE AND NOT SOMETHING BOLDER ─────────────────────────────────
  *
- * ── WHY THESE THREE AND NOT SOMETHING BOLDER ──────────────────────────
- *
- * Every one is still a line of real text in document order. A rule is a drawn
- * line and a band is a drawn rectangle with text on top — neither is a table,
- * a text box or an image, so an applicant tracking system pulls exactly the
- * same words out of all three. The devices that would make these look more
- * different from one another are precisely the devices that would stop a
- * parser reading them at all.
+ * Every one is still a line of real text in document order, with at most a
+ * drawn line or a drawn rectangle underneath — never a table, a text box or
+ * an image. A parser pulls exactly the same words out of all four.
  */
 const sectionHeadingS = (doc, label, st) => {
     if (doc.y > doc.page.height - doc.page.margins.bottom - 60) doc.addPage();
@@ -123,55 +148,55 @@ const sectionHeadingS = (doc, label, st) => {
 
     const left = doc.page.margins.left;
     const right = doc.page.width - doc.page.margins.right;
+    const fonts = fontsFor(st);
 
     if (st.headingStyle === 'band') {
-        // The strip is drawn first and the heading set on top of it.
         const pad = 3;
         const top = doc.y;
-        doc.rect(left, top, right - left, st.headingSize + pad * 2).fill(BAND_COLOUR);
-        doc.fillColor('#000000')
-            .font('Helvetica-Bold').fontSize(st.headingSize)
+        doc.rect(left, top, right - left, st.headingSize + pad * 2).fill('#ededed');
+        doc.fillColor(st.headingColor)
+            .font(fonts.bold).fontSize(st.headingSize)
             .text(label, left + 6, top + pad, {
                 characterSpacing: 0.8, width: right - left - 12,
             });
         doc.y = top + st.headingSize + pad * 2;
-    } else if (st.headingStyle === 'plain') {
-        // A short accent dash ahead of the heading, text indented past it. No
-        // full-width rule, which is what makes this template read denser.
-        const top = doc.y;
-        const dash = 14;
-        doc.moveTo(left, top + st.headingSize * 0.55)
-            .lineTo(left + dash, top + st.headingSize * 0.55)
-            .lineWidth(1.6).strokeColor('#000000').stroke();
-
-        doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
-            .text(label, left + dash + 5, top, { characterSpacing: 0.9 });
+    } else if (st.headingStyle === 'label') {
+        // Bold text, a trailing colon, nothing drawn — the plainest of the
+        // four, and the one that reads closest to a Word document's own
+        // built-in heading style.
+        doc.font(fonts.bold).fontSize(st.headingSize).fillColor(st.headingColor)
+            .text(`${label}:`, { characterSpacing: 0.3 });
+    } else if (st.headingStyle === 'underline') {
+        doc.font(fonts.bold).fontSize(st.headingSize).fillColor(st.headingColor)
+            .text(`${label}:`, { underline: true, characterSpacing: 0.3 });
     } else {
-        doc.font('Helvetica-Bold').fontSize(st.headingSize).fillColor('#000000')
+        // 'rule': heading with a hairline rule under it, full width. Colour
+        // is a template choice — MODERN draws it navy, the others default
+        // to the same neutral grey the rule always used.
+        doc.font(fonts.bold).fontSize(st.headingSize).fillColor(st.headingColor)
             .text(label, { characterSpacing: 0.6 });
 
-        // A hairline rule, drawn rather than typed. A row of dashes would be
-        // read as text and land in the middle of the extracted content.
         const y = doc.y + 2;
         doc.moveTo(left, y).lineTo(right, y)
-            .lineWidth(0.5).strokeColor(RULE_COLOUR).stroke();
+            .lineWidth(0.75).strokeColor(st.ruleColor ?? RULE_COLOUR).stroke();
     }
 
     doc.moveDown(st.afterHeadingGap ?? 0.5);
     // Back to the left margin: the band and dash variants both moved the
     // cursor, and the body that follows must not inherit their indent.
     doc.x = left;
-    doc.font('Helvetica').fontSize(st.bodySize).fillColor('#000000');
+    doc.font(fonts.regular).fontSize(st.bodySize).fillColor(st.bodyColor);
 };
 
-const bulletList = (doc, bullets) => {
+const bulletList = (doc, bullets, st) => {
+    const align = st.justify ? 'justify' : 'left';
     for (const bullet of bullets ?? []) {
         const text = String(bullet ?? '').trim();
         if (!text) continue;
         // A real bullet character with a hanging indent — not a manually
         // spaced dash, which reflows badly and confuses list detection.
         doc.text(`• ${text}`, {
-            indent: 10, align: 'left', lineGap: 1, paragraphGap: 2,
+            indent: 10, align, lineGap: 1, paragraphGap: 2,
         });
     }
 };
@@ -180,23 +205,31 @@ const RENDERERS = {
     summary(doc, resume, st) {
         if (!resume.summary) return;
         sectionHeadingS(doc, SECTION_LABELS.summary, st);
-        doc.text(String(resume.summary).trim(), { align: 'left', lineGap: 1 });
+        doc.text(String(resume.summary).trim(), {
+            align: st.justify ? 'justify' : 'left', lineGap: 1,
+        });
     },
 
     skills(doc, resume, st) {
         const groups = (resume.skills ?? []).filter((g) => (g.items ?? []).length > 0);
         if (groups.length === 0) return;
         sectionHeadingS(doc, SECTION_LABELS.skills, st);
+        const fonts = fontsFor(st);
 
         for (const group of groups) {
             const items = group.items.join(', ');
+            const prefix = st.skillsBulleted ? '• ' : '';
+            const opts = st.skillsBulleted
+                ? { indent: 10, paragraphGap: 2 }
+                : { paragraphGap: 2 };
+
             if (group.category) {
                 // Label and list on one line, both as text: a parser reading
                 // "Languages: Java, Python" gets the association for free.
-                doc.font('Helvetica-Bold').text(`${group.category}: `, { continued: true });
-                doc.font('Helvetica').text(items, { paragraphGap: 2 });
+                doc.font(fonts.bold).text(`${prefix}${group.category}: `, { ...opts, continued: true });
+                doc.font(fonts.regular).text(items, opts);
             } else {
-                doc.font('Helvetica').text(items, { paragraphGap: 2 });
+                doc.font(fonts.regular).text(`${prefix}${items}`, opts);
             }
         }
     },
@@ -205,24 +238,33 @@ const RENDERERS = {
         const roles = resume.experience ?? [];
         if (roles.length === 0) return;
         sectionHeadingS(doc, SECTION_LABELS.experience, st);
+        const fonts = fontsFor(st);
 
         roles.forEach((role, i) => {
             if (i > 0) doc.moveDown(0.45);
             if (doc.y > doc.page.height - doc.page.margins.bottom - 80) doc.addPage();
 
-            doc.font('Helvetica-Bold').fontSize(st.bodySize)
+            doc.font(fonts.bold).fontSize(st.bodySize).fillColor(st.bodyColor)
                 .text(`${role.title} — ${role.company}`, { paragraphGap: 0 });
 
             const meta = [role.location, dateRange(role.startDate, role.endDate)]
                 .filter(Boolean).join('  |  ');
             if (meta) {
-                doc.font('Helvetica-Oblique').fontSize(st.bodySize - 1).fillColor('#444444')
+                doc.font(fonts.italic).fontSize(st.bodySize - 1).fillColor('#444444')
                     .text(meta, { paragraphGap: 2 });
-                doc.fillColor('#000000');
+                doc.fillColor(st.bodyColor);
             }
 
-            doc.font('Helvetica').fontSize(st.bodySize);
-            bulletList(doc, role.bullets);
+            // "Roles and Responsibilities:" / "Responsibilities:" — furniture
+            // inside the section, not a section of its own. Only two of the
+            // three source formats carry it; the third goes straight to bullets.
+            if (st.roleBulletsLabel) {
+                doc.font(fonts.bold).fontSize(st.bodySize)
+                    .text(st.roleBulletsLabel, { paragraphGap: 2 });
+            }
+
+            doc.font(fonts.regular).fontSize(st.bodySize);
+            bulletList(doc, role.bullets, st);
         });
     },
 
@@ -230,13 +272,16 @@ const RENDERERS = {
         const projects = resume.projects ?? [];
         if (projects.length === 0) return;
         sectionHeadingS(doc, SECTION_LABELS.projects, st);
+        const fonts = fontsFor(st);
 
         projects.forEach((p, i) => {
             if (i > 0) doc.moveDown(0.35);
-            doc.font('Helvetica-Bold').text(p.name, { paragraphGap: 0 });
-            doc.font('Helvetica');
-            if (p.description) doc.text(p.description, { paragraphGap: 2 });
-            bulletList(doc, p.bullets);
+            doc.font(fonts.bold).text(p.name, { paragraphGap: 0 });
+            doc.font(fonts.regular);
+            if (p.description) {
+                doc.text(p.description, { paragraphGap: 2, align: st.justify ? 'justify' : 'left' });
+            }
+            bulletList(doc, p.bullets, st);
         });
     },
 
@@ -244,20 +289,21 @@ const RENDERERS = {
         const education = resume.education ?? [];
         if (education.length === 0) return;
         sectionHeadingS(doc, SECTION_LABELS.education, st);
+        const fonts = fontsFor(st);
 
         for (const e of education) {
             const degree = [e.degree, e.field].filter(Boolean).join(', ');
-            doc.font('Helvetica-Bold').text(e.institution, { continued: Boolean(degree) });
-            if (degree) doc.font('Helvetica').text(` — ${degree}`);
+            doc.font(fonts.bold).text(e.institution, { continued: Boolean(degree) });
+            if (degree) doc.font(fonts.regular).text(` — ${degree}`);
 
             const meta = [dateRange(e.startDate, e.endDate), e.details]
                 .filter(Boolean).join('  |  ');
             if (meta) {
-                doc.font('Helvetica-Oblique').fontSize(st.bodySize - 1).fillColor('#444444')
+                doc.font(fonts.italic).fontSize(st.bodySize - 1).fillColor('#444444')
                     .text(meta, { paragraphGap: 2 });
-                doc.fillColor('#000000').fontSize(st.bodySize);
+                doc.fillColor(st.bodyColor).fontSize(st.bodySize);
             }
-            doc.font('Helvetica');
+            doc.font(fonts.regular);
         }
     },
 
@@ -267,7 +313,7 @@ const RENDERERS = {
         sectionHeadingS(doc, SECTION_LABELS.certifications, st);
 
         bulletList(doc, certs.map((c) => [c.name, c.issuer, c.date]
-            .filter(Boolean).join(' — ')));
+            .filter(Boolean).join(' — ')), st);
     },
 
     additional(doc, resume, st) {
@@ -279,7 +325,7 @@ const RENDERERS = {
             // others. Renaming their "Publications" to something generic would
             // lose information the document deliberately carried.
             sectionHeadingS(doc, String(block.heading).toUpperCase().slice(0, 60), st);
-            bulletList(doc, block.items);
+            bulletList(doc, block.items, st);
         }
     },
 };
@@ -298,20 +344,21 @@ const renderHeader = (doc, contact, st) => {
     const align = st.headerAlign ?? 'center';
     const left = doc.page.margins.left;
     const right = doc.page.width - doc.page.margins.right;
+    const fonts = fontsFor(st);
 
-    doc.font('Helvetica-Bold').fontSize(st.nameSize).fillColor('#000000')
+    doc.font(fonts.bold).fontSize(st.nameSize).fillColor(st.nameColor)
         .text(contact?.name ?? '', { align });
 
     const line = [contact?.location, contact?.phone, contact?.email]
         .filter(Boolean).join('  |  ');
     if (line) {
         doc.moveDown(0.25);
-        doc.font('Helvetica').fontSize(st.bodySize).text(line, { align });
+        doc.font(fonts.regular).fontSize(st.bodySize).fillColor(st.bodyColor).text(line, { align });
     }
 
     const links = (contact?.links ?? []).filter(Boolean);
     if (links.length > 0) {
-        doc.font('Helvetica').fontSize(st.bodySize - 1)
+        doc.font(fonts.regular).fontSize(st.bodySize - 1)
             .text(links.join('  |  '), { align });
     }
 
@@ -320,14 +367,14 @@ const renderHeader = (doc, contact, st) => {
     if (st.headerRule !== false) {
         const y = doc.y;
         doc.moveTo(left, y).lineTo(right, y)
-            .lineWidth(st.headerRuleWidth ?? 1).strokeColor('#000000').stroke();
+            .lineWidth(st.headerRuleWidth ?? 1).strokeColor(st.ruleColor ?? '#000000').stroke();
         doc.moveDown(0.3);
     } else {
-        // No rule here — the whitespace does the separating, which is what
-        // gives the entry-level template its more open feel.
+        // No rule here — the whitespace does the separating.
         doc.moveDown(0.2);
     }
     doc.x = left;
+    doc.fillColor(st.bodyColor);
 };
 
 /**
@@ -353,15 +400,16 @@ export const renderResumePdf = async ({
     // overwrite each other.
     const storedName = `${artifactId}_${filename}`;
     const absolutePath = path.join(dir, storedName);
+    const margin = style.margin ?? DEFAULT_MARGIN;
 
     await new Promise((resolve, reject) => {
         const doc = new PDFDocument({
             size: 'LETTER',
             margins: {
-                top: PAGE_MARGIN,
-                bottom: PAGE_MARGIN,
-                left: PAGE_MARGIN,
-                right: PAGE_MARGIN,
+                top: margin,
+                bottom: margin,
+                left: margin,
+                right: margin,
             },
             info: {
                 Title: `${resume.contact?.name ?? 'Resume'} — ${title}`,

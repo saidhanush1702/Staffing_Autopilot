@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { ChevronRight, LogOut, Menu } from 'lucide-react';
 import Sidebar from './Sidebar.jsx';
 import ThemeToggle from '../ui/ThemeToggle.jsx';
+import DateTimeCard from '../ui/DateTimeCard.jsx';
 import Avatar from '../ui/Avatar.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useThemeShortcut } from '../../context/ThemeContext.jsx';
@@ -119,6 +120,8 @@ const Layout = ({ children }) => {
                             {page ?? 'SmartApply'}
                         </span>
                     </nav>
+
+                    <DateTimeCard />
 
                     <ThemeToggle />
 

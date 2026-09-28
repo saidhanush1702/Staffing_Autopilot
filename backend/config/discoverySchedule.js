@@ -39,6 +39,15 @@ export const clampCycleHours = (value) => {
 export const schedulerTimezone = () => process.env.APP_TIMEZONE ?? 'UTC';
 
 /**
+ * The short label a screen shows beside a clock ("EST"). Separate from the
+ * IANA zone above because that name drives every date computation and must
+ * stay unambiguous (`America/New_York`), while this is only ever text a
+ * person reads — and a business calls its own zone by one name year-round
+ * regardless of what DST is doing to the real offset.
+ */
+export const schedulerTimezoneLabel = () => process.env.APP_TIMEZONE_LABEL ?? schedulerTimezone();
+
+/**
  * Whether the server process runs the cycle at all.
  *
  * Distinct from a tenant's own on/off switch: this is a deployment decision, so

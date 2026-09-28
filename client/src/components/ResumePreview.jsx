@@ -3,6 +3,7 @@ import { FileText, Download, Maximize2, AlertCircle } from 'lucide-react';
 import Modal from './ui/Modal.jsx';
 import { API_ROOT } from '../api/axios.js';
 import { card, btnSm, TONE_TEXT } from '../design/tokens.js';
+import { formatDate } from '../utils/datetime.js';
 
 /**
  * Inline resume preview.
@@ -45,7 +46,7 @@ const ResumePreview = ({ artifactId, fileName, uploadedAt, compact = false }) =>
                             <p className="truncate text-sm font-medium text-slate-800">{fileName}</p>
                             {uploadedAt && (
                                 <p className="text-xs text-slate-400">
-                                    Uploaded {new Date(uploadedAt).toLocaleDateString()}
+                                    Uploaded {formatDate(uploadedAt)}
                                 </p>
                             )}
                         </div>

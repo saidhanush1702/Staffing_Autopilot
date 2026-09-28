@@ -13,6 +13,7 @@ import {
     pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow,
     tableCell, alertShell, codeChip,
 } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * How each outcome should read at a glance.
@@ -395,7 +396,7 @@ const JobsPipe = () => {
                             <p className="text-xs uppercase tracking-wide text-slate-400">Last delivery</p>
                             <p className="text-sm text-slate-700">
                                 {endpoint.last_event_at
-                                    ? new Date(endpoint.last_event_at).toLocaleString()
+                                    ? formatDateTime(endpoint.last_event_at)
                                     : '—'}
                             </p>
                         </div>
@@ -462,7 +463,7 @@ const JobsPipe = () => {
                                     onClick={() => setExpanded(open ? null : e.id)}
                                 >
                                     <td className={`${tableCell} whitespace-nowrap`}>
-                                        {new Date(e.received_at).toLocaleString()}
+                                        {formatDateTime(e.received_at)}
                                     </td>
                                     <td className={tableCell}>
                                         <span className={`${badge} ${TONE[shape.tone]}`}>

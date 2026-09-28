@@ -11,6 +11,7 @@ import {
     inputBase, badge, btnSm, sectionTitle, TONE, pageTitle, pageSubtitle,
     tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty,
 } from '../../design/tokens.js';
+import { formatDate, formatDateTime } from '../../utils/datetime.js';
 
 /**
  * How old the posting is, in the shortest form that is still honest.
@@ -57,7 +58,7 @@ const originOf = (p) => {
         return {
             label: `Run #${p.run_no}`,
             title: `${p.run_trigger === 'MANUAL' ? 'Manual' : 'Scheduled'} discovery run`
-                + (p.run_started_at ? ` · ${new Date(p.run_started_at).toLocaleString()}` : ''),
+                + (p.run_started_at ? ` · ${formatDateTime(p.run_started_at)}` : ''),
         };
     }
     if (p.source_name === 'JOBSPIPE') {
@@ -251,7 +252,7 @@ const Postings = () => {
                                     return (
                                         <span
                                             className={`${badge} ${TONE[age.tone]}`}
-                                            title={new Date(p.posted_at).toLocaleString()}
+                                            title={formatDateTime(p.posted_at)}
                                         >
                                             <Clock className="h-3 w-3" />
                                             {age.text}
@@ -268,10 +269,9 @@ const Postings = () => {
                             <td className={`${tableCell} whitespace-nowrap`}>
                                 <span
                                     className="text-xs text-slate-600"
-                                    title={new Date(p.first_seen_at).toLocaleString()}
+                                    title={formatDateTime(p.first_seen_at)}
                                 >
-                                    {new Date(p.first_seen_at).toLocaleDateString(undefined,
-                                        { day: 'numeric', month: 'short', year: '2-digit' })}
+                                    {formatDate(p.first_seen_at, { day: 'numeric', month: 'short', year: '2-digit' })}
                                 </span>
                             </td>
                             <td className={`${tableCell} whitespace-nowrap`}>
@@ -435,7 +435,7 @@ const Postings = () => {
                             <ul className="mt-2 space-y-1">
                                 {detail.sightings.map((s, i) => (
                                     <li key={i} className="text-xs text-slate-500">
-                                        {new Date(s.seen_at).toLocaleString()} · {s.source_label}
+                                        {formatDateTime(s.seen_at)} · {s.source_label}
                                     </li>
                                 ))}
                             </ul>

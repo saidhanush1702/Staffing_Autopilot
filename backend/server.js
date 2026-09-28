@@ -141,6 +141,7 @@ import {
 import {
     listContacts, queueItemContacts, applicationContacts, deviceQueueContacts,
     findContactNow, setDoNotContact, contactUsage, dncSchema,
+    updateProviderSettings, providerSettingsSchema,
 } from './controllers/contactController.js';
 import { aiUsage } from './controllers/aiUsageController.js';
 import {
@@ -602,6 +603,12 @@ app.put('/api/management/ai-agent',
 
 app.get('/api/management/contacts', [verifyToken, isManagement], listContacts);
 app.get('/api/management/contacts/usage', [verifyToken, isManagement], contactUsage);
+// The switch that starts this agency spending Apollo credits, plus its
+// monthly ceiling. Writes organization_providers directly — see
+// controllers/contactController.js for why this cannot go through
+// /discovery/sources/:id the way a search provider does.
+app.patch('/api/management/contacts/provider',
+    [verifyToken, isOrgAdmin, validate(providerSettingsSchema)], updateProviderSettings);
 app.post('/api/management/contacts/:id/do-not-contact',
     [verifyToken, isManagement, validate(dncSchema)], setDoNotContact);
 app.get('/api/management/queue/:id/contacts', [verifyToken, isManagement], queueItemContacts);

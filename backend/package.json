@@ -22,6 +22,7 @@
     "test:e2e": "node tests/e2e.test.mjs",
     "test:phase7": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs",
     "verify:llm": "node scripts/verify-llm.mjs",
+    "verify:apollo": "node scripts/verify-apollo.mjs",
     "jobspipe:freshness": "node scripts/jobspipe-freshness.mjs",
     "jobspipe:poll": "node -e \"import('./jobs/jobspipePoller.js').then(m=>m.pollAllOrgs().then(r=>{console.log(r);process.exit(0)}))\"",
     "test:jobspipe-search": "node tests/jobspipeSearch.test.mjs",

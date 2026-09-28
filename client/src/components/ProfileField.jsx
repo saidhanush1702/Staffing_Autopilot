@@ -129,8 +129,15 @@ const ProfileField = ({
      * so this is the same regex the server will enforce — not a second copy that
      * can drift. Shown live rather than only on submit, since a wrong phone
      * number is worth catching before it becomes an approval request.
+     *
+     * Skipped entirely when `disabled`: a disabled field here is either a
+     * locked form mid-review or an already-approved value on a read-only
+     * detail page (ConsultantDetail.jsx), and a red "must be 10 digits"
+     * under a value nobody can edit from this screen reads as something
+     * broken rather than as a fact about the past — a looser pattern may
+     * simply have applied when it was entered.
      */
-    const invalid = field.pattern
+    const invalid = !disabled && field.pattern
         && value
         && !new RegExp(field.pattern).test(String(value));
 

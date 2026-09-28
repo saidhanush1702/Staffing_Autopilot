@@ -7,6 +7,7 @@ import PageLoader from '../PageLoader.jsx';
 import Modal, { ModalActions } from '../ui/Modal.jsx';
 import { card, cardPad, inputBase, fieldLabel, btn, badge, sectionTitle, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
+import { formatDate } from '../../utils/datetime.js';
 
 const STATUS_TONE = {
     PENDING: 'info', APPROVED: 'success', REJECTED: 'danger', SUPERSEDED: 'neutral',
@@ -143,7 +144,7 @@ const ConsultantAnswers = ({ consultantId }) => {
                                     {a.reviewed_by_name && (
                                         <p className="mt-2 text-xs text-slate-400">
                                             {a.status_label} by {a.reviewed_by_name} ({a.reviewed_by_role})
-                                            {' on '}{new Date(a.reviewed_at).toLocaleDateString()}
+                                            {' on '}{formatDate(a.reviewed_at)}
                                         </p>
                                     )}
                                 </div>

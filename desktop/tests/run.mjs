@@ -1877,6 +1877,14 @@ const askingHub = (bank) => {
 BOARDS.WELLFOUND.verified = true;
 
 // ── ANSWERED IN TIME: the same job carries on ────────────────────────
+//
+// `holdUntilDeadline` means the countdown does NOT poll the bank on its own
+// — that would be the same "half-typed answer" hazard the form check exists
+// to avoid, just one layer up (a bank write mid-save looks identical to a
+// finished one from the outside). The one way past it before the clock runs
+// out is the consultant pressing "I've done it", which is what the button
+// on the banner does — see Attention.jsx. So the fake consultant here does
+// what a real one does: save the answer, then say so.
 let bank = [];
 let aHub = askingHub(bank);
 let aSess = fakeSessions();
@@ -1884,8 +1892,10 @@ aSess.page = async () => askingPage(bank);
 let aAttn = new Attention({ pollMs: 5 });
 let aEngine = engineWith(aHub, aSess, { attention: aAttn });
 
-// The consultant answers a moment after the countdown appears.
-setTimeout(() => { bank.push({ question_text: 'What is your notice period?', answer_text: '30 days', question_id: 'Q1' }); }, 40);
+setTimeout(() => {
+    bank.push({ question_text: 'What is your notice period?', answer_text: '30 days', question_id: 'Q1' });
+    aAttn.continueNow();
+}, 40);
 
 let aStats = await aEngine.run();
 check('the questions are raised before anything is given up',

@@ -5,6 +5,7 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
 import { card, cardPad, badge, btnSm, sectionTitle, TONE, TONE_ALERT, cardInteractive, alertShellSm } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * One consultant's permanent application record.
@@ -95,7 +96,7 @@ const ConsultantApplications = ({ consultantId }) => {
                         </div>
 
                         <p className="mt-2 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                            <span>{new Date(a.submitted_at).toLocaleString()}</span>
+                            <span>{formatDateTime(a.submitted_at)}</span>
                             {a.portal_label && <span>via {a.portal_label}</span>}
                             {a.machine_label && <span>from {a.machine_label}</span>}
                             {a.recorded_by_name && <span>recorded by {a.recorded_by_name}</span>}

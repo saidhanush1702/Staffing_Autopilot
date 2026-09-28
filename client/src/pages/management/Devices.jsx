@@ -10,6 +10,7 @@ import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty, alertShellSm, alertShell } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /** What each device state means, and how urgently it reads. */
 const STATE = {
@@ -201,7 +202,7 @@ const Devices = () => {
                                 </td>
                                 <td className={`${tableCell} whitespace-nowrap text-slate-500`}>
                                     {d.last_seen_at
-                                        ? new Date(d.last_seen_at).toLocaleString()
+                                        ? formatDateTime(d.last_seen_at)
                                         : <span className="text-slate-300">never</span>}
                                 </td>
                                 <td className={tableCell}>
@@ -299,7 +300,7 @@ const Devices = () => {
                                 </button>
                             </div>
                             <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.warning}`}>
-                                Expires {new Date(issued.expiresAt).toLocaleString()}, and works
+                                Expires {formatDateTime(issued.expiresAt)}, and works
                                 once. You can look it up again from the list if you lose it.
                             </p>
                         </>
@@ -374,7 +375,7 @@ const Devices = () => {
                         showing nothing. */}
                     {showing.usable ? (
                         <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.success}`}>
-                            Still usable. Expires {new Date(showing.expiresAt).toLocaleString()},
+                            Still usable. Expires {formatDateTime(showing.expiresAt)},
                             and works once.
                         </p>
                     ) : (

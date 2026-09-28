@@ -10,6 +10,7 @@ import TableShell from '../../components/TableShell.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import { RoleBadge } from '../../components/ui/Badge.jsx';
 import { badge, card, cardPad, TONE, pageTitle, pageSubtitle } from '../../design/tokens.js';
+import { formatDate, formatDateTime } from '../../utils/datetime.js';
 
 const StatCard = ({ icon: Icon, label, value, sub }) => (
     <div className={`${card} ${cardPad}`}>
@@ -101,7 +102,7 @@ const OrganizationDetail = () => {
                         { icon: Mail, label: 'Contact email', value: org.contact_email },
                         { icon: Phone, label: 'Contact phone', value: org.contact_phone },
                         { icon: Globe, label: 'Timezone', value: org.timezone },
-                        { icon: Calendar, label: 'Created', value: new Date(org.created_at).toLocaleDateString() },
+                        { icon: Calendar, label: 'Created', value: formatDate(org.created_at) },
                     ].map(({ icon: Icon, label, value }) => (
                         <div key={label} className="flex items-start gap-2">
                             <Icon className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
@@ -149,7 +150,7 @@ const OrganizationDetail = () => {
                                     />
                                 </td>
                                 <td className="px-4 py-3 text-xs text-slate-400">
-                                    {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
+                                    {u.last_login_at ? formatDateTime(u.last_login_at) : 'Never'}
                                 </td>
                             </tr>
                         ))}

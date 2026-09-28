@@ -321,9 +321,9 @@ class CycleEngine {
                     }
 
                     const why = took?.reason ? ` — ${took.reason}` : '';
-                    await this.#report(() => this.hub.reclassify(item.id, {
+                    await this.#reportReclassify(item.id, {
                         reason: `No recipe for portal ${item.portal}${why}`.slice(0, 500),
-                    }));
+                    });
                     stats.handedToHuman += 1;
                     record(item, null, 'HANDED_OVER', `the app has no recipe for ${item.portal}${why}`);
                     continue;
@@ -346,9 +346,9 @@ class CycleEngine {
                     this.activity(board.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
                     // R-26: a failure parks the item with a clear reason. It
                     // never leaves something half-done looking finished.
-                    await this.#report(() => this.hub.skipped(item.id, {
+                    await this.#reportSkipped(item.id, {
                         reason: `The app could not process this: ${err.message}`.slice(0, 500),
-                    }));
+                    });
                     stats.skipped += 1;
                     record(item, board, 'ERROR', firstLine(err.message));
                 }
@@ -401,7 +401,9 @@ class CycleEngine {
      *
      * @returns 'done' | 'skipped' | 'timeout'
      */
-    async #askHuman({ kind, board, company, title, message, check, waitMs }) {
+    async #askHuman({
+        kind, board, company, title, message, check, waitMs, holdUntilDeadline,
+    }) {
         if (this.attention) {
             return this.attention.raise({
                 kind,
@@ -412,9 +414,17 @@ class CycleEngine {
                 message,
                 check,
                 waitMs,
+                // Dropped here, this parameter did nothing at all: every caller
+                // that asked for the full window — most importantly a form the
+                // consultant may be typing into — had its wish silently ignored,
+                // because Attention.raise() only holds when told to. See
+                // attention.js for why polling a form early is actively wrong.
+                holdUntilDeadline: Boolean(holdUntilDeadline),
             });
         }
-        const ok = await this.#waitOut(waitMs ?? this.signInWaitMs, check);
+        const ok = await this.#waitOut(
+            waitMs ?? this.signInWaitMs, check, Boolean(holdUntilDeadline),
+        );
         return ok ? 'done' : 'timeout';
     }
 
@@ -426,11 +436,11 @@ class CycleEngine {
      * happening rather than five minutes later (spec §5.2).
      */
     async #waitForSignIn(board) {
-        await this.#report(() => this.hub.boardStatus({
+        await this.#reportBoardStatus({
             board: board.name,
             state: 'SESSION_EXPIRED',
             detail: 'Waiting for the consultant to sign in',
-        }));
+        });
 
         await this.sessions.promptSignIn(board);
         this.log(`${board.label}: waiting for you to sign in`);
@@ -457,9 +467,9 @@ class CycleEngine {
             await this.sessions.saveSession?.(board.name);
             this.log(`${board.label}: signed in — carrying on`);
             this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
-            await this.#report(() => this.hub.boardStatus({
+            await this.#reportBoardStatus({
                 board: board.name, state: 'OK', detail: 'Signed in',
-            }));
+            });
             return true;
         }
 
@@ -478,14 +488,19 @@ class CycleEngine {
      * than a third copy of that whole method.
      *
      * @param condition called on every tick; resolving true ends the wait
+     * @param holdUntilDeadline when true, `condition` is only consulted once
+     *   the clock runs out — the same reason Attention.raise() holds: a form
+     *   half-typed by a person reads as "answered" from the first keystroke,
+     *   so polling it early is wrong, not merely premature.
      */
-    async #waitOut(timeoutMs, condition) {
+    async #waitOut(timeoutMs, condition, holdUntilDeadline = false) {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
             await new Promise((r) => { setTimeout(r, this.signInPollMs); });
+            if (holdUntilDeadline) continue;
             if (await condition()) return true;
         }
-        return false;
+        return condition();
     }
 
     /**
@@ -521,11 +536,11 @@ class CycleEngine {
                 stats.botChecked.push(board.name);
                 this.activity(board.name, 'STOPPED',
                     'Stopped for today — this board showed a bot check');
-                await this.#report(() => this.hub.boardStatus({
+                await this.#reportBoardStatus({
                     board: board.name,
                     state: 'BOT_CHECK',
                     detail: 'Challenge page detected — stopping this board for the day',
-                }));
+                });
                 record(item, board, 'BOARD_STOPPED', said === 'skipped'
                     ? 'you skipped the human check'
                     : 'this board showed a bot check and nobody cleared it');
@@ -605,7 +620,7 @@ class CycleEngine {
             });
             if (agent === 'counted') return 'counted';
             if (agent?.reason) reason = `${reason} — ${agent.reason}`;
-            await this.#report(() => this.hub.reclassify(item.id, { reason }));
+            await this.#reportReclassify(item.id, { reason });
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
             this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
@@ -621,7 +636,7 @@ class CycleEngine {
             });
             if (agent === 'counted') return 'counted';
             if (agent?.reason) reason = `${reason} — ${agent.reason}`;
-            await this.#report(() => this.hub.reclassify(item.id, { reason }));
+            await this.#reportReclassify(item.id, { reason });
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
             this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
@@ -663,9 +678,9 @@ class CycleEngine {
             this.activity(board.name, 'FILLING', `${item.company}: ${flow.detail}`);
 
             if (flow.outcome === 'ALREADY_APPLIED') {
-                await this.#report(() => this.hub.skipped(item.id, {
+                await this.#reportSkipped(item.id, {
                     reason: 'The board says this consultant has already applied.',
-                }));
+                });
                 stats.skipped += 1;
                 record(item, board, 'ALREADY_APPLIED', 'the board already has an application from you');
                 return 'counted';
@@ -678,10 +693,10 @@ class CycleEngine {
             // found a red notice saying applications are closed. Nobody can act
             // on this one, so it is skipped with the reason the board gave.
             if (flow.outcome === 'CLOSED') {
-                await this.#report(() => this.hub.skipped(item.id, {
+                await this.#reportSkipped(item.id, {
                     reason: 'This job is expired — the posting is no longer accepting '
                         + 'applications.',
-                }));
+                });
                 stats.skipped += 1;
                 stats.closed += 1;
                 record(item, board, 'CLOSED', flow.detail);
@@ -713,7 +728,7 @@ class CycleEngine {
                 });
                 if (agent === 'counted') return 'counted';
                 if (agent?.reason) reason = `${reason} — ${agent.reason}`;
-                await this.#report(() => this.hub.reclassify(item.id, { reason }));
+                await this.#reportReclassify(item.id, { reason });
                 stats.handedToHuman += 1;
                 record(item, board, 'HANDED_OVER', reason);
                 this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
@@ -743,10 +758,10 @@ class CycleEngine {
                     prior: { qa: flow.qa, attachedResume: flow.attachedResume },
                 });
                 if (agent === 'counted') return 'counted';
-                await this.#report(() => this.hub.reclassify(item.id, {
+                await this.#reportReclassify(item.id, {
                     reason: (`The application could not be completed: ${flow.detail}`
                         + (agent?.reason ? ` — ${agent.reason}` : '')).slice(0, 500),
-                }));
+                });
                 stats.handedToHuman += 1;
                 record(item, board, 'HANDED_OVER', flow.detail);
                 return 'counted';
@@ -801,12 +816,12 @@ class CycleEngine {
             // rather than looping a person round the same countdown.
             const stillBlocking = (result.unknown ?? []).filter((u) => u.required);
             if (stillBlocking.length > 0) {
-                await this.#report(() => this.hub.parked(item.id, {
+                await this.#reportParked(item.id, {
                     unknownQuestions: result.unknown.map((u) => ({
                         questionText: u.questionText,
                         fieldType: u.fieldType,
                     })),
-                }));
+                });
                 stats.parked += 1;
                 record(item, board, 'PARKED',
                     `still waiting on ${stillBlocking.length} question(s) after answering`);
@@ -836,10 +851,10 @@ class CycleEngine {
                 stats, record, approvedAnswers, profile, resumePath,
             });
             if (agent === 'counted') return 'counted';
-            await this.#report(() => this.hub.reclassify(item.id, {
+            await this.#reportReclassify(item.id, {
                 reason: ('No application form was found on the page — apply on the '
                     + `employer site instead${agent?.reason ? ` (${agent.reason})` : ''}`).slice(0, 500),
-            }));
+            });
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', 'no application form was found on the page');
             this.activity(board.name, 'HANDED_OVER',
@@ -858,7 +873,7 @@ class CycleEngine {
         // The app drives one browser page per board, so moving to the next job
         // navigates this form away; this is the only moment it is still on
         // screen. That is also the bug the review screen kept hitting.
-        await this.#report(() => this.hub.filled(item.id));
+        await this.#reportFilled(item.id);
         this.#rememberForReview(item, board, result, { profile, approvedAnswers, resumePath });
         stats.filled += 1;
 
@@ -927,7 +942,7 @@ class CycleEngine {
      */
     async #workDestination(item, board, tenant, flow, stats, { approvedAnswers, profile, record }) {
         const handOver = async (reason) => {
-            await this.#report(() => this.hub.reclassify(item.id, { reason }));
+            await this.#reportReclassify(item.id, { reason });
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
             this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
@@ -1054,18 +1069,18 @@ class CycleEngine {
         this.log(`${item.company} @ ${tenant.label}: ${inner.outcome} — ${inner.detail}`);
 
         if (inner.outcome === 'ALREADY_APPLIED') {
-            await this.#report(() => this.hub.skipped(item.id, {
+            await this.#reportSkipped(item.id, {
                 reason: `${tenant.label} says this consultant has already applied.`,
-            }));
+            });
             stats.skipped += 1;
             record(item, board, 'ALREADY_APPLIED', `${tenant.label}: already applied`);
             return 'counted';
         }
 
         if (inner.outcome === 'CLOSED') {
-            await this.#report(() => this.hub.skipped(item.id, {
+            await this.#reportSkipped(item.id, {
                 reason: 'This job is expired — the posting is no longer accepting applications.',
-            }));
+            });
             stats.skipped += 1;
             stats.closed += 1;
             record(item, board, 'CLOSED', `${tenant.label}: ${inner.detail}`);
@@ -1116,12 +1131,12 @@ class CycleEngine {
 
             const stillBlocking = (filled.unknown ?? []).filter((u) => u.required);
             if (stillBlocking.length > 0) {
-                await this.#report(() => this.hub.parked(item.id, {
+                await this.#reportParked(item.id, {
                     unknownQuestions: filled.unknown.map((u) => ({
                         questionText: u.questionText,
                         fieldType: u.fieldType,
                     })),
-                }));
+                });
                 stats.parked += 1;
                 record(item, board, 'PARKED',
                     `${tenant.label} — still waiting on ${stillBlocking.length} question(s)`);
@@ -1166,7 +1181,7 @@ class CycleEngine {
         // Filled, and left exactly there. Every destination carries
         // `neverAutoSubmit`, so the toggle cannot send one of these — the
         // consultant reads it and presses the button themselves.
-        await this.#report(() => this.hub.filled(item.id));
+        await this.#reportFilled(item.id);
         this.#rememberForReview(item, tenant, {
             ...filled,
             refusals: [],
@@ -1450,9 +1465,9 @@ class CycleEngine {
             });
 
         case 'CLOSED':
-            await this.#report(() => this.hub.skipped(item.id, {
+            await this.#reportSkipped(item.id, {
                 reason: 'This job is expired — the posting is no longer accepting applications.',
-            }));
+            });
             stats.skipped += 1;
             stats.closed += 1;
             record(item, where, 'CLOSED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
@@ -1460,9 +1475,9 @@ class CycleEngine {
             return 'counted';
 
         case 'ALREADY_APPLIED':
-            await this.#report(() => this.hub.skipped(item.id, {
+            await this.#reportSkipped(item.id, {
                 reason: 'The site says this consultant has already applied.',
-            }));
+            });
             stats.skipped += 1;
             record(item, where, 'ALREADY_APPLIED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
             return 'counted';
@@ -1489,7 +1504,7 @@ class CycleEngine {
         item, board, where, page, result, stats, record, approvedAnswers, profile, resumePath,
     }) {
         const count = result.qa.length;
-        await this.#report(() => this.hub.filled(item.id));
+        await this.#reportFilled(item.id);
         this.#rememberForReview(item, where, { ...result, refusals: [], readyToSubmit: true }, {
             profile,
             approvedAnswers,
@@ -1614,9 +1629,9 @@ class CycleEngine {
         // Raise them first, so they are already on the Questions tab when the
         // countdown appears. The ids come back with them, which is what lets
         // an answer typed into the BROWSER be banked afterwards.
-        const raised = await this.#report(() => this.hub.askQuestions(item.id, {
+        const raised = await this.#reportAskQuestions(item.id, {
             unknownQuestions: payload,
-        })).catch(() => null);
+        }).catch(() => null);
 
         const idFor = new Map(
             (raised?.questions ?? []).map((q) => [normaliseQuestion(q.questionText), q.id]),
@@ -1702,7 +1717,7 @@ class CycleEngine {
         // Nobody answered, or they said move on. This is the old behaviour,
         // and it is still the right one: bank, park, and let it be picked up
         // whenever the answer arrives.
-        await this.#report(() => this.hub.parked(item.id, { unknownQuestions: payload }));
+        await this.#reportParked(item.id, { unknownQuestions: payload });
         stats.parked += 1;
         record(item, board, 'PARKED', said === 'skipped'
             ? `you skipped it; still waiting on ${blocking.length} question(s)`
@@ -1799,13 +1814,45 @@ class CycleEngine {
      *
      * The app never reaches this on its own — it is called from the review
      * screen, after a person has pressed submit on the portal.
+     *
+     * ── WHY THIS MUST NEVER THROW FOR AN ORDINARY FAILURE ─────────────
+     *
+     * Every caller of this reaches it AFTER the click already landed at the
+     * employer — `pressSubmit`/`pressAgentSubmit` only return here once
+     * `pressed.ok` is true. What happens next is telling the HUB about
+     * something that has already happened, and a network blink telling that
+     * story must never change the story itself.
+     *
+     * It used to. `hub.submitted` threw straight out of this function on any
+     * failure, and that throw had two different, both wrong, endings:
+     *
+     *   auto-submit   the throw escaped `#workOne`/`#workDestination`
+     *                 entirely, uncaught there, and landed in `run()`'s
+     *                 per-item catch — which reported the item to the hub as
+     *                 SKIPPED. An application the employer had just received
+     *                 was recorded as one that was never sent at all.
+     *   manual submit the throw reached the IPC handler in index.js, which
+     *                 returned an error to the review screen WITHOUT this
+     *                 entry ever leaving `awaitingReview`. The consultant saw
+     *                 an error, the Submit button was still live, and
+     *                 pressing it again could press a real employer's submit
+     *                 control a second time.
+     *
+     * So the entry comes off the review list unconditionally — the browser
+     * truth is not in question once `pressed.ok` is true, and leaving it
+     * sitting there is what invited a second click — and a failed report to
+     * the hub is queued through `#report`'s outbox instead of thrown. The
+     * hub's own endpoint is built for exactly this: it de-dupes on the queue
+     * item, so a retried report of the same submission never creates a
+     * second application record (see reportSubmitted in the backend's
+     * deviceController.js).
      */
     async reportSubmitted(itemId, context = {}) {
         const waiting = this.store.get('awaitingReview') ?? [];
         const entry = waiting.find((w) => w.itemId === itemId);
         if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
 
-        await this.hub.submitted(itemId, {
+        const body = {
             // DESKTOP_BOT is "filled by the app, submitted by the consultant" —
             // true whether they pressed the button here or in the browser.
             submissionMethod: 'DESKTOP_BOT',
@@ -1816,10 +1863,21 @@ class CycleEngine {
                 fieldType: q.fieldType,
                 questionId: q.questionId ?? null,
             })),
-        });
+        };
 
+        // Removed BEFORE the hub is told, not after: the application was
+        // already sent, so a form nobody can press Submit on twice is the
+        // safe state to be in while the report is still in flight or retrying.
         this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
-        return { ok: true };
+
+        const reported = await this.#report(() => this.hub.submitted(itemId, body),
+            { path: `/device/queue/${itemId}/submitted`, body });
+
+        // `ok` reports the fact that matters to every caller: the application
+        // was sent. `hubConfirmed` is a secondary detail for anyone who wants
+        // to know whether the hub has heard about it yet, or is catching up
+        // from the outbox.
+        return { ok: true, hubConfirmed: reported !== null };
     }
 
     /**
@@ -1928,9 +1986,9 @@ class CycleEngine {
     /** Drop a filled form the consultant decided not to send. */
     async discardReview(itemId, reason) {
         const waiting = this.store.get('awaitingReview') ?? [];
-        await this.#report(() => this.hub.skipped(itemId, {
+        await this.#reportSkipped(itemId, {
             reason: reason || 'The consultant chose not to submit this one.',
-        }));
+        });
         this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
         return { ok: true };
     }
@@ -1959,15 +2017,81 @@ class CycleEngine {
      * Reports are facts about work already done. Losing one because the network
      * blinked would leave the hub's record disagreeing with reality, so nothing
      * here is ever fire-and-forget.
+     *
+     * ── "QUEUED FOR RETRY" USED TO BE A LIE ────────────────────────────
+     *
+     * The log line said it, but nothing ever queued anything: the outbox this
+     * engine is handed in its constructor sat unused, and a failed report was
+     * simply dropped. A crash-free run never noticed — this only bit when the
+     * network genuinely blinked between the call landing at the hub and the
+     * response getting back here, and what was lost was never a request that
+     * failed, always one whose OUTCOME was never heard from again: a filled
+     * application the hub still thinks is in progress, a lease that then
+     * expires and re-offers the same job (R-08's append-only record is no
+     * defence against a report that never arrived to be appended).
+     *
+     * `retry` is optional so a caller that has nothing safe to replay — there
+     * is none left in this file, but the signature does not require one — can
+     * still get the old best-effort behaviour. Every real call site now
+     * supplies one, through the `#reportX` helpers below, which is also what
+     * keeps this durable without changing which hub method each call site
+     * invokes (and, so, without disturbing what the test suite's fake hub
+     * already asserts was called).
+     *
+     * @param retry {path, body} — the same request, replayed later by
+     *   `outbox.drain()` (wired in index.js's heartbeat). Every endpoint this
+     *   is used for is safe to repeat: `submitted` de-dupes on the queue item
+     *   at the hub, and the rest are state-machine transitions that simply
+     *   refuse a repeat rather than double-apply it.
      */
-    async #report(fn) {
+    async #report(fn, retry = null) {
         try {
             return await fn();
         } catch (err) {
             if (err.name === 'Revoked') throw err;
             this.log(`queued for retry: ${err.message}`);
+            if (retry) {
+                try {
+                    this.outbox.add(retry.path, retry.body);
+                } catch { /* the outbox itself could not be written; nothing
+                             further to do without risking a crash over a
+                             report that was already going to be best-effort */ }
+            }
             return null;
         }
+    }
+
+    /* ── named report shapes, each pairing the hub call the suite already
+     * knows about with the {path, body} the outbox needs to replay it ──── */
+
+    #reportReclassify(itemId, body) {
+        return this.#report(() => this.hub.reclassify(itemId, body),
+            { path: `/device/queue/${itemId}/reclassify`, body });
+    }
+
+    #reportSkipped(itemId, body) {
+        return this.#report(() => this.hub.skipped(itemId, body),
+            { path: `/device/queue/${itemId}/skipped`, body });
+    }
+
+    #reportParked(itemId, body) {
+        return this.#report(() => this.hub.parked(itemId, body),
+            { path: `/device/queue/${itemId}/parked`, body });
+    }
+
+    #reportFilled(itemId, body = {}) {
+        return this.#report(() => this.hub.filled(itemId, body),
+            { path: `/device/queue/${itemId}/filled`, body });
+    }
+
+    #reportBoardStatus(body) {
+        return this.#report(() => this.hub.boardStatus(body),
+            { path: '/device/board-status', body });
+    }
+
+    #reportAskQuestions(itemId, body) {
+        return this.#report(() => this.hub.askQuestions(itemId, body),
+            { path: `/device/queue/${itemId}/questions`, body });
     }
 }
 

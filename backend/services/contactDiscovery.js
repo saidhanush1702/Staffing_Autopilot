@@ -497,7 +497,7 @@ export const discoverContacts = async ({
         orgId,
         postingId,
         provider: apollo.PROVIDER,
-        endpoint: '/api/v1/mixed_people/search',
+        endpoint: '/api/v1/mixed_people/api_search',
         queryPayload: { company: posting.company, domain, location: posting.location_text },
         httpStatus: search.status ?? (search.ok ? 200 : null),
         resultCount: search.ok ? search.people.length : 0,

@@ -12,6 +12,7 @@ import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { PROFILE_SECTIONS } from '../../config/profileSections.js';
 import { badge, TONE, pageSubtitle, btn } from '../../design/tokens.js';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * Profile change approvals — ORG_ADMIN and RECRUITER.
@@ -317,7 +318,7 @@ const ProfileApprovals = () => {
                                                 ) : <span className="text-slate-400">—</span>}
                                             </td>
                                             <td className="px-4 py-3 text-xs text-slate-500">
-                                                {new Date(req.submitted_at).toLocaleString()}
+                                                {formatDateTime(req.submitted_at)}
                                             </td>
                                         </tr>
 
@@ -396,7 +397,7 @@ const ProfileApprovals = () => {
                                                             <div className="border-t border-line bg-slate-50 px-6 py-3 text-xs text-slate-600">
                                                                 Reviewed by <strong>{req.reviewed_by_name}</strong>
                                                                 {' '}({roleLabel(req.reviewed_by_role)}) on{' '}
-                                                                {new Date(req.reviewed_at).toLocaleString()}
+                                                                {formatDateTime(req.reviewed_at)}
                                                                 {req.review_note && <> — {req.review_note}</>}
                                                             </div>
                                                         )}

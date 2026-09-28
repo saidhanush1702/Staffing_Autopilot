@@ -67,6 +67,40 @@ const CSS_ESCAPE = (id) => String(id).replace(/([^\w-])/g, '\\$1');
 const pause = (min, max) => new Promise((r) => { setTimeout(r, rand(min, max)); });
 
 /**
+ * ── WHY EVERY FIELD CARRIES A STAMP, NOT JUST A POSITION ──────────────
+ *
+ * `describeFields` used to hand back only `index` — a field's position in
+ * the selector's match list AT SCAN TIME — and `fillForm` acted on fields
+ * later by re-querying that same selector and taking `.nth(index)`. That is
+ * exactly right for a form that holds still, and exactly wrong for one that
+ * does not: Workday rebuilds a step the moment an earlier answer picks a
+ * country, and a field an EARLIER pass answered can grow a brand new one
+ * — "Visa type" appearing right after "Are you authorized to work here?" —
+ * between the fields that were already read and the ones still to be acted
+ * on, in the SAME pass.
+ *
+ * Measured, not assumed: with Email at index 1 and Phone at index 2 when the
+ * pass started, answering the field ahead of them inserted one new control
+ * between the two groups. `.nth(1)` and `.nth(2)` then pointed at the NEW
+ * field and at Email — so Email's value went into "Visa type" and Phone's
+ * went into the Email box, while the review screen still labelled each
+ * answer with the QUESTION it was meant for, not the box it actually landed
+ * in. An application can go to an employer with every visible answer wrong
+ * and nothing on screen saying so.
+ *
+ * The fix is the same one `agent/observe.js` already uses for exactly this
+ * reason: stamp the element itself, the first time it is seen, with an
+ * attribute nothing else on the page has any reason to write. Re-finding it
+ * later means asking for that attribute, which names one exact DOM node
+ * regardless of what has been inserted or removed around it — not "whatever
+ * is now in this position". Idempotent, so a field already stamped by an
+ * earlier pass — the multi-pass loop in applyFlow.js, or a second wizard
+ * step — is not restamped, and the same field keeps the same identity across
+ * everything this form does on it.
+ */
+const STAMP_ATTR = 'data-sa-filler-ref';
+
+/**
  * Describe every field on the page.
  *
  * Runs in the browser, and deliberately returns plain data rather than handles,
@@ -74,11 +108,21 @@ const pause = (min, max) => new Promise((r) => { setTimeout(r, rand(min, max)); 
  */
 const describeFields = (page, root = null) => page.$$eval(
     root ? `${root} ${FIELD_SELECTOR.split(', ').join(`, ${root} `)}` : FIELD_SELECTOR,
-    (nodes) => {
+    (nodes, stampAttr) => {
     const text = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
     const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim();
     /** What a dropdown says when nothing has been chosen. */
     const PLACEHOLDER = /^(select one|select\.\.\.|select|choose one|choose|--+|none)$/i;
+
+    /** Give this exact element a stable name, or read back the one it has. */
+    const stamp = (el) => {
+        const had = el.getAttribute(stampAttr);
+        if (had) return had;
+        window.__saFillerSeq = (window.__saFillerSeq ?? 0) + 1;
+        const ref = `f${window.__saFillerSeq}`;
+        el.setAttribute(stampAttr, ref);
+        return ref;
+    };
 
     /**
      * ── THE CONTROL THAT STANDS IN FOR THE REAL ONE ───────────────────
@@ -304,6 +348,10 @@ const describeFields = (page, root = null) => page.$$eval(
 
         return {
             index,
+            // The stable identity — see the note on STAMP_ATTR above. `index`
+            // stays, for the fallback tests and any caller still using it,
+            // but `fillForm` itself always prefers `stampRef` when it is set.
+            stampRef: stamp(el),
             tag,
             type,
             id: el.id || '',
@@ -373,6 +421,7 @@ const describeFields = (page, root = null) => page.$$eval(
         };
         });
     },
+    STAMP_ATTR,
 );
 
 /**
@@ -914,8 +963,20 @@ const fillForm = async (page, {
     return { qa, unknown, attachedResume, refusals };
 };
 
-/** The locator for one described field. */
+/**
+ * The locator for one described field.
+ *
+ * `field.stampRef`, when the field carries one, wins over `field.index` — see
+ * the note on `STAMP_ATTR` in `describeFields`. It is missing only for a
+ * descriptor the unit suite built by hand (no real browser ever ran
+ * `describeFields`'s stamping code to produce one), so those fall back to the
+ * plain positional lookup exactly as before, unaffected either way since
+ * their fakes never mutate the field list mid-pass.
+ */
 function el(locators, field) {
+    if (field.stampRef && typeof locators.page === 'function') {
+        return locators.page().locator(`[${STAMP_ATTR}="${CSS_ESCAPE(field.stampRef)}"]`);
+    }
     return locators.nth(field.index);
 }
 
