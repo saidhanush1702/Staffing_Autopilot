@@ -1,0 +1,124 @@
+name: Release desktop app
+
+# ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+#
+# A Windows build can only be made on Windows, and a Mac build only on a Mac —
+# electron-builder cannot cross-compile either one. That is the whole reason
+# this runs on GitHub's own runners rather than one developer's laptop: it
+# rents a real Mac for the minutes it needs one, and a release stops being
+# "whoever has both machines handy did it by hand."
+#
+# Both jobs publish to the SAME GitHub release (the tag decides which one) —
+# electron-builder is built for exactly this: run once per platform, each job
+# uploads its own artifact, and the release ends up holding both. Nothing here
+# merges them itself.
+#
+# ── WHAT THE DOWNLOAD PAGE DEPENDS ON ────────────────────────────────────────
+#
+# The portal's download page (client/src/components/DownloadDesktopApp.jsx)
+# reads /repos/.../releases/latest from the GitHub API at page-load time. That
+# endpoint only ever returns a PUBLISHED, non-draft, non-prerelease release —
+# so the moment this workflow finishes, the download page picks up the new
+# version with no further step and no page to go and edit.
+#
+# ── SIGNING IS OPTIONAL HERE ON PURPOSE ──────────────────────────────────────
+#
+# Without CSC_LINK (Windows) or CSC_LINK + the APPLE_* secrets (Mac), both
+# jobs still build and publish successfully — just unsigned, exactly as this
+# app already ships today. Add the secrets once the certificates exist and
+# every future release signs itself with no change to this file.
+
+on:
+  push:
+    tags:
+      # Scoped to the desktop app specifically -- this is a monorepo, and a
+      # tag cut for the backend or the web client must never trigger this.
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >
+          Existing tag to build and publish from (e.g. desktop-v0.1.0).
+          Leave blank to build the current branch WITHOUT publishing --
+          useful for proving the workflow itself works before it ever
+          touches a real release.
+        required: false
+
+permissions:
+  contents: write   # electron-builder's GitHub publish step needs this to
+                     # create the release and upload assets.
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci
+      - run: npm run build:renderer
+
+      # Publishes only on a real tag push, or a manual run that named one.
+      # A manual run with no tag builds locally so the workflow itself can be
+      # tested without creating or touching a release.
+      - name: Build and publish (Windows)
+        if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.tag != ''
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Windows code signing -- absent means an unsigned build, not a
+          # failure. See PACKAGING.md for what these two values are.
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+
+      - name: Build only, no publish (manual dry run)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
+        run: npx electron-builder --win
+
+  build-mac:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - run: npm ci
+      - run: npm run build:renderer
+
+      - name: Build and publish (macOS)
+        if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.tag != ''
+        run: npx electron-builder --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Mac code signing and notarisation -- absent means an unsigned
+          # build that Gatekeeper will refuse to open, not a failed build.
+          # All five are needed together for a signed, notarised DMG; see
+          # PACKAGING.md.
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Build only, no publish (manual dry run)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
+        run: npx electron-builder --mac

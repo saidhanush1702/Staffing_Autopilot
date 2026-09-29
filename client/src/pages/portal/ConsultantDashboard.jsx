@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Briefcase, HelpCircle, Send, Sparkles, UserCheck } from 'lucide-react';
+import { ArrowRight, Briefcase, HelpCircle, Send, UserCheck } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import StatCard from '../../components/ui/StatCard.jsx';
 import Alert from '../../components/ui/Alert.jsx';
+import DownloadDesktopApp from '../../components/DownloadDesktopApp.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { card, cardInteractive, sectionTitle, stack, statGrid } from '../../design/tokens.js';
+import { cardInteractive, sectionTitle, stack, statGrid } from '../../design/tokens.js';
 
 /**
  * The consultant's own view: what is queued for them, what is waiting on them,
@@ -120,19 +121,7 @@ const ConsultantDashboard = () => {
                 </div>
             </section>
 
-            <div className={`${card} flex items-start gap-3.5 border-dashed p-5`}>
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl
-                                 bg-surface-sunken text-slate-400">
-                    <Sparkles className="h-[1.15rem] w-[1.15rem]" />
-                </span>
-                <div>
-                    <p className="font-display text-sm font-semibold text-slate-800">Coming next</p>
-                    <p className="mt-1 text-sm leading-relaxed text-slate-500">
-                        Your live job queue and resume history will appear here. The desktop app is
-                        where applications are actually filled in and submitted.
-                    </p>
-                </div>
-            </div>
+            <DownloadDesktopApp />
         </div>
     );
 };

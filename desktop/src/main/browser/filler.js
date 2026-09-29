@@ -183,18 +183,69 @@ const describeFields = (page, root = null) => page.$$eval(
      * Falling back to `labelFor` there returns "radio-group-«rv»", and the app
      * then looks for an option called that — which is exactly how a plain
      * Yes/No question became unanswerable.
+     *
+     * ── AND WHY EVERY STEP IS CHECKED AGAINST THE QUESTION ITSELF ────
+     *
+     * Measured on a real LinkedIn screening question: both radios' native
+     * inputs carried `aria-labelledby` pointing at the SAME shared heading —
+     * the question the whole group was asking, not each option's own "Yes" or
+     * "No". `labelFor`'s chain reads `aria-labelledby` ahead of a wrapping
+     * `<label>`, so it returned the question, twice, once per option, and
+     * neither result was wrong exactly — it was just the wrong QUESTION,
+     * repeated. From there it got worse in both directions: the option "Yes"
+     * or "No" chosen by the consultant could never be told apart from the
+     * question was asking, so it was reported back as an unanswered question
+     * whose two "answers" were both the question again — and the one time it
+     * WAS picked up as answered, what got saved to the bank was the question,
+     * not "Yes" or "No" at all.
+     *
+     * So nothing here is trusted just because a value was found. Every
+     * candidate is checked against `groupLabelFor` — the group's own
+     * question, using the identical ladder that reads it — and skipped if it
+     * is the same thing. `closest('label')` is also tried before
+     * `aria-labelledby` now, not after: a wrapping `<label>` can only ever be
+     * describing the one control it wraps, where `aria-labelledby` can point
+     * anywhere a form author chose, including at something shared.
      */
     const optionLabelFor = (el) => {
+        const question = clean(groupLabelFor(el)).replace(/[\s*]+$/, '').toLowerCase();
+        const isTheQuestion = (s) => {
+            const c = clean(s).replace(/[\s*]+$/, '').toLowerCase();
+            return Boolean(c) && Boolean(question) && c === question;
+        };
+
         const proxy = proxyFor(el);
         if (proxy) {
             const aria = proxy.getAttribute('aria-label');
-            if (aria && aria.trim()) return aria.trim();
+            if (aria && aria.trim() && !isTheQuestion(aria)) return aria.trim();
             const own = text(proxy);
-            if (own) return own;
+            if (own && !isTheQuestion(own)) return own;
         }
-        const plain = labelFor(el);
+
+        const ownAria = el.getAttribute('aria-label');
+        if (ownAria && ownAria.trim() && !isTheQuestion(ownAria)) return ownAria.trim();
+
+        if (el.id) {
+            const explicit = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+            if (text(explicit) && !isTheQuestion(text(explicit))) return text(explicit);
+        }
+
+        const wrapping = el.closest('label');
+        if (text(wrapping) && !isTheQuestion(text(wrapping))) return text(wrapping);
+
+        // Last resort, and the one most likely to just repeat the question —
+        // see above. Tried anyway, in case it is genuinely all a board gives.
+        const by = el.getAttribute('aria-labelledby');
+        if (by) {
+            const joined = by.split(/\s+/)
+                .map((id) => text(document.getElementById(id)))
+                .filter(Boolean).join(' ');
+            if (joined && !isTheQuestion(joined)) return joined;
+        }
+
         // A generated group id is not a name anybody chose.
-        return plain === (el.getAttribute('name') || '') ? '' : plain;
+        const name = el.getAttribute('name') || '';
+        return isTheQuestion(name) ? '' : name;
     };
 
     const groupBoxFor = (el) => el.closest('fieldset, [role="radiogroup"], [role="group"]');

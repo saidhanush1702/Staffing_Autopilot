@@ -102,17 +102,17 @@ const CDP_PORT = Number(process.env.SMARTAPPLY_CDP_PORT ?? 9223);
  * Human-paced typing (R-19). Per character, with jitter on top.
  *
  * The two numbers are trimmed on different schedules, deliberately.
- * `minMs`/`maxMs` is back at its original {15, 40} — a per-character delay is
- * the part that most looks like a person actually typing, and there was
- * nothing wrong with its pace, only with how much of the total it was
- * contributing next to `betweenFieldsMs`. That is the one that keeps
- * shrinking: it was {400, 1400}, then {150, 500}, then {60, 180}, and is now
- * cut again — the pause BETWEEN fields has no character count to justify it,
- * so it is the cheaper place to find speed without touching the one number
- * that reads as genuinely human. Still randomised and still never zero,
- * which is what R-19 actually requires.
+ * `minMs`/`maxMs` stays at {15, 40} — a per-character delay is the part that
+ * most looks like a person actually typing, and there was nothing wrong with
+ * its pace, only with how much of the total it was contributing next to
+ * `betweenFieldsMs`. That is the one that keeps shrinking: {400, 1400}, then
+ * {150, 500}, then {60, 180}, then {25, 75}, and now this — close to the
+ * floor a gap can be and still be two distinct, randomised numbers rather
+ * than a constant. Below here there stops being room for the jitter itself
+ * to do anything, which is the point past which R-19 stops being served by
+ * cutting further.
  */
-const TYPING = { minMs: 15, maxMs: 40, betweenFieldsMs: [25, 75] };
+const TYPING = { minMs: 15, maxMs: 40, betweenFieldsMs: [8, 25] };
 
 module.exports = {
     HUB_URL,

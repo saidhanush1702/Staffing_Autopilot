@@ -54,7 +54,9 @@
     },
     "publish": [
       {
-        "provider": "github"
+        "provider": "github",
+        "owner": "saidhanush1702",
+        "repo": "Staffing_Autopilot"
       }
     ],
     "mac": {
@@ -62,8 +64,7 @@
         {
           "target": "dmg",
           "arch": [
-            "x64",
-            "arm64"
+            "universal"
           ]
         }
       ],
@@ -73,7 +74,7 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}.${ext}"
     }
   }
 }
