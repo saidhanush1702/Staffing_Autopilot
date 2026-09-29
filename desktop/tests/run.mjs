@@ -1091,7 +1091,7 @@ const wizardPage = (steps, opts = {}) => {
             return 0;
         },
         isVisible: async () => (await control(kind).count()) > 0,
-        innerText: async () => ({ open: 'Easy Apply', next: 'Next', submit: 'Submit application', already: 'Applied', start: 'Apply Manually' }[kind] ?? ''),
+        innerText: async () => ({ open: 'Easy Apply', next: 'Next', submit: 'Submit application', already: 'Applied', start: 'Apply Manually', away: 'Apply' }[kind] ?? ''),
         getAttribute: async () => null,
         click: async () => {
             clicked.push(kind);
@@ -2488,6 +2488,28 @@ section('AI agent — when the engine hands a job to it');
             hub.started[0]?.entry, 'RECIPE_FAILED');
         check('  naming where it landed', hub.started[0]?.host, 'careers.initech.example');
         check('  and the job is not handed over', hub.calls.some((c) => c.name === 'reclassify'), false);
+    }
+
+    // A page that says the job is shut is never handed to the agent — the
+    // recipe may not have known the wording, but the page still says it.
+    {
+        const hub = agentHub({ queue: queueOf(item({ portal: 'WELLFOUND' })) });
+        const runner = agentReturns({ outcome: 'READY_TO_SUBMIT', detail: 'filled', qa: [] });
+        const sess = fakeSessions({ landsOn: 'https://careers.initech.example/apply/1' });
+        const basePage = await sess.page();
+        sess.page = async () => ({
+            ...basePage,
+            locator: (sel) => {
+                const c = { ...basePage.locator(sel), count: async () => (sel.startsWith('text=/') ? 1 : 0) };
+                return { ...c, first: () => c, nth: () => c };
+            },
+        });
+        const eng = engineWith(hub, sess, { runAgent: runner });
+        const stats = await eng.run();
+        check('a page that says it is closed never starts the AI agent',
+            hub.started.length + runner.calls.length, 0);
+        check('  the job is skipped as expired instead', stats.closed, 1);
+        check('  and the hub is told so', hub.calls.some((c) => c.name === 'skipped'), true);
     }
 }
 

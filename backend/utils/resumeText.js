@@ -20,7 +20,7 @@
  * application still goes out with the original file attached, and the
  * consultant is asked for a PDF or DOCX.
  */
-import { extractRawText } from 'mammoth';
+import { extractRawText, convertToHtml } from 'mammoth';
 
 /** File signatures. Extension and MIME type are both client-supplied. */
 export const sniffKind = (buffer) => {
@@ -54,6 +54,12 @@ export const normaliseText = (raw) => String(raw ?? '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+/** A real web address, not a mailto:, tel: or javascript: pseudo-link. */
+const WEB_LINK = /^https?:\/\//i;
+
+/** How many hyperlink URLs are worth carrying into the parse step at all. */
+const MAX_LINKS = 20;
+
 const extractPdf = async (buffer) => {
     // Imported here rather than at module load: pdfjs is heavy, and the server
     // boots on machines that will never tailor a resume.
@@ -74,9 +80,27 @@ const extractPdf = async (buffer) => {
     const doc = await loadingTask.promise;
 
     const pages = [];
+    const links = [];
     for (let n = 1; n <= doc.numPages; n += 1) {
         const page = await doc.getPage(n);
         const content = await page.getTextContent();
+
+        // ── A LINK THE VISIBLE TEXT DOES NOT SAY ───────────────────────
+        //
+        // The text stream above holds only what is drawn — the word
+        // "LinkedIn", say — never the address a click on it would open. A
+        // Link annotation carries that address as its own object, entirely
+        // separate from the page's text content, so it is read here and
+        // handed to the parse model as extra evidence rather than lost.
+        try {
+            const annotations = await page.getAnnotations();
+            for (const a of annotations) {
+                const url = a?.url ?? a?.unsafeUrl;
+                if (a?.subtype === 'Link' && typeof url === 'string' && WEB_LINK.test(url)) {
+                    links.push(url);
+                }
+            }
+        } catch { /* a page whose annotations cannot be read still has its text */ }
 
         // pdfjs hands back positioned fragments, not lines. Without rebuilding
         // lines from the Y coordinate, a two-column resume interleaves into
@@ -109,12 +133,55 @@ const extractPdf = async (buffer) => {
     // Best effort. A cleanup failure must never turn a successful extraction
     // into a failed one — that was exactly this function's first bug.
     try { await loadingTask.destroy(); } catch { /* the worker is going anyway */ }
-    return pages.join('\n\n');
+    return { text: pages.join('\n\n'), links };
 };
 
+/**
+ * ── A LINK THE VISIBLE TEXT DOES NOT SAY, DOCX'S VERSION ────────────────
+ *
+ * `extractRawText` reads only the words a person sees — hyperlinked text
+ * comes back as its own display words, "LinkedIn" or "GitHub", with the
+ * address behind it thrown away. A consultant's contact links are very often
+ * written exactly that way: a short label hyperlinked to a profile, not the
+ * bare URL typed out. `convertToHtml`, run on the same bytes, keeps the
+ * `href` an `extractRawText` pass discards, so both are read and the address
+ * rides alongside the visible text rather than being lost.
+ */
 const extractDocx = async (buffer) => {
-    const { value } = await extractRawText({ buffer });
-    return value;
+    const [{ value: text }, { value: html }] = await Promise.all([
+        extractRawText({ buffer }),
+        convertToHtml({ buffer }),
+    ]);
+    const links = [...html.matchAll(/href="([^"]+)"/gi)]
+        .map((m) => m[1])
+        .filter((href) => WEB_LINK.test(href));
+    return { text, links };
+};
+
+/**
+ * Hyperlink addresses the visible text never spelled out, appended as their
+ * own clearly-marked block so the parse model can still find a consultant's
+ * LinkedIn or GitHub even when the document only hyperlinked a word.
+ *
+ * A `mailto:` link is excluded — the email address is already in the visible
+ * contact line whenever the document states one, and a link's OWN presence
+ * is never treated as proof it belongs to this person; PARSE_SYSTEM decides
+ * that from what is nearby, the same as it would for any other fact.
+ */
+export const appendLinkBlock = (text, links) => {
+    const seen = new Set();
+    const kept = [];
+    for (const raw of links ?? []) {
+        const url = String(raw ?? '').trim();
+        if (!url || !WEB_LINK.test(url)) continue;
+        const key = url.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        kept.push(url);
+        if (kept.length >= MAX_LINKS) break;
+    }
+    if (kept.length === 0) return text;
+    return `${text}\n\nHYPERLINKS FOUND IN THE DOCUMENT\n${kept.join('\n')}`;
 };
 
 /**
@@ -148,12 +215,14 @@ export const extractResumeText = async (buffer) => {
     }
 
     try {
-        const raw = kind === 'pdf' ? await extractPdf(buffer) : await extractDocx(buffer);
+        const { text: raw, links } = kind === 'pdf' ? await extractPdf(buffer) : await extractDocx(buffer);
         const text = normaliseText(raw);
 
         // A PDF of scanned images extracts cleanly to nothing. Without this
         // check that becomes an empty resume sent to a model, which returns a
-        // confident, entirely invented one.
+        // confident, entirely invented one. Measured before any hyperlink
+        // block is appended — a scanned resume with one embedded link must
+        // still be refused as unreadable, not accepted on that link alone.
         if (text.length < 200) {
             return {
                 ok: false,
@@ -163,7 +232,8 @@ export const extractResumeText = async (buffer) => {
             };
         }
 
-        return { ok: true, text, kind, chars: text.length };
+        const withLinks = appendLinkBlock(text, links);
+        return { ok: true, text: withLinks, kind, chars: withLinks.length };
     } catch (err) {
         return {
             ok: false,

@@ -27,6 +27,7 @@
 import { query } from '../db.js';
 import { flattenResumeText } from '../config/resumeSchema.js';
 import { getTemplate } from '../config/resumeTemplates.js';
+import { projectPointPool } from '../config/resumeLayout.js';
 
 /**
  * The least a profile needs before a resume can be built from it.
@@ -64,14 +65,45 @@ const groupSkills = (skills) => {
     return [...byCategory.entries()].map(([category, items]) => ({ category, items }));
 };
 
+/**
+ * What a project says, as the bullet points a resume prints.
+ *
+ * ── WHY A PROJECT USED TO COME OUT AS A TITLE AND A YEAR ──────────────
+ *
+ * Only `name` and a packed one-line description were carried across. The
+ * `bullets` column was used only when somebody had typed points in — and
+ * people mostly write a paragraph, or nothing — while `tech_used` was never
+ * read at all. So a project the consultant had described in a paragraph and
+ * built with five technologies printed as its name and its dates.
+ *
+ * Everything the profile knows goes in now, and nothing it does not:
+ *   1. the points the consultant wrote, in their own words
+ *   2. the sentences of the description, each as a point of its own
+ *   3. the technologies, as one line — which is also what an applicant
+ *      tracking system is scanning a project for
+ *
+ * The full list is returned; tailoring reorders it and the renderer keeps
+ * three or four (config/resumeLayout.js). Trimming here would take away the
+ * choice of which points suit this job.
+ */
+const projectPoints = (row) => {
+    const points = [...projectPointPool({
+        bullets: Array.isArray(row.bullets) ? row.bullets : [],
+        description: row.description,
+    })];
+
+    const tech = (Array.isArray(row.tech_used) ? row.tech_used : [])
+        .map((t) => String(t ?? '').trim()).filter(Boolean);
+    if (tech.length > 0) points.push(`Technologies used: ${tech.join(', ')}`);
+
+    return points;
+};
+
 const yearRange = (start, end, isCurrent) => {
     if (isCurrent && start) return `${start} – Present`;
     if (start && end) return `${start} – ${end}`;
     return String(start ?? end ?? '') || null;
 };
-
-/** "B.Tech, Computer Science" — or whatever subset of that exists. */
-const degreeLine = (row) => [row.degree, row.field_of_study].filter(Boolean).join(', ') || null;
 
 /** "8.7 CGPA" / "76.4%" — kept as the consultant wrote it. */
 const scoreLine = (row) => {
@@ -204,23 +236,29 @@ export const buildProfileResume = async ({ orgId, consultantId, templateName }) 
 
         projects: projects.rows.map((r) => ({
             name: r.name,
-            // The facts about a project that do not fit a bullet — who was on
-            // it, how long it ran, what the person's role was — assembled into
-            // the one line a resume has room for.
+            // Printed right-aligned on the project's own line, the same as an
+            // employment date — kept OUT of the meta line below so it is not
+            // said twice.
+            when: r.duration,
+            // The facts ABOUT a project that are not what it does — who was on
+            // it, what the person's role was, where it lives — as the one
+            // meta line under its name.
             description: [
-                r.description,
                 r.role ? `Role: ${r.role}` : null,
                 r.team_size ? `Team of ${r.team_size}` : null,
-                r.duration,
                 r.deployed_url ? `Live: ${r.deployed_url}` : null,
                 r.repo_url ? `Code: ${r.repo_url}` : null,
             ].filter(Boolean).join(' · ') || null,
-            bullets: Array.isArray(r.bullets) ? r.bullets.filter(Boolean) : [],
+            bullets: projectPoints(r),
         })),
 
         education: education.rows.map((r) => ({
             institution: r.institution,
-            degree: degreeLine(r) ?? r.level,
+            // The degree ALONE. `degreeLine` used to fold the field into it
+            // here, and the field was then passed again beside it, so the
+            // renderer printed "B.Tech in Computer Science and Engineering,
+            // Computer Science and Engineering" — the same words twice.
+            degree: r.degree ?? r.level,
             field: r.field_of_study,
             startDate: r.start_year ? String(r.start_year) : null,
             endDate: r.is_current ? 'Present' : (r.end_year ? String(r.end_year) : null),

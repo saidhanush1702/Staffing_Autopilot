@@ -138,6 +138,10 @@ export const RESUME_JSON_SCHEMA = {
                 required: ['name'],
                 properties: {
                     name: str,
+                    // As the document wrote it — "Jan 2024 – Apr 2024", "3
+                    // months", "2025". Free text for the same reason as
+                    // experience's dates: it is printed, never computed from.
+                    when: strOrNull,
                     description: strOrNull,
                     bullets: { type: 'array', items: str },
                 },
@@ -226,6 +230,7 @@ export const resumeJoiSchema = Joi.object({
 
     projects: Joi.array().items(Joi.object({
         name: Joi.string().trim().min(1).max(255).required(),
+        when: nullableString(80),
         description: nullableString(2000),
         bullets: Joi.array().items(Joi.string().max(2000)).default([]),
     })).default([]),
@@ -308,7 +313,7 @@ export const flattenResumeText = (resume) => {
         for (const b of role.bullets ?? []) push(b);
     }
     for (const p of resume.projects ?? []) {
-        push(p.name); push(p.description);
+        push(p.name); push(p.when); push(p.description);
         for (const b of p.bullets ?? []) push(b);
     }
     for (const e of resume.education ?? []) {

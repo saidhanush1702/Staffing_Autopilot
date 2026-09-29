@@ -265,6 +265,21 @@ const main = async () => {
     check('project metadata is folded into the description',
         s.projects[0].description.includes('Lead developer')
         && s.projects[0].description.includes('Team of 4'), true);
+    // A project used to print as a name and one packed line. Its description,
+    // the points written for it and its technologies are all points now.
+    check('a project’s description is a point, not part of the meta line',
+        s.projects[0].bullets.includes('Nightly reconciliation tool'), true);
+    check('  and is not repeated in the meta line',
+        s.projects[0].description.includes('Nightly reconciliation tool'), false);
+    check('  the consultant’s own point is kept',
+        s.projects[0].bullets.includes('Cut manual reconciliation effort for the finance team.'), true);
+    check('  the technologies are printed as a point',
+        s.projects[0].bullets.includes('Technologies used: Java'), true);
+    // Printed right-aligned on the project's own line, like an employment
+    // date — not folded into the meta line beneath it.
+    check('the project duration is its own "when", not part of the description',
+        [s.projects[0].when, s.projects[0].description.includes('3 months')],
+        ['3 months', false]);
     check('an Indian-format score survives as written',
         s.education[0].details.includes('8.7 CGPA'), true);
     check('the section order comes from the TEMPLATE, not the model',

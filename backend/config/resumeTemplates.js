@@ -53,6 +53,8 @@
  * given up.
  */
 
+import { limitsFor } from './resumeLayout.js';
+
 export const DEFAULT_TEMPLATE = 'CLASSIC';
 
 /**
@@ -238,17 +240,32 @@ export const templateOptions = () => TEMPLATE_NAMES.map((name) => ({
  * surface. It does not need — and must not be given — the styling, because
  * anything it knows about the layout is something it can try to control.
  */
-export const describeTemplate = (template) => {
+export const describeTemplate = (template, career = null) => {
     const t = getTemplate(template?.name ?? template);
+    const limits = limitsFor(t, career);
+
+    // Only said when the level is known. A one-page resume has to be written
+    // tighter than a three-page one, and the model can only do that if it is
+    // told which it is writing.
+    const length = career
+        ? (limits.onePage
+            ? `\n\nCAREER LEVEL: ${career.level}. This resume is printed on exactly ONE page, so
+write tight: short, complete points, nothing padded. Projects are a main part
+of this candidate's experience — keep ${limits.projects} of the most relevant
+and explain each properly.`
+            : `\n\nCAREER LEVEL: ${career.level}. This resume runs to more than one page, so
+experience carries the weight; keep every role's real work, most relevant first.`)
+        : '';
+
     return `TEMPLATE: ${t.label}
 Sections, in the order they will be printed:
 ${t.sections.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}
 
 This template gives the most weight to: ${t.emphasis.join(' and ')}.
-Lead with what is most relevant to those sections.
+Lead with what is most relevant to those sections.${length}
 
-Limits: at most ${t.maxBulletsPerRole} bullet points per role, and at most
-${t.maxProjects} projects. If there are more than that, keep the ones most
-relevant to this job and drop the rest — dropping is always allowed, adding
-never is.`;
+Limits: at most ${limits.bulletsPerRole} bullet points per role, and at most
+${limits.projects} projects, each with 3 or 4 points. If there are more than
+that, keep the ones most relevant to this job and drop the rest — dropping is
+always allowed, adding never is (except explaining a project from its own facts).`;
 };

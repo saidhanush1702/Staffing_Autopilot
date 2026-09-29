@@ -45,7 +45,7 @@
 const fs = require('node:fs');
 const { BOARDS, boardForPortal } = require('./browser/boards.js');
 const { fillForm, describeFields } = require('./browser/filler.js');
-const { runApplyFlow, pressSubmit } = require('./browser/applyFlow.js');
+const { runApplyFlow, pressSubmit, CLOSED_SELECTOR } = require('./browser/applyFlow.js');
 const { tenantFor, profileKey } = require('./browser/destinations.js');
 const { runAgent: runAgentDefault } = require('./agent/runAgent.js');
 const { pressAgentSubmit } = require('./agent/actions.js');
@@ -1251,11 +1251,54 @@ class CycleEngine {
         }).catch(() => {});
     }
 
+    /**
+     * A job whose own page says it is shut is not the agent's to attempt.
+     *
+     * ── WHY THIS IS A SEPARATE CHECK FROM THE RECIPE'S ────────────────
+     *
+     * The recipe looks for a closed notice first, but only in the words it
+     * knows. When a board words it differently — LinkedIn's "Not currently
+     * accepting applications" was the one that got through — the recipe sees no
+     * verdict and hands the job on as if it were merely something it could not
+     * read, and the agent, which is meant to rescue jobs the recipe FAILED at,
+     * then starts a paid model run against a posting nobody can apply to. The
+     * agent's own prompt says to stop on a closed posting, but only if it is
+     * looking at the posting: it was being pointed at a followed link instead.
+     *
+     * So before any agent run, ask the page the recipe was on. Cheap, local,
+     * and it turns a wasted run (and a second browser window) into the skip it
+     * should always have been.
+     *
+     * @returns 'counted' when the job was skipped as expired, otherwise null
+     */
+    async #skipIfClosed({ item, board, activityBoard = null, page, stats, record }) {
+        let closed = false;
+        try {
+            closed = typeof page?.locator === 'function'
+                && (await page.locator(CLOSED_SELECTOR).count()) > 0;
+        } catch { /* a page that cannot be asked is not a closed one */ }
+        if (!closed) return null;
+
+        await this.#reportSkipped(item.id, {
+            reason: 'This job is expired — the posting is no longer accepting applications.',
+        });
+        stats.skipped += 1;
+        stats.closed += 1;
+        const where = activityBoard ?? board;
+        record(item, board, 'CLOSED', 'the page says the posting is not accepting applications');
+        this.activity(where.name, 'CLOSED',
+            `${item.company}: the page says it is not accepting applications`);
+        return 'counted';
+    }
+
     /** Let the agent try the page the recipe was on. */
     async #tryAgent({
         item, board, activityBoard = null, page, entry, trigger, stats, record,
         approvedAnswers, profile, resumePath = null, root = null, prior = null,
     }) {
+        const closed = await this.#skipIfClosed({ item, board, activityBoard, page, stats, record });
+        if (closed) return closed;
+
         const started = await this.#startAgent(item, {
             entry, host: hostOf(page.url()), trigger,
         });
@@ -1276,9 +1319,27 @@ class CycleEngine {
     async #agentForFlow({
         item, board, page, flow, stats, record, approvedAnswers, profile, resumePath,
     }) {
+        const closed = await this.#skipIfClosed({ item, board, page, stats, record });
+        if (closed) return closed;
+
         if (flow.outcome === 'EXTERNAL_APPLY' && flow.externalUrl) {
             const host = hostOf(flow.externalUrl);
             if (!host) return null;
+
+            // A link back to the very page we are already on is not somewhere
+            // to "follow" to. Opening it would start a second, signed-out
+            // browser profile on the same site — a new window, and an
+            // authwall, for a job that is right here in front of us.
+            const samePage = (() => {
+                try {
+                    const there = new URL(flow.externalUrl);
+                    const here = new URL(page.url());
+                    return hostOf(flow.externalUrl) === hostOf(page.url())
+                        && there.pathname === here.pathname;
+                } catch { return false; }
+            })();
+            if (samePage) return null;
+
             const started = await this.#startAgent(item, {
                 entry: 'RECIPE_FAILED', host, trigger: flow.detail,
             });

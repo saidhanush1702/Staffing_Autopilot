@@ -298,6 +298,65 @@ try {
     check('  and its own opener is what matches',
         await page.locator('button[aria-label*="Easy Apply" i]').count(), 1);
 
+    section('a job that says "not currently accepting" is closed, not "applies elsewhere"');
+
+    // Read off a real listing: LinkedIn's second wording for a shut job, and a
+    // link wrapping the "people clicked apply" line that points back at the
+    // very same job page. The first is what the closed check missed; the
+    // second is what the generic Apply search then mistook for a hand-off, so
+    // the AI agent opened it in a second, signed-out browser window.
+    const NOT_CURRENTLY = `<h1>Senior DevOps Engineer</h1>
+      <a href="/jobs/view/123/?trk=x"><span>Reposted 1 week ago · 26 people clicked apply</span></a>
+      <div><span>Not currently accepting applications</span></div>`;
+    const AGENCY_NOTE = `<h1>Platform Engineer</h1>
+      <button aria-label="Easy Apply to Platform Engineer">Easy Apply</button>
+      <p>Note: we are not accepting applications from staffing agencies.</p>`;
+    const LINK_HOST = 'https://board.test';
+
+    page = await load(browser, NOT_CURRENTLY);
+    check('"Not currently accepting applications" is matched as closed',
+        await page.locator(CLOSED_SELECTOR).first().isVisible(), true);
+
+    page = await load(browser, AGENCY_NOTE);
+    check('  a sentence that merely says "not accepting applications" is not',
+        await page.locator(CLOSED_SELECTOR).count(), 0);
+
+    // Served from a real address, so a link to "this same page" can be told
+    // from a link somewhere else — a data: URL has no host to compare.
+    const served = async (html, path = '/jobs/view/123/') => {
+        const p = await (await browser.newContext()).newPage();
+        await p.route(`${LINK_HOST}/**`, (r) => r.fulfill({ contentType: 'text/html', body: html }));
+        await p.goto(`${LINK_HOST}${path}`);
+        return p;
+    };
+    const board = { name: 'T', label: 'Test', loginUrl: `${LINK_HOST}/login`, apply: {
+        open: '#no-such-open', dialog: '#no-such-dialog', next: '#n', submit: '#s',
+    } };
+    const flowOn = (p) => runApplyFlow(p, board, { profile: {}, approvedAnswers: [] }, { canFill: false });
+
+    let served1 = await served(NOT_CURRENTLY);
+    check('the whole flow calls it CLOSED, without waiting out the opener',
+        (await flowOn(served1)).outcome, 'CLOSED');
+
+    // With no closed notice at all, that same self-link must still not be
+    // taken for somewhere to apply.
+    const SELF_LINK_ONLY = `<h1>Senior DevOps Engineer</h1>
+      <a href="/jobs/view/123/?trk=x"><span>26 people clicked apply</span></a>`;
+    served1 = await served(SELF_LINK_ONLY);
+    check('a link back to the same job is not an external apply',
+        (await flowOn(served1)).outcome, 'NO_APPLY_FLOW');
+
+    // …and the real thing keeps working, in both shapes it comes in.
+    const BUTTON = '<h1>Dev</h1><button>Apply</button><button>Save</button>';
+    check('a plain Apply button is still an external apply',
+        (await flowOn(await served(BUTTON))).outcome, 'EXTERNAL_APPLY');
+
+    const REDIRECT = `<h1>Dev</h1><a href="/jobs/view/externalApply/123?url=https%3A%2F%2Fboards.greenhouse.io%2Facme%2Fjobs%2F1">Apply</a>`;
+    const viaRedirect = await flowOn(await served(REDIRECT));
+    check('  so is the site’s own redirect to the employer', viaRedirect.outcome, 'EXTERNAL_APPLY');
+    check('    with the link made absolute for whoever follows it',
+        viaRedirect.externalUrl.startsWith(`${LINK_HOST}/jobs/view/externalApply/`), true);
+
     section('a covered button is still pressed');
 
     // The "Resume uploaded successfully" bar, laid exactly over Review.

@@ -22,6 +22,7 @@ import { callModel } from '../connectors/llm/index.js';
 import { validateResume, RESUME_JSON_SCHEMA, compareStructure } from '../config/resumeSchema.js';
 import { TAILOR_SYSTEM, tailorInstruction } from '../config/tailoringRules.js';
 import { describeTemplate } from '../config/resumeTemplates.js';
+import { careerLevel, shapeTailored } from '../config/resumeLayout.js';
 
 /**
  * The base resume as the model should see it.
@@ -55,7 +56,7 @@ export const tailorResume = async ({
         // it beside the volatile job description would push it outside and
         // quietly stop the cache from hitting at all.
         cacheable: template
-            ? `${describeTemplate(template)}
+            ? `${describeTemplate(template, careerLevel(baseSections))}
 
 ${baseBlock(baseSections)}`
             : baseBlock(baseSections),
@@ -95,9 +96,15 @@ ${baseBlock(baseSections)}`
     // establishing it in code costs nothing and cannot be argued with.
     const structural = compareStructure(baseSections, validated.value);
 
+    // The model was told 3–4 points per project and a page budget; this makes
+    // both true when it did not manage them. Missing points come back from the
+    // base project, never from imagination, and the ceilings are enforced.
+    // Before the fabrication check, so what is checked is what is printed.
+    const resume = shapeTailored(validated.value, baseSections, template);
+
     return {
         ok: true,
-        resume: validated.value,
+        resume,
         structural,
         provider: res.provider,
         model: res.model,

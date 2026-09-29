@@ -29,7 +29,10 @@
  * that matters: is this in the original, or not.
  */
 
-export const PROMPT_VERSION = 'v1';
+// v4: every skill from the base resume survives tailoring regardless of
+// relevance to the job, and the contact block is never altered — both told to
+// the model here and enforced in code by shapeTailored (config/resumeLayout.js).
+export const PROMPT_VERSION = 'v4';
 
 /* ── stage 1: parsing ──────────────────────────────────────────────── */
 
@@ -60,6 +63,19 @@ RULES
 6. Anything that does not fit a known section — Publications, Awards,
    Languages, Volunteering — goes into "additional" with its original heading.
    Never discard content because it does not fit.
+7. A project's "when" is its dates or duration exactly as written — "Jan 2024 –
+   Apr 2024", "3 months", "2025". Null if the project states none.
+8. The document may end with a block headed "HYPERLINKS FOUND IN THE DOCUMENT",
+   listing web addresses that were embedded as clickable links in the file
+   itself rather than typed out as visible text — a name or the word
+   "LinkedIn" hyperlinked to a profile is a real example. This block is not
+   part of the resume's own content and must never become a section, a bullet
+   or any visible text. Read it only to fill contact.links: if one of its
+   addresses is the person's own LinkedIn, GitHub, portfolio or similar
+   professional profile — including one already named nearby in the visible
+   text — put its full address in contact.links. Ignore an address that is
+   an email link (mailto:), or one that plainly belongs to a company, a
+   product or a course rather than to this person.
 
 Return only the JSON object.`;
 
@@ -89,12 +105,52 @@ WHAT YOU MAY DO
 - Expand an abbreviation the resume already uses, or contract one it spells out.
 - Adjust the professional summary to emphasise experience the resume already
   describes elsewhere.
-- Drop a bullet that is irrelevant to this job. Removing is always safe.
+- Drop an EXPERIENCE bullet that is irrelevant to this job. Removing is always
+  safe there.
+- Explain a project (see PROJECTS below). This is the one place where writing
+  a sentence the base did not spell out is expected — but only from that
+  project's own facts.
+
+SKILLS — EVERY SKILL STAYS, WHETHER THIS JOB WANTS IT OR NOT
+Reorder the skills section so what this job cares about leads. Never remove a
+skill because it looks unrelated to this posting. A consultant applying for a
+backend role still lists their Photoshop or their Salesforce experience — that
+is real, it is theirs, and dropping it is not your decision to make. Keep
+every skill from the base resume somewhere in the tailored one, under the
+same category if it still exists or a new one if it does not.
+
+PROJECTS — EVERY PROJECT GETS 3 OR 4 BULLET POINTS
+A project shown as a title and a date tells an employer nothing. Every project
+you keep must carry 3 or 4 short, complete bullet points, each on a different
+aspect, in this order of preference:
+  1. What it is and what it is for.
+  2. The technologies used, and what each was used for — only technologies
+     listed for THAT project or named in its description.
+  3. The main features, or what the person built or was responsible for, as
+     the base describes them.
+  4. Role, team size, deployment or repository, and any result the base
+     states. (Its "when" — the dates or duration — is printed on the page
+     directly and never needs its own point.)
+Start each point with a strong past-tense verb (Built, Designed, Implemented,
+Developed, Integrated). One idea per point, one to two lines each.
+When the base project already has 3 or 4 points, keep, reorder and reword them
+for this job. When it has fewer, write the missing points by explaining the
+project from ITS OWN facts: its name, description, role, when, links and
+technology list. Say the same facts from another angle (purpose, stack,
+delivery) rather than adding new ones.
+Never invent a feature, number, user count, client, result or technology to
+reach the count. If the facts truly support only 3 points, write 3. Never leave
+a project as only a title, a date or a single line.
 
 WHAT YOU MUST NEVER DO
 - Add a skill, technology, tool, framework, language or platform that does not
   appear anywhere in the base resume.
+- Remove a skill the base resume lists, for any reason, including that it does
+  not suit this job.
+- Change the contact block in any way — name, email, phone, location or any
+  link (LinkedIn, GitHub, portfolio). Copy it exactly, on every job.
 - Add, rename or re-title an employer, or change employment dates.
+- Add or change a project's "when". Copy it exactly, including a null.
 - Change a job title. "Senior Engineer" does not become "Lead Engineer".
 - Add a degree, institution, certification or licence.
 - Add or change any number: years of experience, team sizes, percentages,
@@ -155,6 +211,11 @@ NOT a problem — do not flag these:
 - Content from the original that has been left out. Omission is allowed.
 - An abbreviation expanded or contracted, when the original used the other form.
 - A synonym for the same technology.
+- A project explained in full sentences using only THAT project's own name,
+  description, role, when, links and technology list — what it is, what it is
+  for, what it was built with, what the person's part was. Explaining a
+  project from its own facts is not a new claim. (A new technology, number,
+  user count, client or result inside such a sentence still is.)
 
 A problem — flag these:
 - Any skill, tool, technology, framework or platform not in the original.

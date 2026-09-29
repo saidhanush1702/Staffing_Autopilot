@@ -66,6 +66,16 @@ const CLOSED_SELECTOR = 'text=/no longer accepting applications'
     + '|this job is no longer available'
     + '|applications are closed'
     + '|this position has been filled'
+    // LinkedIn has more than one wording for the same state. Read off a real
+    // listing: "Not currently accepting applications" — with "currently", so
+    // "no longer accepting applications" never matched it. The job then
+    // looked like it had no verdict at all, sat out the whole opener wait,
+    // and fell through to the generic "is there an Apply link" guess below.
+    + '|not currently accepting applications'
+    // The bare form is only believed as the WHOLE text of an element (a
+    // banner), never inside a sentence: "we are not accepting applications
+    // from agencies" is a job description, and an open job.
+    + '|^\\s*not accepting applications\\.?\\s*$'
     // Built In's wording, measured: "Sorry, this job was removed at 08:23 p.m."
     + '|this job was removed/i';
 
@@ -105,6 +115,61 @@ const APPLIED_SELECTOR = 'text=/application submitted/i';
  * job that offers both, Easy Apply always wins.
  */
 const EXTERNAL_SELECTOR = 'button:has-text("Apply"), a:has-text("Apply")';
+
+/**
+ * ── WHAT COUNTS AS "AN APPLY LINK" ────────────────────────────────────
+ *
+ * `EXTERNAL_SELECTOR` is a search for anything containing the letters "apply",
+ * and `:has-text` is satisfied by every ANCESTOR of the text too. On a real
+ * closed LinkedIn listing that matched a link wrapping "…26 people clicked
+ * apply", whose href is the same job page on linkedin.com. The engine then
+ * reported "this job applies on linkedin.com" and — with the AI agent on —
+ * opened that link in a second, signed-out browser profile to "carry on" from
+ * there. A page that said "not accepting applications" was being applied to.
+ *
+ * So the selector only nominates candidates. Each one is then judged by what it
+ * says ITSELF ("Apply", "Apply now", "Apply on company website" — never a
+ * sentence that merely contains the word), and by where it goes: a link back
+ * onto the same site is not "elsewhere" unless it is one of that site's redirect
+ * endpoints (LinkedIn's `/jobs/view/externalApply/…`). A board's own
+ * `externalApply` selector is trusted as written — it was measured, not guessed.
+ */
+const APPLY_CONTROL_TEXT = /^\s*(easy\s+)?apply(\s+now|\s+externally|\s+on\s+.{1,40})?\s*$/i;
+const SAME_SITE_REDIRECT = /externalapply|\/safety\/go|\/redirect|\/away(\/|$)|[?&](url|redirect)=/i;
+
+const hostKey = (u) => u.host.replace(/^www\./, '').toLowerCase();
+
+const findExternalApply = async (page, recipe) => {
+    if (recipe.externalApply) {
+        const own = page.locator(recipe.externalApply).first();
+        return (await own.count() > 0 && await own.isVisible().catch(() => false)) ? own : null;
+    }
+
+    const candidates = page.locator(EXTERNAL_SELECTOR);
+    const total = Math.min(await candidates.count(), 25);
+    let here = null;
+    try { here = new URL(page.url()); } catch { /* about:blank and the like */ }
+
+    for (let i = 0; i < total; i += 1) {
+        const c = candidates.nth(i);
+        if (!(await c.isVisible().catch(() => false))) continue;
+
+        const said = String((await c.innerText().catch(() => '')) ?? '').replace(/\s+/g, ' ').trim();
+        if (!APPLY_CONTROL_TEXT.test(said)) continue;
+
+        const href = await c.getAttribute('href').catch(() => null);
+        if (href && here) {
+            let target = null;
+            try { target = new URL(href, here); } catch { /* not a URL; judged by text alone */ }
+            if (target && hostKey(target) === hostKey(here)
+                && !SAME_SITE_REDIRECT.test(`${target.pathname}${target.search}`)) {
+                continue;                     // a link to this same site is not "elsewhere"
+            }
+        }
+        return c;
+    }
+    return null;
+};
 
 /**
  * The applicant tracking systems these links lead to, by the host that gives
@@ -668,8 +733,8 @@ const runApplyFlow = async (page, board, fillOptions, {
         // apply button that simply leads somewhere else? Saying which of the
         // two it is matters: one is a job for a person, the other is a page we
         // could not read.
-        const away = page.locator(recipe.externalApply ?? EXTERNAL_SELECTOR).first();
-        if (await away.count() > 0 && await away.isVisible().catch(() => false)) {
+        const away = await findExternalApply(page, recipe);
+        if (away) {
             const where = await destinationOf(away);
             // The link itself, not just its name. Without this the engine has
             // nowhere to follow the hand-off TO -- `destinations.js` matches on
@@ -677,7 +742,9 @@ const runApplyFlow = async (page, board, fillOptions, {
             // string cannot open Workday. Losing this field is exactly what
             // silently disabled destination-following: the outcome looked
             // right, the string read right, and nothing ever actually opened.
-            const externalUrl = await away.getAttribute('href').catch(() => null);
+            const rawHref = await away.getAttribute('href').catch(() => null);
+            let externalUrl = rawHref;
+            try { externalUrl = rawHref ? new URL(rawHref, page.url()).href : null; } catch { /* keep as found */ }
             return {
                 ...empty,
                 outcome: 'EXTERNAL_APPLY',
@@ -1078,4 +1145,5 @@ module.exports = {
     whichAppears,
     clickSteadily, describeObstruction,
     CLOSED_SELECTOR, EXTERNAL_SELECTOR, APPLIED_SELECTOR, destinationOf, ATS_NAMES,
+    findExternalApply, APPLY_CONTROL_TEXT,
 };
