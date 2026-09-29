@@ -6,6 +6,10 @@ node_modules/
 backend/uploads/
 client/dist/
 
+# Desktop build output: the renderer bundle and the packaged installers.
+desktop/dist/
+desktop/dist-renderer/
+
 *.log
 npm-debug.log*
 coverage/

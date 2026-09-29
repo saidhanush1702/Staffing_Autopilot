@@ -1,68 +1,562 @@
 @import "tailwindcss";
 
-/* Tailwind v4 is CSS-first. Every colour used anywhere in the app comes from
-   a token defined here — no ad-hoc hex values in JSX. */
+/* ═══════════════════════════════════════════════════════════════════════════
+   SMARTAPPLY — GLOBAL DESIGN SYSTEM
+   ═══════════════════════════════════════════════════════════════════════════
+
+   This file is the single source of truth for every colour, size, radius,
+   shadow, font and motion curve in the web application. Nothing visual is
+   invented in a component: if a value is not here, it does not exist.
+
+   HOW IT IS ORGANISED
+   ───────────────────
+     1. @custom-variant  · the `dark:` variant, driven by <html data-theme>
+     2. @theme           · every design token, as a Tailwind theme variable
+     3. dark overrides   · the SAME token names, re-pointed for dark mode
+     4. @layer base      · element defaults, scrollbars, focus, selection
+     5. @layer utilities · composite effects a single class cannot express
+
+   WHY THE NEUTRAL RAMP INVERTS IN DARK MODE
+   ─────────────────────────────────────────
+   `slate-50` means "the most recessed surface" and `slate-900` means "the
+   loudest text" — those are ROLES, not brightness values. In dark mode the
+   same roles need different hex codes, so the ramp is re-pointed rather than
+   every component being rewritten with a `dark:` twin. One definition, two
+   themes, zero drift.
+
+   Semantic ramps (success / warning / danger / info / brand) invert the same
+   way: `-50` is always "the quiet tinted background for this meaning" and
+   `-700` is always "the legible text on top of it".
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
-    --color-brand-50:  #eff6ff;
-    --color-brand-100: #dbeafe;
-    --color-brand-500: #3b82f6;
-    --color-brand-600: #2563eb;
-    --color-brand-700: #1d4ed8;
+    /* ── TYPEFACES ──────────────────────────────────────────────────────
+       Two families, one job each. Display carries headings and numbers — it
+       is geometric and a little tighter, which is what makes a dashboard read
+       as designed rather than assembled. Sans carries everything else. */
+    --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-display: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
 
-    /* ── Semantic tones ───────────────────────────────────────────────
-       Five meanings, not fifty colours. Every badge, alert, banner and
-       button in the app resolves to one of these, so "what colour is a
-       warning?" has exactly one answer. Values match the Tailwind palette
-       the app already used by hand (emerald / amber / red / sky), so this
-       is a rename of existing intent rather than a visual redesign.
+    /* ── TYPE SCALE ─────────────────────────────────────────────────────
+       Each step carries its own line-height and tracking. Headings tighten
+       as they grow; body text never does.
 
-       Use these, never a raw palette colour, for anything that carries
-       MEANING. Raw slate stays fine for structure — borders, page
-       chrome, muted text. */
-    --color-success-50:  #ecfdf5;
-    --color-success-100: #d1fae5;
-    --color-success-200: #a7f3d0;
-    --color-success-600: #059669;
-    --color-success-700: #047857;
+       `xs`, `sm` and `base` keep their familiar 12 / 14 / 16px values on
+       purpose. `text-sm` is this app's workhorse — it is on almost every line
+       of every table — and shaving a pixel off it to look "designed" would
+       cost legibility on precisely the screens people spend the day in.
 
-    --color-warning-50:  #fffbeb;
-    --color-warning-100: #fef3c7;
-    --color-warning-200: #fde68a;
-    --color-warning-600: #d97706;
-    --color-warning-700: #b45309;
+       What is added is the two steps the scale was missing: `2xs` for the
+       all-caps micro-labels above a figure, and `md` for the half-step
+       between body and a heading. */
+    --text-2xs: 0.6875rem;    --text-2xs--line-height: 1rem;       --text-2xs--letter-spacing: 0.02em;
+    --text-xs: 0.75rem;       --text-xs--line-height: 1.125rem;
+    --text-sm: 0.875rem;      --text-sm--line-height: 1.25rem;
+    --text-base: 1rem;        --text-base--line-height: 1.5rem;
+    --text-md: 0.9375rem;     --text-md--line-height: 1.375rem;
+    --text-lg: 1.0625rem;     --text-lg--line-height: 1.5rem;      --text-lg--letter-spacing: -0.01em;
+    --text-xl: 1.25rem;       --text-xl--line-height: 1.75rem;     --text-xl--letter-spacing: -0.017em;
+    --text-2xl: 1.5rem;       --text-2xl--line-height: 2rem;       --text-2xl--letter-spacing: -0.021em;
+    --text-3xl: 1.875rem;     --text-3xl--line-height: 2.25rem;    --text-3xl--letter-spacing: -0.024em;
+    --text-4xl: 2.25rem;      --text-4xl--line-height: 2.625rem;   --text-4xl--letter-spacing: -0.028em;
+    --text-5xl: 3rem;         --text-5xl--line-height: 3.25rem;    --text-5xl--letter-spacing: -0.032em;
 
-    --color-danger-50:   #fef2f2;
-    --color-danger-100:  #fee2e2;
-    --color-danger-200:  #fecaca;
-    --color-danger-600:  #dc2626;
-    --color-danger-700:  #b91c1c;
+    /* ── NEUTRAL RAMP ───────────────────────────────────────────────────
+       A cool, slightly desaturated grey. Warmer than Tailwind's stock slate,
+       which reads faintly blue-cold across a large white dashboard.
 
-    --color-info-50:     #f0f9ff;
-    --color-info-100:    #e0f2fe;
-    --color-info-200:    #bae6fd;
-    --color-info-600:    #0284c7;
-    --color-info-700:    #0369a1;
+         50   page background          400  muted text, empty-state icons
+         100  chip / hover fill        500  secondary text
+         200  hairline borders         600  body text
+         300  control borders          700  strong body text
+                                       800  sub-headings
+                                       900  headings                        */
+    --color-slate-50: #f6f8fb;
+    --color-slate-100: #eef1f6;
+    --color-slate-200: #e2e6ee;
+    --color-slate-300: #cdd4e0;
+    --color-slate-400: #98a2b5;
+    --color-slate-500: #6c7689;
+    --color-slate-600: #4d5668;
+    --color-slate-700: #3a4253;
+    --color-slate-800: #262d3c;
+    --color-slate-900: #141a26;
+    --color-slate-950: #0a0e17;
 
-    /* Role accent colours — used by badges and the sidebar */
-    --color-role-super:      #a855f7;
-    --color-role-orgadmin:   #2563eb;
-    --color-role-recruiter:  #0ea5e9;
-    --color-role-consultant: #10b981;
+    /* ── SURFACES ───────────────────────────────────────────────────────
+       Named by ELEVATION, not by colour, so `bg-surface` is still correct
+       when the surface stops being white.
 
-    /* Audit action verbs (first word drives the colour) */
-    --color-audit-added:    #10b981;
-    --color-audit-updated:  #f59e0b;
-    --color-audit-approved: #059669;
-    --color-audit-sent:     #0ea5e9;
-    --color-audit-removed:  #ef4444;
+         canvas     the page itself
+         surface    a card, a table, a panel — the default plane
+         raised     a header strip or footer inside a card
+         sunken     an inset well: a code block, a preview frame
+         overlay    the scrim behind a dialog                              */
+    --color-canvas: #f6f8fb;
+    --color-surface: #ffffff;
+    --color-surface-raised: #fbfcfe;
+    --color-surface-sunken: #f1f4f9;
+    --color-overlay: #141a26;
 
-    --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* Borders, as roles rather than shades. */
+    --color-line: #e2e6ee;
+    --color-line-soft: #eef1f6;
+    --color-line-strong: #cdd4e0;
+
+    /* ── BRAND ──────────────────────────────────────────────────────────
+       An indigo-blue: the blue half reads as trust and infrastructure, the
+       indigo half keeps it from looking like every other B2B dashboard.
+       600 is THE brand colour; everything else supports it. */
+    --color-brand-50: #eef2ff;
+    --color-brand-100: #e0e7ff;
+    --color-brand-200: #c7d4fe;
+    --color-brand-300: #a5b8fc;
+    --color-brand-400: #8193f8;
+    --color-brand-500: #6070f0;
+    --color-brand-600: #4a55e2;
+    --color-brand-700: #3d43c8;
+    --color-brand-800: #333aa1;
+    --color-brand-900: #2e357f;
+    --color-brand-950: #1d204d;
+
+    /* ── ACCENT ─────────────────────────────────────────────────────────
+       Teal. The second series in a chart, and "good news that is not a
+       success state". Never an action colour — that is brand's job. */
+    --color-accent-50: #eefbf6;
+    --color-accent-100: #d3f5e9;
+    --color-accent-200: #a9ead6;
+    --color-accent-300: #71d8bd;
+    --color-accent-400: #3cbd9f;
+    --color-accent-500: #1ba185;
+    --color-accent-600: #10826c;
+    --color-accent-700: #0f6858;
+    --color-accent-800: #105347;
+    --color-accent-900: #0f453c;
+
+    /* ── SEMANTIC TONES ─────────────────────────────────────────────────
+       Five meanings, not fifty colours. Each ramp keeps the same contract in
+       both themes: 50/100 are backgrounds, 200/300 are borders, 600/700 is
+       the legible text on top. */
+    --color-success-50: #ecfdf4;
+    --color-success-100: #d2f9e3;
+    --color-success-200: #a7f0c9;
+    --color-success-300: #6ee0ab;
+    --color-success-400: #37c98c;
+    --color-success-500: #14ad72;
+    --color-success-600: #068b5c;
+    --color-success-700: #056e4b;
+    --color-success-800: #07573d;
+    --color-success-900: #074833;
+
+    --color-warning-50: #fff9ed;
+    --color-warning-100: #fff0d3;
+    --color-warning-200: #ffdda5;
+    --color-warning-300: #ffc46d;
+    --color-warning-400: #ffa032;
+    --color-warning-500: #f9820b;
+    --color-warning-600: #d96306;
+    --color-warning-700: #b44708;
+    --color-warning-800: #92380e;
+    --color-warning-900: #782f0f;
+
+    --color-danger-50: #fef3f2;
+    --color-danger-100: #fee4e2;
+    --color-danger-200: #fecdca;
+    --color-danger-300: #fda29b;
+    --color-danger-400: #f97066;
+    --color-danger-500: #f04438;
+    --color-danger-600: #d92d20;
+    --color-danger-700: #b42318;
+    --color-danger-800: #912018;
+    --color-danger-900: #7a271a;
+
+    --color-info-50: #eff8ff;
+    --color-info-100: #d1e9ff;
+    --color-info-200: #b2ddff;
+    --color-info-300: #84caff;
+    --color-info-400: #53b1fd;
+    --color-info-500: #2e90fa;
+    --color-info-600: #1570ef;
+    --color-info-700: #175cd3;
+    --color-info-800: #1849a9;
+    --color-info-900: #194185;
+
+    /* ── ROLE ACCENTS ───────────────────────────────────────────────────
+       One colour per role in the product, so a person's badge is the same
+       colour in the sidebar, the user table and the audit log. */
+    --color-role-super: #8b5cf6;
+    --color-role-orgadmin: #4a55e2;
+    --color-role-recruiter: #2e90fa;
+    --color-role-consultant: #14ad72;
+
+    /* ── AUDIT VERBS ────────────────────────────────────────────────────
+       The first word of an audit entry decides its colour. */
+    --color-audit-added: #14ad72;
+    --color-audit-updated: #f9820b;
+    --color-audit-approved: #068b5c;
+    --color-audit-sent: #2e90fa;
+    --color-audit-removed: #f04438;
+
+    /* ── DATA VISUALISATION ─────────────────────────────────────────────
+       An ordered categorical series. Hues step far enough apart to stay
+       distinguishable side by side, and all six hold up in both themes. */
+    --color-viz-1: #4a55e2;
+    --color-viz-2: #1ba185;
+    --color-viz-3: #f9820b;
+    --color-viz-4: #8b5cf6;
+    --color-viz-5: #2e90fa;
+    --color-viz-6: #e8618c;
+
+    /* ── RADIUS ─────────────────────────────────────────────────────────
+       Radius encodes size: the bigger the surface, the rounder the corner.
+       A 6px chip and a 6px modal look like a mistake; these do not. */
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 10px;
+    --radius-xl: 12px;
+    --radius-2xl: 16px;
+    --radius-3xl: 20px;
+    --radius-4xl: 28px;
+
+    /* ── ELEVATION ──────────────────────────────────────────────────────
+       Layered, low-opacity shadows — one tight contact shadow plus one wide
+       ambient shadow. A single large blur reads as a smudge; two stacked
+       read as a card sitting on a surface. */
+    --shadow-xs: 0 1px 2px 0 rgb(16 24 40 / 0.04);
+    --shadow-sm: 0 1px 2px 0 rgb(16 24 40 / 0.05), 0 1px 3px 0 rgb(16 24 40 / 0.06);
+    --shadow-md: 0 2px 4px -2px rgb(16 24 40 / 0.05), 0 4px 8px -2px rgb(16 24 40 / 0.08);
+    --shadow-lg: 0 4px 6px -2px rgb(16 24 40 / 0.04), 0 12px 16px -4px rgb(16 24 40 / 0.09);
+    --shadow-xl: 0 8px 8px -4px rgb(16 24 40 / 0.04), 0 20px 24px -4px rgb(16 24 40 / 0.10);
+    --shadow-2xl: 0 24px 48px -12px rgb(16 24 40 / 0.20);
+    --shadow-brand: 0 1px 2px 0 rgb(29 32 77 / 0.10), 0 6px 16px -6px rgb(74 85 226 / 0.42);
+
+    /* ── MOTION ─────────────────────────────────────────────────────────
+       Two curves: `out-soft` for things arriving under the user's finger,
+       `spring` for anything that should feel physical. */
+    --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --animate-fade-in: fade-in 0.18s var(--ease-out-soft) both;
+    --animate-rise: rise 0.22s var(--ease-out-soft) both;
+    --animate-pop: pop 0.18s var(--ease-spring) both;
+    --animate-slide-in: slide-in 0.24s var(--ease-out-soft) both;
+    --animate-shimmer: shimmer 1.6s linear infinite;
+    --animate-breathe: breathe 2s ease-in-out infinite;
+
+    /* ── LAYOUT CONSTANTS ───────────────────────────────────────────────
+       The shell's fixed dimensions, so the header, the sidebar and anything
+       that has to align with them all read from one number. */
+    --spacing-sidebar: 17rem;
+    --spacing-rail: 4.5rem;
+    --spacing-header: 3.75rem;
+    --spacing-content: 88rem;
 }
 
-html, body, #root {
-    height: 100%;
+/* ═══ DARK THEME ═══════════════════════════════════════════════════════════
+   The same token names, re-pointed. Every component in the app inherits this
+   without knowing dark mode exists.
+
+   Two rules kept the palette honest:
+     · surfaces get LIGHTER as they come closer to the user (canvas is darkest)
+     · saturated tints are dimmed, never merely inverted — a light-mode `-50`
+       flipped to full strength would glow
+   ══════════════════════════════════════════════════════════════════════════ */
+
+@layer theme {
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+
+        /* The page background is `canvas`, not `slate-50` — which frees the
+           bottom of this ramp to mean what it means everywhere else in the
+           app: a tint sitting ON a card (a table header, a hovered row, an
+           inset well). So in dark mode it steps UP from the surface rather
+           than down, and those tints read as raised instead of as holes. */
+        --color-slate-50: #171e2c;
+        --color-slate-100: #202839;
+        --color-slate-200: #2a3346;
+        --color-slate-300: #3d4759;
+        --color-slate-400: #7a8599;
+        --color-slate-500: #95a0b4;
+        --color-slate-600: #b4bdcd;
+        --color-slate-700: #ccd4e0;
+        --color-slate-800: #e0e6ef;
+        --color-slate-900: #f0f4fa;
+        --color-slate-950: #ffffff;
+
+        --color-canvas: #0b0f17;
+        --color-surface: #131926;
+        --color-surface-raised: #1a2130;
+        --color-surface-sunken: #0e131d;
+        --color-overlay: #05070c;
+
+        --color-line: #242c3d;
+        --color-line-soft: #1c2331;
+        --color-line-strong: #3a4457;
+
+        /* Brand: 600 stays an action colour so a primary button is the same
+           blue in both themes. The tints around it are what change. */
+        --color-brand-50: #1a1f45;
+        --color-brand-100: #232a5c;
+        --color-brand-200: #2e3778;
+        --color-brand-300: #3c47a1;
+        --color-brand-400: #5a67d8;
+        --color-brand-500: #6f7cec;
+        --color-brand-600: #5865ef;
+        --color-brand-700: #a3adfb;
+        --color-brand-800: #c2c9fd;
+        --color-brand-900: #dde2fe;
+        --color-brand-950: #eef1ff;
+
+        --color-accent-50: #062f2a;
+        --color-accent-100: #0a4038;
+        --color-accent-200: #0e5449;
+        --color-accent-300: #16786a;
+        --color-accent-400: #23a88e;
+        --color-accent-500: #38c8a9;
+        --color-accent-600: #4ed7b8;
+        --color-accent-700: #7fe6cd;
+        --color-accent-800: #a9f0de;
+        --color-accent-900: #cef8ec;
+
+        --color-success-50: #072d20;
+        --color-success-100: #0a3d2b;
+        --color-success-200: #0f5239;
+        --color-success-300: #17734f;
+        --color-success-400: #23a071;
+        --color-success-500: #35c68d;
+        --color-success-600: #4bd89d;
+        --color-success-700: #7ce9bb;
+        --color-success-800: #aaf2d4;
+        --color-success-900: #d0f8e6;
+
+        --color-warning-50: #3a2205;
+        --color-warning-100: #4d2c05;
+        --color-warning-200: #663a06;
+        --color-warning-300: #8c5008;
+        --color-warning-400: #c1750d;
+        --color-warning-500: #e89512;
+        --color-warning-600: #f7ac2e;
+        --color-warning-700: #fbc667;
+        --color-warning-800: #fdda9a;
+        --color-warning-900: #feecc9;
+
+        --color-danger-50: #3d1210;
+        --color-danger-100: #521815;
+        --color-danger-200: #6d201b;
+        --color-danger-300: #952c25;
+        --color-danger-400: #cc3d33;
+        --color-danger-500: #ef5b50;
+        --color-danger-600: #f5776d;
+        --color-danger-700: #fda29b;
+        --color-danger-800: #fec8c3;
+        --color-danger-900: #fee3e0;
+
+        --color-info-50: #0a2540;
+        --color-info-100: #0e3255;
+        --color-info-200: #134470;
+        --color-info-300: #1a5d9b;
+        --color-info-400: #2a83d6;
+        --color-info-500: #4aa3f5;
+        --color-info-600: #63b2f8;
+        --color-info-700: #9acbfb;
+        --color-info-800: #c3dffd;
+        --color-info-900: #e0eeff;
+
+        --color-role-super: #a78bfa;
+        --color-role-orgadmin: #7a86f5;
+        --color-role-recruiter: #63b2f8;
+        --color-role-consultant: #4bd89d;
+
+        --color-audit-added: #4bd89d;
+        --color-audit-updated: #f7ac2e;
+        --color-audit-approved: #35c68d;
+        --color-audit-sent: #63b2f8;
+        --color-audit-removed: #f5776d;
+
+        --color-viz-1: #7a86f5;
+        --color-viz-2: #38c8a9;
+        --color-viz-3: #f7ac2e;
+        --color-viz-4: #a78bfa;
+        --color-viz-5: #63b2f8;
+        --color-viz-6: #f087aa;
+
+        /* Shadows do almost no work on a dark ground — depth comes from the
+           surface ramp instead. What is left is a hard black to seat floating
+           things above the page. */
+        --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.30);
+        --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.36), 0 1px 3px 0 rgb(0 0 0 / 0.28);
+        --shadow-md: 0 2px 4px -2px rgb(0 0 0 / 0.40), 0 4px 10px -2px rgb(0 0 0 / 0.42);
+        --shadow-lg: 0 4px 8px -2px rgb(0 0 0 / 0.44), 0 14px 22px -6px rgb(0 0 0 / 0.50);
+        --shadow-xl: 0 8px 12px -4px rgb(0 0 0 / 0.46), 0 24px 36px -8px rgb(0 0 0 / 0.55);
+        --shadow-2xl: 0 28px 60px -16px rgb(0 0 0 / 0.72);
+        --shadow-brand: 0 1px 2px 0 rgb(0 0 0 / 0.40), 0 8px 22px -8px rgb(88 101 239 / 0.60);
+    }
 }
 
-body {
-    font-family: var(--font-sans);
+/* Pre-JavaScript fallback: honour the OS preference until the inline theme
+   script in index.html stamps an explicit choice on <html>. Guarded on
+   :not([data-theme]) so an explicit "light" is never overridden. */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) { color-scheme: dark; }
+}
+
+/* ═══ KEYFRAMES ════════════════════════════════════════════════════════════ */
+
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { from { background-position: -180% 0; } to { background-position: 180% 0; } }
+@keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ═══ BASE ═════════════════════════════════════════════════════════════════ */
+
+@layer base {
+    *, *::before, *::after { border-color: var(--color-line); }
+
+    html {
+        height: 100%;
+        -webkit-text-size-adjust: 100%;
+    }
+
+    body, #root { height: 100%; }
+
+    body {
+        margin: 0;
+        font-family: var(--font-sans);
+        /* Text that never asked for a size is dashboard text, not article
+           text, so the floor is `sm` rather than `base`. */
+        font-size: var(--text-sm);
+        line-height: var(--text-sm--line-height);
+        background-color: var(--color-canvas);
+        color: var(--color-slate-700);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        font-feature-settings: "cv11", "ss01";
+    }
+
+    /* Headings pick up the display face automatically, so a screen never has
+       to remember to ask for it. */
+    h1, h2, h3, h4 {
+        font-family: var(--font-display);
+        color: var(--color-slate-900);
+        font-weight: 600;
+    }
+
+    /* Numbers that change in place never re-flow the text beside them. */
+    th, td, .tabular { font-variant-numeric: tabular-nums; }
+
+    /* One focus ring for the whole app. */
+    :focus-visible {
+        outline: 2px solid var(--color-brand-500);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
+    }
+
+    ::selection {
+        background-color: var(--color-brand-200);
+        color: var(--color-brand-900);
+    }
+
+    /* Scrollbars, themed. Thin, and coloured only where content scrolls, so a
+       long table does not gain a grey stripe down its side. */
+    * { scrollbar-width: thin; scrollbar-color: var(--color-slate-300) transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+        background-color: var(--color-slate-300);
+        border: 3px solid transparent;
+        background-clip: content-box;
+        border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background-color: var(--color-slate-400); }
+    ::-webkit-scrollbar-corner { background: transparent; }
+
+    /* The browser's own autofill wash ignores every colour we set. Painting it
+       with an inset shadow is the only reliable way to keep a filled login
+       field on-theme in dark mode. */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus {
+        -webkit-text-fill-color: var(--color-slate-900);
+        -webkit-box-shadow: 0 0 0 1000px var(--color-surface) inset;
+        caret-color: var(--color-slate-900);
+        transition: background-color 9999s ease-in-out 0s;
+    }
+
+    /* Native date/time pickers ship a black glyph. Invert it in dark mode or
+       it disappears into the field. */
+    :root[data-theme="dark"] ::-webkit-calendar-picker-indicator { filter: invert(0.75); }
+
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+        }
+    }
+}
+
+/* ═══ COMPOSITE UTILITIES ══════════════════════════════════════════════════
+   Effects that cannot be expressed as a single Tailwind class. Kept small on
+   purpose — anything that CAN be a class string lives in design/tokens.js.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+@layer utilities {
+    /* A sticky header that lets the content blur through it. */
+    .glass {
+        background-color: color-mix(in oklab, var(--color-surface) 80%, transparent);
+        backdrop-filter: saturate(180%) blur(12px);
+        -webkit-backdrop-filter: saturate(180%) blur(12px);
+    }
+
+    /* The hairline top highlight that makes a dark card look lit rather than
+       cut out. Does nothing in light mode, where the shadow carries it. */
+    :root[data-theme="dark"] .lit { box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.045); }
+
+    /* Loading placeholder. A moving highlight, not a pulsing block — it reads
+       as "arriving" rather than "broken". */
+    .skeleton {
+        background-image: linear-gradient(
+            100deg,
+            var(--color-slate-100) 20%,
+            var(--color-slate-200) 40%,
+            var(--color-slate-100) 60%
+        );
+        background-size: 220% 100%;
+        animation: var(--animate-shimmer);
+        border-radius: var(--radius-sm);
+    }
+
+    /* The faint graph-paper wash behind the login artwork. */
+    .grid-fade {
+        background-image:
+            linear-gradient(var(--color-line) 1px, transparent 1px),
+            linear-gradient(90deg, var(--color-line) 1px, transparent 1px);
+        background-size: 28px 28px;
+        mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 75%);
+        -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 75%);
+    }
+
+    /* Brand wash for marketing-weight surfaces (the login panel). */
+    .brand-mesh {
+        background-color: var(--color-brand-950);
+        background-image:
+            radial-gradient(at 18% 12%, color-mix(in oklab, var(--color-brand-500) 65%, transparent) 0, transparent 55%),
+            radial-gradient(at 82% 22%, color-mix(in oklab, var(--color-accent-500) 42%, transparent) 0, transparent 50%),
+            radial-gradient(at 62% 88%, color-mix(in oklab, var(--color-role-super) 45%, transparent) 0, transparent 52%);
+    }
+
+    /* Fade the last pixels of a scrolling strip instead of cutting it off. */
+    .fade-edge-r {
+        mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+        -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    }
+
+    .no-select { user-select: none; -webkit-user-select: none; }
 }

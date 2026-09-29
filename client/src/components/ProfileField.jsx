@@ -1,19 +1,28 @@
-import { Upload, FileText, Loader2 } from 'lucide-react';
+import {
+    Upload, FileText, Loader2, CheckCircle2, AlertCircle,
+} from 'lucide-react';
 import { useState } from 'react';
 import api, { errorMessage } from '../api/axios.js';
+import { input, btnSm } from '../design/tokens.js';
 
 /**
  * Renders one profile field from the server's registry (GET /api/profile-schema).
  *
  * Adding a new field to backend/config/profileFields.js makes it appear here
  * automatically — nothing in this component needs to change.
+ *
+ * `filled` drives the small tick/exclamation mark beside the label — the same
+ * per-field signal the Profile strength popover summarises, repeated here so
+ * it reads right where you are typing rather than only in a summary elsewhere.
  */
-const ProfileField = ({ name, field, value, onChange, lookups, disabled, currentFileName }) => {
+const ProfileField = ({
+    name, field, value, onChange, lookups, disabled, currentFileName, filled = false,
+}) => {
     const [uploading, setUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
     const [uploadedName, setUploadedName] = useState('');
 
-    const base = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500';
+    const base = input;
 
     const handleFile = async (e) => {
         const file = e.target.files?.[0];
@@ -36,9 +45,14 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
     };
 
     const label = (
-        <span className="text-sm font-medium text-slate-700">
-            {field.label}
-            {field.required && <span className="ml-1 text-red-500">*</span>}
+        <span className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700">
+            <span>
+                {field.label}
+                {field.required && <span className="ml-1 text-danger-500">*</span>}
+            </span>
+            {filled
+                ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success-600" aria-label="Filled in" />
+                : <AlertCircle className="h-3.5 w-3.5 shrink-0 text-warning-500" aria-label="Not filled in" />}
         </span>
     );
 
@@ -53,11 +67,11 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
                             {uploadedName || currentFileName || 'No resume uploaded'}
                         </p>
                         {uploadedName && (
-                            <p className="text-xs text-amber-600">New file — submit to send for approval</p>
+                            <p className="text-xs text-warning-600">New file — submit to send for approval</p>
                         )}
-                        {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
+                        {uploadError && <p className="text-xs text-danger-600">{uploadError}</p>}
                     </div>
-                    <label className={`shrink-0 cursor-pointer rounded-lg border border-slate-300 px-3 py-1.5 text-xs ${disabled ? 'pointer-events-none opacity-50' : 'hover:bg-slate-50'}`}>
+                    <label className={`${btnSm.secondary} shrink-0 cursor-pointer ${disabled ? 'pointer-events-none opacity-50' : ''}`}>
                         {uploading
                             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             : <span className="flex items-center gap-1.5"><Upload className="h-3.5 w-3.5" /> Choose file</span>}
@@ -115,8 +129,15 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
      * so this is the same regex the server will enforce — not a second copy that
      * can drift. Shown live rather than only on submit, since a wrong phone
      * number is worth catching before it becomes an approval request.
+     *
+     * Skipped entirely when `disabled`: a disabled field here is either a
+     * locked form mid-review or an already-approved value on a read-only
+     * detail page (ConsultantDetail.jsx), and a red "must be 10 digits"
+     * under a value nobody can edit from this screen reads as something
+     * broken rather than as a fact about the past — a looser pattern may
+     * simply have applied when it was entered.
      */
-    const invalid = field.pattern
+    const invalid = !disabled && field.pattern
         && value
         && !new RegExp(field.pattern).test(String(value));
 
@@ -134,10 +155,10 @@ const ProfileField = ({ name, field, value, onChange, lookups, disabled, current
                 aria-invalid={invalid || undefined}
                 title={field.patternMessage}
                 onChange={(e) => onChange(name, e.target.value)}
-                className={`${base} ${invalid ? 'border-red-400 focus:border-red-500 focus:ring-red-100' : ''}`}
+                className={`${base} ${invalid ? 'border-danger-400 focus:border-danger-500 focus:ring-danger-100' : ''}`}
             />
             {invalid && (
-                <span className="mt-1 block text-xs text-red-600">{field.patternMessage}</span>
+                <span className="mt-1 block text-xs text-danger-600">{field.patternMessage}</span>
             )}
         </label>
     );

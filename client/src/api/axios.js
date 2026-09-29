@@ -48,10 +48,22 @@ api.interceptors.response.use(
     },
 );
 
-/** Pull a usable message out of an axios error. */
-export const errorMessage = (err, fallback = 'Something went wrong.') =>
-    err?.response?.data?.error
-    ?? err?.response?.data?.details?.[0]?.message
-    ?? fallback;
+/**
+ * Pull a usable message out of an axios error.
+ *
+ * A validation failure carries the useful part in `details` — the generic
+ * `error` on its own ("Validation failed.") tells a user nothing about which
+ * field is wrong, so the two are joined rather than one shadowing the other.
+ */
+export const errorMessage = (err, fallback = 'Something went wrong.') => {
+    const data = err?.response?.data;
+    const detail = data?.details
+        ?.map((d) => (d.field ? `${d.field}: ${d.message}` : d.message))
+        .filter(Boolean)
+        .join('; ');
+
+    if (data?.error && detail) return `${data.error} ${detail}`;
+    return data?.error ?? detail ?? fallback;
+};
 
 export default api;

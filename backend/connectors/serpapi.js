@@ -35,6 +35,39 @@ const num = (value, fallback) => {
  * scheduler outlives any single configuration. A module-level constant would
  * freeze whatever was in .env the moment the process booted.
  */
+/**
+ * ── HOW RECENCY IS ACTUALLY FILTERED ──────────────────────────────────
+ *
+ * Not with `chips`. That parameter is DEPRECATED by Google and is now ignored
+ * in silence — which is the worst possible failure, because the request looks
+ * configured and the results are unfiltered. `ltype` (work-from-home) is
+ * deprecated the same way.
+ *
+ * The live mechanism is `uds`: an opaque string Google generates. Two facts
+ * decide the whole design around it.
+ *
+ *   1. IT ENCODES THE SEARCH TERM, not just the filter. The same "last 3 days"
+ *      filter yields a different string for "react developer" than for "java
+ *      developer", so it can never be hard-coded.
+ *
+ *   2. IT ARRIVES FREE. Every ordinary response carries a `filters` array
+ *      listing each available filter with its handle. The first call for a term
+ *      returns jobs AND the handle; later calls reuse the cached handle for the
+ *      same single credit. Filtering therefore costs nothing.
+ *
+ * Google's finest window is a DAY. There is no four-hour filter at any price
+ * from any reseller — "only jobs since the last cycle" is delivered by
+ * de-duplication downstream, not by the request.
+ */
+
+/** Our stored window → the label Google uses in its `filters` array. */
+export const DATE_WINDOW_LABEL = {
+    day: 'Yesterday',
+    '3days': 'Last 3 days',
+    week: 'Last week',
+    month: 'Last month',
+};
+
 export const providerConfig = () => ({
     name: 'SERPAPI',
     label: 'Google Jobs (SerpApi)',
@@ -47,6 +80,32 @@ export const providerConfig = () => ({
     maxPages: num(process.env.DISCOVERY_MAX_PAGES, 2),
     maxCallsPerRun: num(process.env.DISCOVERY_MAX_CALLS_PER_RUN, 20),
 });
+
+/**
+ * Pull the recency handle for `window` out of a response's `filters` array.
+ *
+ * Two response shapes are handled because SerpApi has emitted both: the handle
+ * sits either directly on the option or nested under `parameters`. Reading only
+ * the newer shape would silently return nothing against the older one, which
+ * looks identical to "this filter is unavailable".
+ *
+ * @returns {{ uds, q }|null}
+ */
+export const extractDateFilter = (body, window) => {
+    const label = DATE_WINDOW_LABEL[window];
+    if (!label || !Array.isArray(body?.filters)) return null;
+
+    for (const group of body.filters) {
+        if (!Array.isArray(group?.options)) continue;
+        for (const option of group.options) {
+            if (option?.name !== label) continue;
+            const uds = option.uds ?? option.parameters?.uds ?? null;
+            if (!uds) continue;
+            return { uds, q: option.q ?? option.parameters?.q ?? null };
+        }
+    }
+    return null;
+};
 
 export const isConfigured = () => providerConfig().apiKey.trim().length > 0;
 
@@ -74,13 +133,21 @@ export const redactUrl = (url) => {
     }
 };
 
-const buildUrl = ({ q, location, nextPageToken }, cfg) => {
+const buildUrl = ({ q, location, nextPageToken, uds, qOverride }, cfg) => {
     const u = new URL(cfg.baseUrl);
     u.searchParams.set('engine', 'google_jobs');
-    u.searchParams.set('q', q);
+    // With a filter applied, Google also rewrites the query itself
+    // ("react developer" -> "react developer in the last 3 days"). Sending the
+    // rewritten form alongside the handle is what the filter link does.
+    u.searchParams.set('q', (uds && qOverride) ? qOverride : q);
     if (location) u.searchParams.set('location', location);
     u.searchParams.set('gl', cfg.gl);
     u.searchParams.set('hl', cfg.hl);
+    // Recency. This does NOT reduce the credit cost of a call — billing is per
+    // request, not per result — but it decides what those credits buy. Without
+    // it, page one is whatever Google ranks highest, which in a mature pool is
+    // mostly postings we already hold.
+    if (uds) u.searchParams.set('uds', uds);
     // Offset pagination (`start`) was discontinued by Google. Pages are walked
     // with the token the previous response handed back.
     if (nextPageToken) u.searchParams.set('next_page_token', nextPageToken);
@@ -165,57 +232,86 @@ export const createSession = ({ maxCalls, maxPages, pacingMs = 0 } = {}) => {
         config: cfg,
 
         /**
-         * One search term, walked to `pages` deep or until the budget runs out.
+         * One search term, yielded a page at a time.
          *
-         * @returns {{ results, payloads, errors, pagesFetched }}
-         *   results  — raw jobs_results entries, in the order Google ranked them
-         *   payloads — one per call, URL already redacted, for retention
+         * ── WHY A GENERATOR AND NOT A RETURNED ARRAY ──────────────────
+         *
+         * The old version fetched every page up front and handed back the lot.
+         * That meant page two was always bought, even when page one had already
+         * shown that this search has nothing new — and page two is exactly as
+         * expensive as page one.
+         *
+         * Only the caller can tell whether a page was worth buying, because
+         * "new" means "not already in the database" and this module has no
+         * database. So it yields, the caller de-duplicates, and the caller
+         * decides whether to ask for more by continuing the loop or breaking
+         * out of it. Breaking out is what saves the credit.
+         *
+         * @yields {{ pageNo, results, payload, error }}
          */
-        async search({ q, location }) {
-            const out = { results: [], payloads: [], errors: [], pagesFetched: 0 };
+        async *pages({ q, location, uds = null, qOverride = null, dateWindow = null }) {
             let token = null;
 
             for (let page = 0; page < pages; page += 1) {
                 if (calls >= budget) {
                     exhausted = true;
-                    break;
+                    return;
                 }
                 if (page > 0 && pacingMs > 0) await sleep(pacingMs);
 
-                const url = buildUrl({ q, location, nextPageToken: token }, cfg);
+                const url = buildUrl({
+                    q, location, nextPageToken: token, uds, qOverride,
+                }, cfg);
                 const safeUrl = redactUrl(url);
 
                 calls += 1;
                 const res = await callOnce(url, cfg);
 
-                const found = res.ok ? (res.body.jobs_results ?? []).length : 0;
-                out.payloads.push({
+                const results = res.ok ? (res.body.jobs_results ?? []) : [];
+                const payload = {
                     url: safeUrl,
                     status: res.status,
                     contentType: 'application/json',
                     // A call that yielded nothing is the one worth keeping: it
                     // is how a drifted adapter or a changed contract is
                     // diagnosed later. A page that worked needs no forensics.
-                    body: found === 0 ? res.raw : null,
+                    body: results.length === 0 ? res.raw : null,
                     bytes: res.raw ? res.raw.length : 0,
-                    found,
-                });
+                    found: results.length,
+                };
 
                 if (!res.ok) {
-                    out.errors.push(`"${q}" page ${page + 1}: ${res.reason}`);
-                    break;      // the next page needs a token this call never returned
+                    // Yield the failure so the caller still retains the payload,
+                    // then stop: the next page needs a token this call never
+                    // returned.
+                    yield {
+                        pageNo: page + 1,
+                        results: [],
+                        payload,
+                        error: `"${q}" page ${page + 1}: ${res.reason}`,
+                        filter: null,
+                        usedFilter: Boolean(uds),
+                    };
+                    return;
                 }
 
-                out.pagesFetched += 1;
-                out.results.push(...(res.body.jobs_results ?? []));
+                yield {
+                    pageNo: page + 1,
+                    results,
+                    payload,
+                    error: null,
+                    // The recency handle for this term, harvested from the same
+                    // response that returned the jobs. The caller caches it so
+                    // the next run is filtered without an extra call.
+                    filter: dateWindow ? extractDateFilter(res.body, dateWindow) : null,
+                    usedFilter: Boolean(uds),
+                };
 
                 token = res.body.serpapi_pagination?.next_page_token ?? null;
-                if (!token) break;      // end of results — not an error
+                if (!token) return;      // end of results — not an error
             }
-
-            return out;
         },
     };
 };
 
-export const __test = { buildUrl, redactUrl };
+export const __test = { buildUrl, redactUrl, extractDateFilter };

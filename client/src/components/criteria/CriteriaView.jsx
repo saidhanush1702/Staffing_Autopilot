@@ -1,6 +1,7 @@
 import { MapPin, Briefcase, Banknote, Tag, Ban } from 'lucide-react';
 import { badge, TONE, sectionTitle } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /** "Dallas, TX · Hybrid · 40 mi" — one readable line per location. */
 export const describeLocation = (l) => [
@@ -121,7 +122,7 @@ export const VersionByline = ({ version }) => {
                 <span className="ml-1 text-slate-400">{version.createdByRole}</span>
             )}
             {' · '}
-            {new Date(version.createdAt).toLocaleString()}
+            {formatDateTime(version.createdAt)}
             {version.changeNote && <span className="block italic">“{version.changeNote}”</span>}
         </p>
     );

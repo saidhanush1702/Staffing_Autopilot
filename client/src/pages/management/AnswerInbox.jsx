@@ -8,10 +8,7 @@ import Pagination from '../../components/Pagination.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
 import EmploymentStatus from '../../components/EmploymentStatus.jsx';
 import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
-import {
-    card, cardPad, inputBase, fieldLabel, btnSm, badge, sectionTitle,
-    TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
 
 const FILTERS = [
     { key: 'PENDING', label: 'Awaiting review' },
@@ -176,7 +173,7 @@ const AnswerInbox = () => {
                             </button>
                         </div>
                     ) : (
-                        <p className={`mt-3 flex items-center gap-1.5 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.warning}`}>
                             <Lock className="h-3.5 w-3.5 shrink-0" /> {i.lockedReason}
                         </p>
                     )
@@ -187,7 +184,6 @@ const AnswerInbox = () => {
 
     return (
         <div>
-            <h1 className={pageTitle}>Answer approvals</h1>
             <p className={pageSubtitle}>
                 Answers become usable on job applications only once approved. Salary and
                 work-authorization answers are decided by an organization admin.
@@ -283,7 +279,7 @@ const AnswerInbox = () => {
                     )}
                 >
                     {dialogError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{dialogError}</span>
                         </div>

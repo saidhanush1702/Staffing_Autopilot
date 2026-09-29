@@ -98,34 +98,74 @@ const ENTRY_SOURCES = [
  * and a WORKDAY portal type. The distinction is load-bearing for the phase that
  * fills forms: a Workday form and a Greenhouse form share nothing.
  */
+/**
+ * Which system an application is filled on, and whether the desktop app has a
+ * form recipe for it.
+ *
+ * `automatable` drives the BOT/HUMAN lane on every new queue item. It is a flag
+ * rather than a hard-coded list precisely because the set will grow: teaching
+ * the app a new system should be a row update and a recipe file, never a schema
+ * change.
+ *
+ * Only the boards that host their own application form are automatable today.
+ * The rest — Greenhouse, Lever, Workday, an employer's own careers page — are
+ * where a redirected job lands, and those go to the consultant as "needs you".
+ */
 const PORTAL_TYPES = [
-    // Applicant tracking systems.
-    ['GREENHOUSE', 'Greenhouse'],
-    ['LEVER', 'Lever'],
-    ['WORKDAY', 'Workday'],
-    ['ASHBY', 'Ashby'],
-    ['SMARTRECRUITERS', 'SmartRecruiters'],
-    ['ICIMS', 'iCIMS'],
-    ['TALEO', 'Oracle Taleo'],
-    ['JOBVITE', 'Jobvite'],
-    ['WORKABLE', 'Workable'],
-    ['BAMBOOHR', 'BambooHR'],
-    ['RECRUITEE', 'Recruitee'],
-    ['BREEZY', 'Breezy HR'],
-    // Boards you can apply on without leaving them.
-    ['LINKEDIN', 'LinkedIn'],
-    ['WELLFOUND', 'Wellfound'],
-    ['BUILTIN', 'Built In'],
-    ['THELADDERS', 'TheLadders'],
-    ['CRUNCHBOARD', 'CrunchBoard'],
-    ['INDEED', 'Indeed'],
-    ['GLASSDOOR', 'Glassdoor'],
-    ['ZIPRECRUITER', 'ZipRecruiter'],
-    ['DICE', 'Dice'],
-    ['MONSTER', 'Monster'],
+    // Applicant tracking systems. A redirected job lands on one of these.
+    ['GREENHOUSE', 'Greenhouse', false],
+    ['LEVER', 'Lever', false],
+    ['WORKDAY', 'Workday', false],
+    ['ASHBY', 'Ashby', false],
+    ['SMARTRECRUITERS', 'SmartRecruiters', false],
+    ['ICIMS', 'iCIMS', false],
+    ['TALEO', 'Oracle Taleo', false],
+    ['JOBVITE', 'Jobvite', false],
+    ['WORKABLE', 'Workable', false],
+    ['BAMBOOHR', 'BambooHR', false],
+    ['RECRUITEE', 'Recruitee', false],
+    ['BREEZY', 'Breezy HR', false],
+    // Boards you can apply on without leaving them — the automated set.
+    // LinkedIn is included because Easy Apply is hosted here; a LinkedIn job
+    // that turns out to redirect is reclassified to the HUMAN lane when the
+    // app opens it, since that cannot be told from the link alone.
+    ['LINKEDIN', 'LinkedIn', true],
+    ['WELLFOUND', 'Wellfound', true],
+    ['BUILTIN', 'Built In', true],
+    ['CRUNCHBOARD', 'CrunchBoard', true],
+    // Deferred pending the subscription decision — it requires a paid
+    // membership per consultant to apply.
+    ['THELADDERS', 'TheLadders', false],
+    ['INDEED', 'Indeed', false],
+    ['GLASSDOOR', 'Glassdoor', false],
+    ['ZIPRECRUITER', 'ZipRecruiter', false],
+    ['DICE', 'Dice', false],
+    ['MONSTER', 'Monster', false],
     // Fallbacks.
-    ['COMPANY_SITE', 'Company careers page'],
-    ['OTHER', 'Other'],
+    ['COMPANY_SITE', 'Company careers page', false],
+    ['OTHER', 'Other', false],
+];
+
+/** The four final states an application can rest in. */
+const APPLICATION_STATUSES = [
+    ['SUBMITTED', 'Submitted', 1],
+    ['WAITING_ON_CONSULTANT', 'Waiting on the consultant', 2],
+    ['STALLED_ON_LOGIN', 'Stalled on login', 3],
+    ['SKIPPED', 'Skipped', 4],
+];
+
+/**
+ * How an application was made — a different question from whether it succeeded.
+ *
+ * `is_witnessed` is the one that matters for trust: the first two were observed
+ * by software, the last two are somebody's account of something that happened
+ * elsewhere. Reporting that cannot tell them apart overstates what it knows.
+ */
+const SUBMISSION_METHODS = [
+    ['DESKTOP_BOT', 'Filled by the app, submitted by the consultant', true, 1],
+    ['DESKTOP_ASSISTED', 'Filled by the consultant in the app', true, 2],
+    ['PORTAL_SELF_REPORTED', 'Reported by the consultant', false, 3],
+    ['RECORDED_BY_STAFF', 'Recorded by a recruiter or admin', false, 4],
 ];
 
 /**
@@ -135,11 +175,14 @@ const PORTAL_TYPES = [
  */
 const QUEUE_STATUSES = [
     ['QUEUED', 'Queued', false, 1],
-    ['FILLED', 'Form filled', false, 2],
-    ['PARKED_UNKNOWN', 'Parked — needs an answer', false, 3],
-    ['AWAITING_SUBMIT', 'Awaiting submit', false, 4],
-    ['SUBMITTED', 'Submitted', true, 5],
-    ['SKIPPED', 'Skipped', true, 6],
+    ['PREPARING', 'Preparing', false, 2],
+    ['READY', 'Ready to apply', false, 3],
+    ['FILLING', 'Filling the form', false, 4],
+    ['PARKED_UNKNOWN', 'Parked — needs an answer', false, 5],
+    ['AWAITING_REVIEW', 'Awaiting review', false, 6],
+    ['SUBMITTED', 'Submitted', true, 7],
+    ['CANCELLED', 'Cancelled', true, 8],
+    ['SKIPPED', 'Skipped', true, 9],
 ];
 
 const toRow = ([name, label, notes], isPriority) => ({
@@ -194,11 +237,34 @@ export const runSeed005 = async (connection) => {
         );
     }
 
-    for (const [name, label] of PORTAL_TYPES) {
+    for (const [name, label, automatable] of PORTAL_TYPES) {
         await connection.query(
-            `INSERT INTO lkp_portal_types (name, label) VALUES ($1,$2)
-             ON CONFLICT (name) DO UPDATE SET label = EXCLUDED.label`,
-            [name, label],
+            `INSERT INTO lkp_portal_types (name, label, is_automatable) VALUES ($1,$2,$3)
+             ON CONFLICT (name) DO UPDATE
+                SET label = EXCLUDED.label,
+                    is_automatable = EXCLUDED.is_automatable`,
+            [name, label, automatable],
+        );
+    }
+
+    for (const [name, label, order] of APPLICATION_STATUSES) {
+        await connection.query(
+            `INSERT INTO lkp_application_statuses (name, label, sort_order) VALUES ($1,$2,$3)
+             ON CONFLICT (name) DO UPDATE
+                SET label = EXCLUDED.label, sort_order = EXCLUDED.sort_order`,
+            [name, label, order],
+        );
+    }
+
+    for (const [name, label, witnessed, order] of SUBMISSION_METHODS) {
+        await connection.query(
+            `INSERT INTO lkp_submission_methods (name, label, is_witnessed, sort_order)
+             VALUES ($1,$2,$3,$4)
+             ON CONFLICT (name) DO UPDATE
+                SET label = EXCLUDED.label,
+                    is_witnessed = EXCLUDED.is_witnessed,
+                    sort_order = EXCLUDED.sort_order`,
+            [name, label, witnessed, order],
         );
     }
 

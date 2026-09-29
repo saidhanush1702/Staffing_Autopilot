@@ -3,9 +3,7 @@ import { Search, Lock, Pause, CheckCircle2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import CriteriaView, { VersionByline } from '../../components/criteria/CriteriaView.jsx';
-import {
-    card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle, sectionTitle,
-} from '../../design/tokens.js';
+import { card, cardPad, badge, TONE, TONE_ALERT, pageTitle, pageSubtitle, sectionTitle, alertShellSm, alertShell } from '../../design/tokens.js';
 
 /**
  * The consultant's own search criteria — READ ONLY, always.
@@ -38,7 +36,7 @@ const MyCriteria = () => {
                 What your recruiter is looking for on your behalf.
             </p>
 
-            <div className={`mt-5 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.info}`}>
+            <div className={`mt-5 ${alertShell} ${TONE_ALERT.info}`}>
                 <Lock className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                     This is read-only. Your recruiter sets and maintains these criteria —
@@ -72,7 +70,7 @@ const MyCriteria = () => {
                 ) : (
                     <>
                         {!criteria.isActive && (
-                            <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.warning}`}>
+                            <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.warning}`}>
                                 Discovery is paused, so no new jobs are being found right now.
                                 Your criteria are saved and will resume unchanged.
                             </p>

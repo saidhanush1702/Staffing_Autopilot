@@ -105,14 +105,57 @@ export const PROFILE_FIELDS = {
         placeholder: 'https://linkedin.com/in/…',
     },
 
-    // ── admin-only: never proposed by a consultant ────────────────────
-    daily_cap: {
-        label: 'Daily application cap',
-        type: 'number',
+    // ── "about you" — formerly My Career's self-service links ─────────
+    //
+    // These five used to save instantly through their own endpoint, on the
+    // reasoning that a headline is not something an agency needs to vet. The
+    // client asked for one page and one reviewer gate over everything a
+    // consultant submits, so they join the registry here and get that gate
+    // for free — the diff engine, the approval screen and the audit trail
+    // below already handle any consultant-editable scalar field without
+    // knowing anything specific about this one.
+    headline: {
+        label: 'Headline',
+        type: 'text',
         required: false,
-        consultantEditable: false,
-        adminOnly: true,
+        consultantEditable: true,
+        maxLength: 255,
+        placeholder: 'Senior Backend Engineer',
     },
+    summary: {
+        label: 'Summary',
+        type: 'textarea',
+        required: false,
+        consultantEditable: true,
+        maxLength: 4000,
+        placeholder: 'A few lines about what you do.',
+    },
+    github_url: {
+        label: 'GitHub',
+        type: 'url',
+        required: false,
+        consultantEditable: true,
+        maxLength: 255,
+        placeholder: 'https://github.com/…',
+    },
+    portfolio_url: {
+        label: 'Portfolio',
+        type: 'url',
+        required: false,
+        consultantEditable: true,
+        maxLength: 255,
+        placeholder: 'https://…',
+    },
+    coding_profile_url: {
+        label: 'Coding profile',
+        type: 'url',
+        required: false,
+        consultantEditable: true,
+        maxLength: 255,
+        placeholder: 'LeetCode, HackerRank…',
+    },
+
+    // ── admin-only: never proposed by a consultant ────────────────────
     consent_on_file: {
         label: 'Consent form signed',
         type: 'boolean',

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { PauseCircle, PlayCircle, XOctagon, AlertTriangle } from 'lucide-react';
 import api, { errorMessage } from '../api/axios.js';
 import Modal, { ModalActions } from './ui/Modal.jsx';
-import { btnSm, input, fieldLabel, TONE_ALERT } from '../design/tokens.js';
+import { btnSm, input, fieldLabel, TONE_ALERT, alertShellSm } from '../design/tokens.js';
 
 /**
  * Suspend / Reactivate / Terminate.
@@ -117,7 +117,7 @@ const LifecycleActions = ({ user, onDone }) => {
                     )}
 
                     {error && (
-                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>{error}</p>
+                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>{error}</p>
                     )}
 
                     <label className="mt-4 block">

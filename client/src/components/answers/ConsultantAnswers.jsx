@@ -5,11 +5,9 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../PageLoader.jsx';
 import Modal, { ModalActions } from '../ui/Modal.jsx';
-import {
-    card, cardPad, inputBase, fieldLabel, btn, badge, sectionTitle,
-    TONE, TONE_ALERT,
-} from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btn, badge, sectionTitle, TONE, TONE_ALERT, alertShell } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
+import { formatDate } from '../../utils/datetime.js';
 
 const STATUS_TONE = {
     PENDING: 'info', APPROVED: 'success', REJECTED: 'danger', SUPERSEDED: 'neutral',
@@ -78,10 +76,19 @@ const ConsultantAnswers = ({ consultantId }) => {
                     <h2 className={`flex items-center gap-2 ${sectionTitle}`}>
                         <MessageSquare className="h-4 w-4 text-slate-400" /> Answer bank
                     </h2>
+                    {/* ── VIEW ONLY, AND SAY SO ────────────────────────────
+                        These are the consultant's own answers about themselves,
+                        given to send their own applications. Management can
+                        read them — a recruiter needs to know what went out
+                        under their consultant's name — but only the consultant
+                        changes them, from the portal or the desktop app. */}
                     <p className="mt-1 text-xs text-slate-500">
-                        {group('APPROVED').length} approved · {group('PENDING').length} awaiting
-                        review · {group('REJECTED').length} rejected. Only approved answers are
-                        used to fill applications.
+                        {group('APPROVED').length} in use
+                        {group('REJECTED').length > 0
+                            ? ` · ${group('REJECTED').length} rejected` : ''}.
+                        These are what the app types into applications. Only
+                        {' '}the consultant can change them, from the
+                        portal or the desktop app.
                     </p>
                 </div>
                 <button type="button" onClick={() => setAsking(true)} className={btn.primary}>
@@ -137,7 +144,7 @@ const ConsultantAnswers = ({ consultantId }) => {
                                     {a.reviewed_by_name && (
                                         <p className="mt-2 text-xs text-slate-400">
                                             {a.status_label} by {a.reviewed_by_name} ({a.reviewed_by_role})
-                                            {' on '}{new Date(a.reviewed_at).toLocaleDateString()}
+                                            {' on '}{formatDate(a.reviewed_at)}
                                         </p>
                                     )}
                                 </div>
@@ -166,7 +173,7 @@ const ConsultantAnswers = ({ consultantId }) => {
                     )}
                 >
                     {askError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{askError}</span>
                         </div>

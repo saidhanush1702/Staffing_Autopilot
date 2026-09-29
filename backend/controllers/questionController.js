@@ -47,7 +47,7 @@ const loadCategories = async () => {
  * of the bank: two recruiters raising the same question in different words
  * must land on ONE question, or every consultant answers it twice.
  */
-const findOrCreateQuestion = async (orgId, actorId, { questionText, category, appliesToAll }) => {
+export const findOrCreateQuestion = async (orgId, actorId, { questionText, category, appliesToAll }) => {
     const key = normaliseQuestion(questionText);
 
     const { rows: existing } = await query(

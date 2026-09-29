@@ -4,7 +4,7 @@ import { Plus, Power, Loader2, AlertCircle, X } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import TableShell from '../../components/TableShell.jsx';
-import { card, cardPad, input, fieldLabel, btn, pageTitle, TONE_ALERT } from '../../design/tokens.js';
+import { card, cardPad, input, fieldLabel, btn, pageTitle, TONE_ALERT, pageSubtitle, btnSm, alertShell } from '../../design/tokens.js';
 
 const EMPTY_FORM = {
     name: '', slug: '', contactEmail: '', contactPhone: '',
@@ -58,7 +58,7 @@ const Organizations = () => {
         }
     };
 
-    if (error) return <p className="text-sm text-red-600">{error}</p>;
+    if (error) return <p className="text-sm text-danger-600">{error}</p>;
     if (!orgs) return <PageLoader />;
 
 
@@ -67,7 +67,7 @@ const Organizations = () => {
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <h1 className={pageTitle}>Organizations</h1>
-                    <p className="mt-1 text-sm text-slate-500">
+                    <p className={pageSubtitle}>
                         Each organization is one staffing agency, fully isolated from the others.
                     </p>
                 </div>
@@ -84,7 +84,7 @@ const Organizations = () => {
             {showForm && (
                 <form onSubmit={handleCreate} className={`mt-5 ${card} ${cardPad}`}>
                     {formError && (
-                        <div className={`mb-4 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-4 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{formError}
                         </div>
                     )}
@@ -164,7 +164,7 @@ const Organizations = () => {
             )}
 
             <TableShell className="mt-6" minWidth={900}>
-                    <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                    <thead className="border-b border-line bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                         <tr>
                             <th className="px-4 py-3">Organization</th>
                             <th className="px-4 py-3">Slug</th>
@@ -175,7 +175,7 @@ const Organizations = () => {
                             <th className="px-4 py-3" />
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-line-soft">
                         {orgs.length === 0 && (
                             <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No organizations yet.</td></tr>
                         )}
@@ -191,7 +191,7 @@ const Organizations = () => {
                                 <td className="px-4 py-3 text-slate-600">{o.recruiter_count}</td>
                                 <td className="px-4 py-3 text-slate-600">{o.consultant_count}</td>
                                 <td className="px-4 py-3">
-                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${o.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+                                    <span className={`rounded px-2 py-0.5 text-xs font-medium ${o.is_active ? 'bg-success-50 text-success-700' : 'bg-danger-50 text-danger-700'}`}>
                                         {o.is_active ? 'Active' : 'Disabled'}
                                     </span>
                                 </td>
@@ -199,7 +199,7 @@ const Organizations = () => {
                                     <button
                                         type="button"
                                         onClick={(e) => { e.stopPropagation(); toggleActive(o); }}
-                                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                                        className={btnSm.secondary}
                                     >
                                         <Power className="h-3.5 w-3.5" />
                                         {o.is_active ? 'Disable' : 'Enable'}

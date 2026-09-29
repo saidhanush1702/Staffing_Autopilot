@@ -8,6 +8,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { encryptPassword } from '../utils/crypto.js';
+import { schedulerTimezone } from '../config/discoverySchedule.js';
 
 export const createOrgSchema = Joi.object({
     name: Joi.string().trim().min(2).max(255).required(),
@@ -19,7 +20,9 @@ export const createOrgSchema = Joi.object({
     contactPhone: Joi.string().pattern(/^[0-9]{10}$/)
         .messages({ 'string.pattern.base': 'Contact phone must be exactly 10 digits.' })
         .allow('', null),
-    timezone: Joi.string().max(64).default('Asia/Kolkata'),
+    // No screen lets an admin set this per organisation, so every new tenant
+    // gets the deployment's own clock — APP_TIMEZONE, the one setting.
+    timezone: Joi.string().max(64).default(() => schedulerTimezone()),
 
     adminName: Joi.string().trim().min(2).max(255).required(),
     adminEmail: Joi.string().trim().lowercase().email({ tlds: { allow: false } }).max(255).required(),
@@ -149,6 +152,46 @@ export const createOrganization = async (req, res, next) => {
                      password_enc, password_iv, password_tag, created_by)
                  VALUES ($1,$2,$3,$4,'ORG_ADMIN',$5,$6,$7,$8)`,
                 [adminId, orgId, adminName, adminEmail, enc, iv, tag, req.user.id],
+            );
+
+            // Every provider-mode source needs a row here, or the new agency
+            // cannot enable discovery at all: the toggle looks for its own row
+            // and answers "not set up for your organisation" when there is none.
+            // Migration 031 backfilled the agencies that existed then, which is
+            // exactly why this was missed — the gap only shows on agencies
+            // created afterwards.
+            await client.query(
+                `INSERT INTO organization_providers
+                    (id, organization_id, source_id, is_enabled,
+                     monthly_budget, max_pages, rate_limit_ms, credential_env)
+                 SELECT gen_random_uuid()::text, $1, s.id,
+                        FALSE, 250, s.max_pages, s.rate_limit_ms, 'SERPAPI_KEY'
+                   FROM lkp_job_sources s
+                  WHERE s.fetch_mode = 'PROVIDER'
+                 ON CONFLICT (organization_id, source_id) DO NOTHING`,
+                [orgId],
+            );
+
+            // Apollo is a second, separate row — same mechanism, but it is
+            // registered as fetch_mode = 'ENRICHMENT' (migration 045), not
+            // 'PROVIDER', so the query above never reaches it. Every org
+            // created between migration 045 landing and this fix got no
+            // Apollo row at all, which meant Apollo could never be switched
+            // on for that agency, ever, through any screen — the toggle,
+            // and PATCH /api/management/contacts/provider, both 404 on a
+            // row that does not exist. Mirrors migration 041's own backfill
+            // (500-credit ceiling, 1000ms pacing) so a freshly created
+            // agency and a pre-existing one start from the same defaults.
+            await client.query(
+                `INSERT INTO organization_providers
+                    (id, organization_id, source_id, is_enabled,
+                     monthly_budget, max_pages, rate_limit_ms, credential_env)
+                 SELECT gen_random_uuid()::text, $1, s.id,
+                        FALSE, 500, 1, 1000, 'APOLLO_API_KEY'
+                   FROM lkp_job_sources s
+                  WHERE s.name = 'APOLLO'
+                 ON CONFLICT (organization_id, source_id) DO NOTHING`,
+                [orgId],
             );
 
             return { orgId, adminId };

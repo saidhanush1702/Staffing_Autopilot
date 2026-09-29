@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import api from '../api/axios.js';
 import { useAuth } from './AuthContext.jsx';
+import { setAppTimeZone } from '../utils/datetime.js';
 
 /**
  * ── REFERENCE DATA, FETCHED ONCE ──────────────────────────────────────
@@ -49,7 +50,12 @@ export const LookupProvider = ({ children }) => {
 
         let cancelled = false;
         api.get('/lookups')
-            .then(({ data }) => { if (!cancelled) setLookups(data); })
+            .then(({ data }) => {
+                if (cancelled) return;
+                setLookups(data);
+                // Rides along on the same payload — see utils/datetime.js for why.
+                setAppTimeZone(data.timezone, data.timezoneLabel);
+            })
             // A failed fetch must not blank the UI. `humanise` covers the gap
             // until the next load, showing "Org Admin" rather than nothing.
             .catch(() => { if (!cancelled) setLookups(null); });

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Loader2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import { card } from '../../design/tokens.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /**
  * Collapsible audit panel, dropped at the bottom of every module page:
@@ -16,18 +18,19 @@ const PAGE_SIZE = 10;
 /** First word of the action drives the colour. */
 const actionColour = (action = '') => {
     const verb = action.split(' ')[0];
-    if (['Added', 'Created', 'Generated'].includes(verb)) return 'bg-emerald-50 text-emerald-700';
-    if (['Updated', 'Ran', 'Submitted'].includes(verb)) return 'bg-amber-50 text-amber-700';
-    if (['Approved', 'Enabled', 'Reactivated'].includes(verb)) return 'bg-emerald-50 text-emerald-800';
-    if (['Sent', 'Signed'].includes(verb)) return 'bg-sky-50 text-sky-700';
-    if (['Suspended', 'Cancelled'].includes(verb)) return 'bg-amber-50 text-amber-800';
+    if (['Added', 'Created', 'Generated'].includes(verb)) return 'bg-success-50 text-success-700';
+    if (['Updated', 'Ran', 'Submitted'].includes(verb)) return 'bg-warning-50 text-warning-700';
+    if (['Approved', 'Enabled', 'Reactivated'].includes(verb)) return 'bg-success-50 text-success-800';
+    if (['Sent', 'Signed'].includes(verb)) return 'bg-info-50 text-info-700';
+    if (['Suspended', 'Cancelled'].includes(verb)) return 'bg-warning-50 text-warning-800';
     // 'Disabled' stays listed: pre-lifecycle rows are still in the log and
     // audit_logs is append-only, so history cannot be rewritten to match.
-    if (['Rejected', 'Deleted', 'Removed', 'Disabled', 'Terminated'].includes(verb)) return 'bg-red-50 text-red-700';
+    if (['Rejected', 'Deleted', 'Removed', 'Disabled', 'Terminated'].includes(verb)) return 'bg-danger-50 text-danger-700';
     return 'bg-slate-100 text-slate-600';
 };
 
 const AuditLogPanel = ({ module }) => {
+    const { user } = useAuth();
     const [open, setOpen] = useState(false);
     const [logs, setLogs] = useState([]);
     const [total, setTotal] = useState(0);
@@ -35,7 +38,11 @@ const AuditLogPanel = ({ module }) => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    if (localStorage.getItem('userRole') !== 'ORG_ADMIN') return null;
+    // Identity comes from the auth context, not from localStorage. This was
+    // the only component reading a role out of storage, which meant it would
+    // keep rendering for a stale value after a role change or a sign-out that
+    // did not clear that particular key.
+    if (user?.role !== 'ORG_ADMIN') return null;
 
     const fetchLogs = async (nextOffset = 0) => {
         setLoading(true);
@@ -86,8 +93,8 @@ const AuditLogPanel = ({ module }) => {
             </button>
 
             {open && (
-                <div className="border-t border-slate-200">
-                    {error && <p className="px-4 py-3 text-sm text-red-600">{error}</p>}
+                <div className="border-t border-line">
+                    {error && <p className="px-4 py-3 text-sm text-danger-600">{error}</p>}
                     {loading && logs.length === 0 && (
                         <div className="flex justify-center py-6">
                             <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
@@ -97,7 +104,7 @@ const AuditLogPanel = ({ module }) => {
                         <p className="px-4 py-6 text-center text-sm text-slate-400">No activity recorded yet.</p>
                     )}
 
-                    <ul className="divide-y divide-slate-100">
+                    <ul className="divide-y divide-line-soft">
                         {logs.map((log) => (
                             <li key={log.id} className="px-4 py-3">
                                 <div className="flex flex-wrap items-center gap-2">
@@ -106,7 +113,7 @@ const AuditLogPanel = ({ module }) => {
                                     </span>
                                     <span className="text-sm text-slate-700">{log.entity_name ?? log.entity_type}</span>
                                     <span className="ml-auto text-xs text-slate-400">
-                                        {new Date(log.created_at).toLocaleString()}
+                                        {formatDateTime(log.created_at)}
                                     </span>
                                 </div>
                                 {log.description && (
@@ -125,7 +132,7 @@ const AuditLogPanel = ({ module }) => {
                     </ul>
 
                     {total > PAGE_SIZE && (
-                        <div className="flex items-center justify-between border-t border-slate-200 px-4 py-2 text-xs text-slate-500">
+                        <div className="flex items-center justify-between border-t border-line px-4 py-2 text-xs text-slate-500">
                             <span>{offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}</span>
                             <div className="flex gap-2">
                                 <button

@@ -2,8 +2,15 @@
  * GET /api/lookups
  * Every lookup table in ONE call, for any authenticated user.
  * The client fetches this once at login and caches it.
+ *
+ * `timezone` / `timezoneLabel` ride along here too — not a lookup table, but
+ * the same "fetch once, hand to the whole tree" shape fits it exactly. This
+ * is how the browser's clock stays in lockstep with the server's without a
+ * second constant to keep in sync: change APP_TIMEZONE in the backend's
+ * environment and every screen picks it up on the next login.
  */
 import { query } from '../db.js';
+import { schedulerTimezone, schedulerTimezoneLabel } from '../config/discoverySchedule.js';
 
 export const getLookups = async (req, res, next) => {
     try {
@@ -29,6 +36,8 @@ export const getLookups = async (req, res, next) => {
             workTypes: workTypes.rows,
             answerStatuses: answerStatuses.rows,
             questionCategories: questionCategories.rows,
+            timezone: schedulerTimezone(),
+            timezoneLabel: schedulerTimezoneLabel(),
         });
     } catch (err) {
         return next(err);

@@ -29,6 +29,8 @@ import { runSeed002 } from './db/seeds/002_super_admin_seed.js';
 import { runSeed003 } from './db/seeds/003_demo_org_seed.js';
 import { runSeed004 } from './db/seeds/004_common_questions_seed.js';
 import { runSeed005 } from './db/seeds/005_job_sources_seed.js';
+import { runSeed006 } from './db/seeds/006_demo_postings_seed.js';
+import { runSeed007 } from './db/seeds/007_skills_seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.join(__dirname, 'db', 'migrations');
@@ -124,13 +126,19 @@ const main = async () => {
         await runMigrations(client);
 
         console.log('\nRunning seeds...\n');
-        await runSeed001(client);   // lookups
-        await runSeed002(client);   // super admin
-        await runSeed003(client);   // demo organisation + users + assignments
-        // Runs after 003 because it seeds a question set PER ORGANISATION,
-        // so the organisations have to exist first.
-        await runSeed004(client);   // standard application questions
-        await runSeed005(client);   // job boards, portal types, queue states
+        // await runSeed001(client);   // lookups
+        // await runSeed002(client);   // super admin
+        // await runSeed003(client);   // demo organisation + users + assignments
+        // // Runs after 003 because it seeds a question set PER ORGANISATION,
+        // // so the organisations have to exist first.
+        // await runSeed004(client);   // standard application questions
+        // await runSeed005(client);   // job boards, portal types, queue states
+        // // Last, because it needs the portal types and sources above, and the
+        // // demo organisation from 003.
+        // await runSeed006(client);   // engineered demo postings
+        // The skills vocabulary. Safe to re-run: it upserts by slug and
+        // never resets the hit counts that services/skillLearner.js writes.
+        // await runSeed007(client);   // skills taxonomy + aliases
         console.log('\n✅ All migrations and seeds completed.');
     } catch (err) {
         failed = true;

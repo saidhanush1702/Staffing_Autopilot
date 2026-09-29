@@ -23,6 +23,7 @@ import { query, withTransaction } from '../db.js';
 import { canAccessConsultant, getAssignedConsultantIds } from '../utils/scope.js';
 import { readPaging, pageResult } from '../utils/pagination.js';
 import { logAction } from './auditLogController.js';
+import { releaseAnswered } from '../config/blockers.js';
 
 /* ── validation ──────────────────────────────────────────────────────── */
 
@@ -216,7 +217,8 @@ export const submitAnswer = async (req, res, next) => {
         const status = await statusIds();
 
         const { rows: currentRows } = await query(
-            `SELECT a.id, a.revision_no, a.proposed_text, s.name AS status_name
+            `SELECT a.id, a.revision_no, a.proposed_text, a.approved_text,
+                    s.name AS status_name
                FROM answers a
                JOIN lkp_answer_statuses s ON s.id = a.status_id
               WHERE a.consultant_id = $1 AND a.question_id = $2 AND a.is_current`,
@@ -224,12 +226,11 @@ export const submitAnswer = async (req, res, next) => {
         );
         const current = currentRows[0];
 
-        // Re-submitting identical text would mint a revision that says nothing,
+        // Re-saving identical text would mint a revision that says nothing,
         // exactly as an unchanged criteria save would.
-        if (current && current.proposed_text.trim() === answerText.trim()
-            && current.status_name === 'PENDING') {
+        if (current && (current.approved_text ?? current.proposed_text)?.trim() === answerText.trim()) {
             return res.status(409).json({
-                error: 'That is the same answer you already submitted.',
+                error: 'That is the same answer you already gave.',
             });
         }
 
@@ -245,13 +246,28 @@ export const submitAnswer = async (req, res, next) => {
                     [status.SUPERSEDED, current.id],
                 );
             }
+            // ── NO SECOND PAIR OF EYES ON A JOB-FORM ANSWER ───────────
+            //
+            // These used to land PENDING and wait for a recruiter. That is the
+            // right rule for something written on somebody else's behalf, and
+            // the wrong one here: this is the consultant answering a question
+            // about themselves — their notice period, their rate, their years
+            // with a tool — to send their own application. Waiting for approval
+            // meant postings closed before the answer cleared.
+            //
+            // So it is usable immediately, with the consultant recorded as both
+            // author and approver. Nothing pretends anyone else looked at it.
+            // Profile changes are a different matter and are still reviewed:
+            // those alter what EVERY future application says.
             await client.query(
                 `INSERT INTO answers
                     (id, organization_id, consultant_id, question_id, revision_no,
-                     is_current, proposed_text, status_id, answered_by)
-                 VALUES ($1,$2,$3,$4,$5,TRUE,$6,$7,$3)`,
+                     is_current, proposed_text, approved_text, status_id,
+                     answered_by, answered_at, reviewed_by, reviewed_at, review_note)
+                 VALUES ($1,$2,$3,$4,$5,TRUE,$6,$6,$7,$3,now(),$3,now(),
+                     'Answered by the consultant')`,
                 [answerId, orgId, consultantId, questionId, revisionNo,
-                    answerText, status.PENDING],
+                    answerText, status.APPROVED],
             );
         });
 
@@ -261,15 +277,20 @@ export const submitAnswer = async (req, res, next) => {
             entityName: question.question_text.slice(0, 200),
             performedBy: consultantId, performedByRole: 'CONSULTANT',
             description: `Answered "${question.question_text}"`
-                + (revisionNo > 1 ? ` (revision ${revisionNo})` : '')
-                + ` — awaiting ${question.category_label} approval`,
+                + (revisionNo > 1 ? ` (revision ${revisionNo})` : ''),
             ipAddress: req.ip,
         }).catch(() => {});
 
+        // Anything that was only waiting on this goes back in the queue.
+        const released = await releaseAnswered(orgId, consultantId);
+
         return res.status(201).json({
-            message: 'Answer submitted for approval.',
+            message: released
+                ? `Saved. ${released} application(s) released.`
+                : 'Saved.',
             answerId,
             revisionNo,
+            released,
         });
     } catch (err) {
         return next(err);
@@ -454,6 +475,49 @@ export const reviewAnswer = async (req, res, next) => {
             ],
         );
 
+        // ── release anything parked on this question ──────────────────
+        //
+        // Closes the loop the answer bank was built for: the desktop app hits a
+        // question it cannot answer, parks the application, and the consultant
+        // answers it. The moment a reviewer approves that answer, every item
+        // that consultant had parked on the same question becomes workable
+        // again — without anyone having to notice and re-queue it by hand.
+        //
+        // Matched on `parked_question_id`, a real foreign key. Matching on the
+        // reason text would strand items the day somebody reworded a question.
+        let released = 0;
+        if (approving) {
+            const { rows: unparked } = await query(
+                `UPDATE queue_items q
+                    SET status_id = (SELECT id FROM lkp_queue_statuses WHERE name = 'READY'),
+                        parked_question_id = NULL,
+                        park_reason = NULL,
+                        updated_at = now()
+                  WHERE q.consultant_id = $1
+                    AND q.organization_id = $2
+                    AND q.parked_question_id = $3
+                    AND q.status_id = (SELECT id FROM lkp_queue_statuses
+                                        WHERE name = 'PARKED_UNKNOWN')
+                  RETURNING q.id`,
+                [answer.consultant_id, orgId, answer.question_id],
+            );
+            released = unparked.length;
+
+            for (const item of unparked) {
+                await query(
+                    `INSERT INTO queue_item_transitions
+                        (id, organization_id, queue_item_id, from_status_id, to_status_id,
+                         reason, performed_by)
+                     VALUES ($1,$2,$3,
+                        (SELECT id FROM lkp_queue_statuses WHERE name = 'PARKED_UNKNOWN'),
+                        (SELECT id FROM lkp_queue_statuses WHERE name = 'READY'),
+                        $4,$5)`,
+                    [uuidv4(), orgId, item.id,
+                        'The missing answer was approved', req.user.id],
+                ).catch(() => {});
+            }
+        }
+
         logAction({
             orgId, module: 'answers',
             action: approving ? 'Approved Answer' : 'Rejected Answer',
@@ -475,8 +539,14 @@ export const reviewAnswer = async (req, res, next) => {
         return res.json({
             message: approving
                 ? (corrected ? 'Corrected and approved.' : 'Approved.')
+                    + (released > 0
+                        ? ` ${released} parked application${released === 1 ? '' : 's'} released.`
+                        : '')
                 : 'Rejected.',
             status: approving ? 'APPROVED' : 'REJECTED',
+            // So the reviewer sees that approving an answer did something
+            // beyond the answer itself.
+            releasedItems: released,
             wasCorrected: corrected,
         });
     } catch (err) {

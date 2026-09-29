@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext.jsx';
 import { LookupProvider } from './context/LookupContext.jsx';
+import { ThemeProvider } from './context/ThemeContext.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import PageLoader from './components/PageLoader.jsx';
 import Layout from './components/layout/Layout.jsx';
@@ -17,22 +18,35 @@ const Users = lazy(() => import('./pages/management/Users.jsx'));
 const Assignments = lazy(() => import('./pages/management/Assignments.jsx'));
 const Consultants = lazy(() => import('./pages/management/Consultants.jsx'));
 const ConsultantDetail = lazy(() => import('./pages/management/ConsultantDetail.jsx'));
-const ProfileApprovals = lazy(() => import('./pages/management/ProfileApprovals.jsx'));
-const AnswerInbox = lazy(() => import('./pages/management/AnswerInbox.jsx'));
+const Approvals = lazy(() => import('./pages/management/Approvals.jsx'));
 const JobDiscovery = lazy(() => import('./pages/management/JobDiscovery.jsx'));
 const Postings = lazy(() => import('./pages/management/Postings.jsx'));
+const JobsPipe = lazy(() => import('./pages/management/JobsPipe.jsx'));
+const Devices = lazy(() => import('./pages/management/Devices.jsx'));
+// No longer linked from the sidebar (see Sidebar.jsx), but the route stays —
+// flagged resumes still land in RESUME_REVIEW and need a way to be cleared,
+// and dropping the route would strand any application stuck in that state.
+const ResumeReview = lazy(() => import('./pages/management/ResumeReview.jsx'));
+const Contacts = lazy(() => import('./pages/management/Contacts.jsx'));
+const AiCosts = lazy(() => import('./pages/management/AiCosts.jsx'));
+const ResumeSettings = lazy(() => import('./pages/management/ResumeSettings.jsx'));
+const LlmSettings = lazy(() => import('./pages/management/LlmSettings.jsx'));
 
 const ConsultantDashboard = lazy(() => import('./pages/portal/ConsultantDashboard.jsx'));
 const MyProfile = lazy(() => import('./pages/portal/MyProfile.jsx'));
 const MyCriteria = lazy(() => import('./pages/portal/MyCriteria.jsx'));
 const MyAnswers = lazy(() => import('./pages/portal/MyAnswers.jsx'));
+const MyResumeReviews = lazy(() => import('./pages/portal/MyResumeReviews.jsx'));
+const MyJobs = lazy(() => import('./pages/portal/MyJobs.jsx'));
 
-/** Wrap a lazy page in its guard + layout + suspense boundary. */
-const route = (C, roles) => (
+/** Wrap a lazy page in its guard + layout + suspense boundary. `props` is
+ *  only needed by routes that share one page component (see /management/answers
+ *  below), so it defaults to nothing. */
+const route = (C, roles, props) => (
     <ProtectedRoute allowedRoles={roles}>
         <Layout>
             <Suspense fallback={<PageLoader />}>
-                <C />
+                <C {...props} />
             </Suspense>
         </Layout>
     </ProtectedRoute>
@@ -46,6 +60,9 @@ const CONSULTANT = ['CONSULTANT'];
 
 const App = () => (
     <BrowserRouter>
+        {/* Outermost: the theme has to be settled before anything paints, and
+            it is the one piece of state that survives signing out. */}
+        <ThemeProvider>
         <AuthProvider>
             {/* Inside AuthProvider: reference data is fetched once a session
                 exists, and dropped again on sign-out. */}
@@ -67,21 +84,41 @@ const App = () => (
                     to their assigned consultants. */}
                 <Route path="/management/consultants" element={route(Consultants, MGMT)} />
                 <Route path="/management/consultants/:id" element={route(ConsultantDetail, MGMT)} />
-                <Route path="/management/approvals" element={route(ProfileApprovals, MGMT)} />
-                <Route path="/management/answers" element={route(AnswerInbox, MGMT)} />
+                {/* One page, two sections — see Approvals.jsx. Both routes stay
+                    so existing bookmarks and the dashboard shortcut cards land
+                    on the right section directly, even though the sidebar now
+                    only links to the first. */}
+                <Route path="/management/approvals" element={route(Approvals, MGMT)} />
+                <Route
+                    path="/management/answers"
+                    element={route(Approvals, MGMT, { initialSection: 'ANSWERS' })}
+                />
+                <Route path="/management/resume-reviews" element={route(ResumeReview, MGMT)} />
+                <Route path="/management/contacts" element={route(Contacts, MGMT)} />
+                <Route path="/management/costs" element={route(AiCosts, MGMT)} />
+                {/* Readable by management, writable by ORG_ADMIN — the guard
+                    that matters is on the PATCH route, not here. */}
+                <Route path="/management/resume-settings" element={route(ResumeSettings, MGMT)} />
+                {/* Owner only, reads included: it shows which providers have keys. */}
+                <Route path="/management/ai-models" element={route(LlmSettings, ADMIN)} />
                 <Route path="/management/discovery" element={route(JobDiscovery, MGMT)} />
                 <Route path="/management/postings" element={route(Postings, MGMT)} />
+                <Route path="/management/jobspipe" element={route(JobsPipe, MGMT)} />
+                <Route path="/management/devices" element={route(Devices, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}
                 <Route path="/portal" element={route(ConsultantDashboard, CONSULTANT)} />
                 <Route path="/portal/profile" element={route(MyProfile, CONSULTANT)} />
                 <Route path="/portal/criteria" element={route(MyCriteria, CONSULTANT)} />
+                <Route path="/portal/jobs" element={route(MyJobs, CONSULTANT)} />
                 <Route path="/portal/answers" element={route(MyAnswers, CONSULTANT)} />
+                <Route path="/portal/resume-reviews" element={route(MyResumeReviews, CONSULTANT)} />
 
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
             </LookupProvider>
         </AuthProvider>
+        </ThemeProvider>
     </BrowserRouter>
 );
 

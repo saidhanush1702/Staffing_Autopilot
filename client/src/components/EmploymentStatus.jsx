@@ -2,6 +2,7 @@ import { CheckCircle2, PauseCircle, XOctagon, CircleDashed } from 'lucide-react'
 import Badge from './ui/Badge.jsx';
 import { STATUS_TONE } from '../design/tokens.js';
 import { useLookups } from '../context/LookupContext.jsx';
+import { formatDate } from '../utils/datetime.js';
 
 /**
  * Employment state badge.
@@ -28,7 +29,7 @@ const EmploymentStatus = ({ status, since, reason }) => {
     const { statusLabel } = useLookups();
 
     const title = [
-        since && `Since ${new Date(since).toLocaleDateString()}`,
+        since && `Since ${formatDate(since)}`,
         reason,
     ].filter(Boolean).join(' — ') || undefined;
 

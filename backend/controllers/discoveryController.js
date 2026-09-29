@@ -10,7 +10,9 @@
  *   for each ACTIVE consultant with ACTIVE criteria
  *       hard filter → pre-filter (R-16) → score → match
  *   for each consultant
- *       fill the queue up to their daily cap; HOLD the surplus (R-17)
+ *       create a queue item per match — the cap is NOT applied here
+ *   promoteToReady()
+ *       promote QUEUED → READY up to the daily cap (R-17); surplus waits
  *
  * ── ACQUISITION (PHASE 5 v2) ──────────────────────────────────────────
  *
@@ -31,8 +33,10 @@
  *   half still runs over postings already in the pool (spec feature 14).
  * · Two runs never overlap — `uq_one_running_discovery` makes a concurrent
  *   start impossible at the database rather than merely unlikely.
- * · Caps stop ASSIGNMENT, not discovery. A match over the cap is HELD and
- *   reconsidered next run rather than discarded (R-17).
+ * · Caps stop an item becoming READY, not discovery. A match over the cap waits
+ *   at QUEUED and is reconsidered on the next promotion pass rather than
+ *   discarded (R-17). The slot is spent on reaching READY, so a preparation
+ *   failure never burns a consultant's day.
  * · Overlap across consultants is expected, flagged, and never blocked
  *   (R-01, R-03).
  * · Every API call is one paid credit, so the run is bounded twice: pages per
@@ -49,9 +53,22 @@ import { evaluate } from '../config/jobMatcher.js';
 import { createSession, isConfigured, providerConfig } from '../connectors/serpapi.js';
 import { jobResultToPosting } from '../connectors/googleJobs.js';
 import {
-    CYCLE_HOURS, schedulerTimezone, isSchedulerAvailable, nextRunAfter,
+    schedulerTimezone, isSchedulerAvailable, nextRunAfter, isDue,
+    clampCycleHours, runsPerDay, MIN_CYCLE_HOURS, MAX_CYCLE_HOURS,
 } from '../config/discoverySchedule.js';
 import { logAction } from './auditLogController.js';
+
+/**
+ * Share of the monthly budget scheduled runs may not touch.
+ *
+ * Without it the cycle can quietly consume the entire month by the 20th, and a
+ * person pressing "Run discovery now" on the 25th — usually because something
+ * needs checking urgently — finds the budget gone.
+ */
+const MANUAL_RESERVE = 0.10;
+
+/** Recency handles rot; Google rotates them. Re-discover after this. */
+const FILTER_CACHE_TTL_DAYS = 7;
 
 /** Keep only enough of a payload to diagnose an adapter later. */
 const PAYLOAD_KEEP_BYTES = 200_000;
@@ -66,8 +83,11 @@ const PAYLOAD_KEEP_BYTES = 200_000;
  */
 const loadSources = async () => {
     const { rows } = await query(
+        // Health lives on organization_providers now, per agency — see
+        // migration 031. Selecting it here was a leftover that made every run
+        // fail with "column consecutive_failures does not exist".
         `SELECT id, name, label, fetch_mode, is_enabled, is_priority,
-                rate_limit_ms, max_pages, consecutive_failures
+                rate_limit_ms, max_pages
            FROM lkp_job_sources
           ORDER BY id`,
     );
@@ -75,6 +95,164 @@ const loadSources = async () => {
         provider: rows.find((r) => r.fetch_mode === 'PROVIDER') ?? null,
         byName: new Map(rows.map((r) => [r.name, r])),
     };
+};
+
+/** The tenant's own pacing, housekeeping and clock settings. */
+const loadOrgSettings = async (orgId) => {
+    const { rows } = await query(
+        `SELECT name, timezone,
+                discovery_schedule_enabled, discovery_cycle_hours, discovery_date_posted,
+                lease_expiry_minutes, unprepared_expiry_hours,
+                review_expiry_days, posting_stale_days
+           FROM organizations WHERE id = $1`,
+        [orgId],
+    );
+    return rows[0] ?? null;
+};
+
+/**
+ * This agency's relationship with each search provider.
+ *
+ * Health, budget and enablement live here rather than on `lkp_job_sources`,
+ * which is a global lookup with no organisation column — two agencies sharing
+ * an installation were sharing one health record, so one tenant's failure
+ * marked the provider broken for the other.
+ *
+ * Credentials are NOT stored: the row names the environment variable holding
+ * the key, and the key stays in the server environment.
+ */
+const loadProviders = async (orgId) => {
+    const { rows } = await query(
+        `SELECT op.id, op.source_id, op.is_enabled, op.monthly_budget, op.max_pages,
+                op.rate_limit_ms, op.credential_env,
+                op.last_success_at, op.last_error, op.consecutive_failures,
+                s.name, s.label
+           FROM organization_providers op
+           JOIN lkp_job_sources s ON s.id = op.source_id
+          WHERE op.organization_id = $1 AND s.fetch_mode = 'PROVIDER'
+          ORDER BY s.label`,
+        [orgId],
+    );
+    return rows;
+};
+
+/**
+ * Which search provider this organisation would actually use.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT AN INLINE `?? providers[0]` ────────
+ *
+ * It used to be inlined, identically, at three call sites:
+ *
+ *     providers.find((p) => p.is_enabled) ?? providers[0] ?? null
+ *
+ * When Apollo was registered with `fetch_mode = 'PROVIDER'` (migration 041) so
+ * it could reuse the per-agency budget machinery, it joined the very set this
+ * picks from. `loadProviders` orders `BY s.label`, "Apollo" sorts before
+ * "Google Jobs", and every organisation with no search provider switched on
+ * began reporting APOLLO as its search provider — with Apollo's budget and
+ * Apollo's credential — while SerpApi sat disabled and invisible.
+ *
+ * Migration 045 removes Apollo from the set, which fixes today's symptom. This
+ * function fixes the shape of the bug: the fallback now says out loud that it
+ * is a fallback, so a caller can tell "this is the provider we use" from "there
+ * is nothing enabled and this is merely the first row". A screen that cannot
+ * tell those apart is how a disabled provider came to look like a configured
+ * one for two weeks.
+ *
+ * @returns {{ provider, enabled, fellBack }}
+ *   provider  the row to read settings from, or null when there are none
+ *   enabled   whether that row is actually switched on
+ *   fellBack  true when nothing was enabled and the first row was taken
+ */
+const selectSearchProvider = (providers) => {
+    const live = providers.find((p) => p.is_enabled);
+    if (live) return { provider: live, enabled: true, fellBack: false };
+    const first = providers[0] ?? null;
+    return { provider: first, enabled: false, fellBack: first !== null };
+};
+
+/**
+ * Credits already spent this calendar month, and what remains.
+ *
+ * Counted from `discovery_runs.provider_calls` rather than a separate ledger:
+ * the runs table is already the record of every call made, so a second counter
+ * could only ever disagree with it.
+ *
+ * Scheduled runs are held to a lower ceiling than manual ones — see
+ * MANUAL_RESERVE.
+ */
+const monthlyBudgetState = async (orgId, budget, trigger) => {
+    const { rows } = await query(
+        `SELECT COALESCE(SUM(provider_calls), 0)::int AS used
+           FROM discovery_runs
+          WHERE organization_id = $1
+            AND started_at >= date_trunc('month', now())`,
+        [orgId],
+    );
+
+    const used = rows[0].used;
+    const ceiling = trigger === 'SCHEDULED'
+        ? Math.floor(budget * (1 - MANUAL_RESERVE))
+        : budget;
+
+    return {
+        used,
+        budget,
+        ceiling,
+        remaining: Math.max(0, ceiling - used),
+        percentUsed: budget > 0 ? Math.round((used / budget) * 100) : 0,
+    };
+};
+
+/* ── the provider's recency filter handles ────────────────────────────── */
+
+const cacheKey = (q) => ({ q: q.q, l: q.l ?? '' });
+
+/** Cached handles for this run's search terms, fresh ones only. */
+const loadFilterCache = async (orgId, window) => {
+    const { rows } = await query(
+        `SELECT query_text, location_text, uds, q_override
+           FROM provider_filter_cache
+          WHERE organization_id = $1
+            AND date_window = $2
+            AND fetched_at > now() - ($3 || ' days')::interval`,
+        [orgId, window, String(FILTER_CACHE_TTL_DAYS)],
+    );
+    return new Map(rows.map((r) => [`${r.query_text} ${r.location_text}`, r]));
+};
+
+const rememberFilter = async (orgId, q, window, filter) => {
+    const key = cacheKey(q);
+    await query(
+        `INSERT INTO provider_filter_cache
+            (id, organization_id, query_text, location_text, date_window, uds, q_override)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (organization_id, query_text, location_text, date_window)
+         DO UPDATE SET uds = EXCLUDED.uds,
+                       q_override = EXCLUDED.q_override,
+                       fetched_at = now(),
+                       failures = 0`,
+        [uuidv4(), orgId, key.q.slice(0, 255), key.l.slice(0, 255),
+            window, filter.uds, filter.q ? filter.q.slice(0, 500) : null],
+    );
+};
+
+/**
+ * Drop a handle that stopped working.
+ *
+ * Google rotates these, and a rotated handle does not error — it simply returns
+ * nothing. Deleting the row means the next run rediscovers it on a call it was
+ * making anyway, so a rotation costs one unfiltered cycle rather than silently
+ * returning no jobs forever.
+ */
+const forgetFilter = async (orgId, q, window) => {
+    const key = cacheKey(q);
+    await query(
+        `DELETE FROM provider_filter_cache
+          WHERE organization_id = $1 AND query_text = $2
+            AND location_text = $3 AND date_window = $4`,
+        [orgId, key.q.slice(0, 255), key.l.slice(0, 255), window],
+    );
 };
 
 /**
@@ -87,11 +265,16 @@ const loadSources = async () => {
  * matching them and filtering later would be an easy way to leak a job to
  * somebody who should not receive one.
  */
-const loadMatchableConsultants = async (orgId) => {
+// Exported for the JobsPipe push listener (controllers/jobspipeListener.js),
+// which must match a pushed job against the SAME bench, loaded the same way.
+// Nothing about the function changed — only its visibility. A second copy of
+// this query would drift from this one the first time criteria gain a field,
+// and the webhook would then quietly match against a stale idea of what a
+// consultant wants.
+export const loadMatchableConsultants = async (orgId) => {
     const { rows } = await query(
         `SELECT u.id, u.name,
-                sc.current_version_id AS version_id,
-                p.daily_cap
+                sc.current_version_id AS version_id
            FROM users u
            JOIN search_criteria sc ON sc.consultant_id = u.id
            JOIN consultant_profiles p ON p.user_id = u.id
@@ -125,7 +308,6 @@ const loadMatchableConsultants = async (orgId) => {
             id: row.id,
             name: row.name,
             versionId: row.version_id,
-            dailyCap: row.daily_cap ?? 0,
             criteria: {
                 jobTitles: byKind('JOB_TITLE'),
                 keywordsInclude: byKind('KEYWORD_INCLUDE'),
@@ -182,7 +364,19 @@ const buildQueries = (consultants, limit = 6) => {
  * Insert a posting, or record a repeat sighting of one already known (R-15).
  * @returns {{ id, isNew }}
  */
-const upsertPosting = async (client, { orgId, sourceId, runId, posting, workTypeId, portalTypeId }) => {
+// Exported for the JobsPipe push listener. R-15 is one rule with one
+// implementation: a pushed job and the same job found by the cycle must land on
+// ONE fingerprint and one row, or a consultant applies to it twice. That
+// guarantee only holds while both paths call THIS function. Visibility is the
+// only thing that changed.
+export const upsertPosting = async (client, {
+    orgId, sourceId, runId, posting, workTypeId, portalTypeId,
+    // Which BOARD the job was listed on, when the caller knows it and the
+    // source row does not already say. SerpApi leaves this null — its board IS
+    // the source row. JobsPipe passes it, because its nine boards all share one
+    // source row by design (see migration 046).
+    originBoard = null,
+}) => {
     const fingerprint = fingerprintPosting(posting);
 
     const { rows: existing } = await client.query(
@@ -204,9 +398,14 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
         await client.query(
             `UPDATE job_postings
                 SET last_seen_at = now(), times_seen = times_seen + 1, is_active = TRUE,
-                    provider_job_id = COALESCE(provider_job_id, $2)
+                    provider_job_id = COALESCE(provider_job_id, $2),
+                    origin_board    = COALESCE(origin_board, $3)
               WHERE id = $1`,
-            [postingId, posting.providerJobId ?? null],
+            // Backfilled when missing, never overwritten — same rule as
+            // provider_job_id. The FIRST board we saw a job on is the honest
+            // answer to "where did this come from"; a later sighting on a
+            // second board is a re-listing, not a correction.
+            [postingId, posting.providerJobId ?? null, originBoard],
         );
     } else {
         postingId = uuidv4();
@@ -216,13 +415,14 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
                 (id, organization_id, company, title, location_text, is_remote,
                  description, source_url, work_type_id, portal_type_id,
                  pay_min, pay_max, pay_unit, pay_currency,
-                 fingerprint, first_source_id, posted_at, provider_job_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+                 fingerprint, first_source_id, posted_at, provider_job_id, origin_board)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
             [postingId, orgId, posting.company, posting.title, posting.locationText,
                 posting.isRemote, posting.description, posting.sourceUrl,
                 workTypeId, portalTypeId,
                 posting.payMin, posting.payMax, posting.payUnit, posting.payCurrency,
-                fingerprint, sourceId, posting.postedAt, posting.providerJobId ?? null],
+                fingerprint, sourceId, posting.postedAt, posting.providerJobId ?? null,
+                originBoard],
         );
     }
 
@@ -234,6 +434,193 @@ const upsertPosting = async (client, { orgId, sourceId, runId, posting, workType
     );
 
     return { id: postingId, isNew };
+};
+
+/* ── the readiness gate ───────────────────────────────────────────────── */
+
+/**
+ * Release QUEUED items to READY.
+ *
+ * ── TAILORING IS NO LONGER PART OF THIS STEP ──────────────────────────
+ *
+ * This used to send every waiting item through the AI stage — parse, tailor,
+ * fabrication check, render — before it could be READY. It does not any more.
+ * A found job goes straight to READY carrying the consultant's base resume,
+ * marked NOT_REQUESTED, and the desktop app (BOT / AGENT lane) or the
+ * consultant (HUMAN lane) can act on it immediately.
+ *
+ * Tailoring is something a person asks for, job by job, from the consultant's
+ * job list (see controllers/tailoringRequestController.js). Only those jobs
+ * step back to PREPARING, get a tailored resume, and return to READY. That is
+ * the whole point of the change: an agency's spend now follows the jobs
+ * somebody decided were worth it, not every job the matcher happened to find.
+ *
+ * The four-hour discovery cycle still never calls a model. Nothing on this path
+ * does.
+ *
+ * ── WHY THE FUNCTION IS STILL CALLED promoteToReady ───────────────────
+ *
+ * It still promotes QUEUED items to READY, and the discovery run record, the
+ * JobsPipe listener and the maintenance sweep all call it by this name.
+ */
+
+/**
+ * One item, QUEUED → READY, in the caller's transaction.
+ *
+ * Shared with the manual link so a hand-linked job takes exactly the same road
+ * as a discovered one. Returns false when the item was no longer QUEUED —
+ * somebody moved it first, which is not ours to undo.
+ */
+export const releaseItemToReady = async (client, { orgId, itemId, statusId }) => {
+    const { rowCount } = await client.query(
+        `UPDATE queue_items
+            SET status_id = $2,
+                tailoring_state = 'NOT_TAILORED',
+                tailoring_skip_reason = 'NOT_REQUESTED',
+                preparation_error = NULL,
+                prepared_at = now(),
+                became_ready_at = now()
+          WHERE id = $1 AND status_id = $3`,
+        [itemId, statusId.READY, statusId.QUEUED],
+    );
+    if (rowCount === 0) return false;
+
+    await client.query(
+        `INSERT INTO queue_item_transitions
+            (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [uuidv4(), orgId, itemId, statusId.QUEUED, statusId.READY,
+            'Ready with the base resume — resume tailoring is chosen per job'],
+    );
+    return true;
+};
+
+export const promoteToReady = async (orgId) => {
+    const { rows: statuses } = await query('SELECT id, name FROM lkp_queue_statuses');
+    const statusId = Object.fromEntries(statuses.map((r) => [r.name, r.id]));
+
+    // Only consultants who can actually receive work. A paused or terminated
+    // person is skipped here as well as at matching, so an item can never
+    // become ready for somebody who has left.
+    const { rows: consultants } = await query(
+        `SELECT u.id
+           FROM users u
+           JOIN consultant_profiles p ON p.user_id = u.id
+          WHERE u.organization_id = $1
+            AND u.role = 'CONSULTANT'
+            AND u.employment_status = 'ACTIVE'
+            AND NOT p.is_paused`,
+        [orgId],
+    );
+
+    let promoted = 0;
+
+    for (const consultant of consultants) {
+        // Everything waiting becomes ready. Highest-scoring first, so if a
+        // person works through the list from the top they meet the best
+        // matches first — the order is still meaningful even without a limit
+        // deciding where to stop.
+        const { rows: waiting } = await query(
+            `SELECT q.id
+               FROM queue_items q
+          LEFT JOIN job_matches m ON m.id = q.match_id
+              WHERE q.consultant_id = $1
+                AND q.status_id = $2
+              ORDER BY COALESCE(m.score, 0) DESC, q.queued_at ASC`,
+            [consultant.id, statusId.QUEUED],
+        );
+
+        for (const row of waiting) {
+            const released = await withTransaction((client) => releaseItemToReady(client, {
+                orgId, itemId: row.id, statusId,
+            }));
+            if (released) promoted += 1;
+        }
+    }
+
+    // `promoted` counts items released to READY on this pass.
+    //
+    // heldByCap is always 0, and has been since the daily cap was removed. It
+    // stays because callers read it, and a field that exists and is always zero
+    // is easier to follow than one that vanishes from half the call sites.
+    return { promoted, heldByCap: 0 };
+};
+
+/**
+ * GET /api/management/discovery/preview — what a run would actually ask for.
+ *
+ * ── WHY THIS EXISTS ───────────────────────────────────────────────────
+ *
+ * Every discovery run spends real money, and until now the only way to know
+ * what it was about to search for was to read the source. An admin could see
+ * the cost ("up to 12 credits") without being able to see what those credits
+ * would buy — which titles, which location, which recency window.
+ *
+ * So this reports the exact request a run would build, from the same functions
+ * the run uses. It is not a description of the intent; it is the plan itself,
+ * so it cannot drift away from what really happens.
+ *
+ * It never calls the provider and never spends a credit.
+ */
+export const previewQueries = async (req, res, next) => {
+    try {
+        const orgId = req.user.orgId;
+        const settings = await loadOrgSettings(orgId);
+        const cfg = providerConfig();
+
+        const consultants = await loadMatchableConsultants(orgId);
+        const queries = buildQueries(consultants, cfg.maxQueries);
+        const dateWindow = settings?.discovery_date_posted ?? 'day';
+
+        // Where each search term came from — the question an admin asks next is
+        // always "why are we searching for that?"
+        const titleOwners = new Map();
+        for (const c of consultants) {
+            for (const t of c.criteria.jobTitles) {
+                const key = t.toLowerCase();
+                if (!titleOwners.has(key)) titleOwners.set(key, []);
+                titleOwners.get(key).push(c.name);
+            }
+        }
+
+        const everyTitle = [...titleOwners.keys()];
+        const chosen = new Set(queries.map((q) => q.q));
+
+        return res.json({
+            provider: { name: cfg.name, label: cfg.label, engine: 'google_jobs' },
+            // Exactly the parameters buildUrl() sets, minus the key, which
+            // never leaves the environment.
+            parameters: {
+                engine: 'google_jobs',
+                location: queries[0]?.l || '(none — a nationwide search)',
+                gl: cfg.gl,
+                hl: cfg.hl,
+                dateWindow,
+                pagesPerTerm: cfg.maxPages,
+                maxTerms: cfg.maxQueries,
+                maxCallsPerRun: cfg.maxCallsPerRun,
+                apiKey: '(held in the environment, never sent to this screen)',
+            },
+            queries: queries.map((q) => ({
+                q: q.q,
+                location: q.l || null,
+                wantedBy: titleOwners.get(q.q) ?? [],
+            })),
+            // The titles that did NOT make the cut, so a recruiter can see why a
+            // consultant's criteria produced nothing.
+            droppedTitles: everyTitle
+                .filter((t) => !chosen.has(t))
+                .map((t) => ({ title: t, wantedBy: titleOwners.get(t) ?? [] })),
+            consultants: consultants.map((c) => ({
+                name: c.name,
+                titles: c.criteria.jobTitles,
+                locations: c.criteria.locations,
+            })),
+            estimatedCredits: queries.length * cfg.maxPages,
+        });
+    } catch (err) {
+        return next(err);
+    }
 };
 
 /* ── the run ──────────────────────────────────────────────────────────── */
@@ -267,6 +654,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         queries_sent: 0,
         queries_failed: 0,
         provider_calls: 0,
+        credits_saved: 0,
         raw_items: 0,
         parsed_ok: 0,
         filtered_by_portal: 0,
@@ -277,7 +665,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         prefilter_out: 0,
         matches_found: 0,
         queued: 0,
-        held_by_cap: 0,
+        awaiting_cap: 0,
     };
     const notes = [];
 
@@ -304,6 +692,16 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         }
 
         const cfg = providerConfig();
+        const settings = await loadOrgSettings(orgId);
+        const dateWindow = settings?.discovery_date_posted ?? 'day';
+        // One provider today, several supported. The first enabled one is used;
+        // adding a second is a row in organization_providers, not a code change.
+        const orgProviders = await loadProviders(orgId);
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
+        const budget = await monthlyBudgetState(
+            orgId, orgProvider?.monthly_budget ?? 0, trigger,
+        );
+
         const queries = buildQueries(consultants, cfg.maxQueries);
         if (queries.length === 0 && consultants.length > 0) {
             notes.push('Consultants have criteria but no job titles — no search terms to send.');
@@ -315,101 +713,199 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
         // reach the provider can still match yesterday's postings against
         // criteria that changed this morning, and that is real work. A stack
         // trace would throw it away and tell the operator nothing.
-        const provider = sources.provider;
+        // The source row records WHICH provider a payload came from; the
+        // organization_providers row carries this agency's settings for it.
+        const provider = orgProvider
+            ? { ...sources.byName.get(orgProvider.name), ...orgProvider, id: orgProvider.source_id }
+            : null;
+
         let blocker = null;
         if (!provider) {
-            blocker = 'No search provider row exists — re-run the seeds.';
+            blocker = 'No search provider is configured for this organisation.';
         } else if (!provider.is_enabled) {
             blocker = `${provider.label} is switched off, so no jobs were fetched. `
                 + 'Turn it on from the discovery screen.';
         } else if (!isConfigured()) {
-            blocker = `${provider.label} has no API key — set SERPAPI_KEY in .env. `
+            blocker = `${provider.label} has no API key — set ${orgProvider.credential_env} `
+                + 'in the server environment. '
                 + 'Matching still ran over the postings already in the pool.';
+        } else if (budget.remaining <= 0) {
+            // A hard stop, but only on FETCHING. The run still completes and
+            // still matches everything already in the pool, because that half
+            // costs nothing and is genuinely useful.
+            blocker = trigger === 'SCHEDULED'
+                ? `Monthly search budget reached — ${budget.used} of ${budget.budget} credits used. `
+                  + `Scheduled runs stop at ${budget.ceiling} so manual runs stay possible. `
+                  + 'Matching still ran over the postings already in the pool.'
+                : `Monthly search budget of ${budget.budget} credits is fully used. `
+                  + 'Matching still ran over the postings already in the pool.';
         }
         if (blocker) notes.push(blocker);
 
+        if (!blocker && budget.percentUsed >= 90) {
+            notes.push(`Warning: ${budget.percentUsed}% of the monthly search budget used `
+                + `(${budget.used} of ${budget.budget} credits).`);
+        }
+
         if (!blocker && queries.length > 0) {
+            const filterCache = await loadFilterCache(orgId, dateWindow);
+
             const session = createSession({
                 maxPages: provider.max_pages,
-                maxCalls: cfg.maxCallsPerRun,
+                // Never spend past what is left of the month, whatever the
+                // per-run ceiling says.
+                maxCalls: Math.min(cfg.maxCallsPerRun, budget.remaining),
                 pacingMs: provider.rate_limit_ms,
             });
 
             let providerFailed = false;
+            const yieldPerQuery = [];
 
             for (const q of queries) {
                 stats.queries_sent += 1;
+                let newFromQuery = 0;
+                let pagesBought = 0;
+                let stoppedEarly = false;
+                let resultsSeen = 0;
 
-                const result = await session.search({ q: q.q, location: q.l });
-                stats.raw_items += result.results.length;
+                // The recency handle for this term, if we already hold a fresh
+                // one. When we do not, this run goes out unfiltered and harvests
+                // the handle from the response it was making anyway — so the
+                // filter costs nothing, it just starts working next cycle.
+                const cached = filterCache.get(`${q.q} ${q.l ?? ''}`);
+                let harvested = null;
 
-                // Stored before anything is parsed. When the adapter turns out
-                // to be wrong next month, a fix can be replayed over retained
-                // history instead of losing every posting that arrived while it
-                // was wrong. The URL is already redacted — see serpapi.js.
-                for (const payload of result.payloads) {
+                // ── page by page, stopping as soon as a page stops earning ──
+                //
+                // Each page is a paid credit and pages are ordered by Google's
+                // ranking, so a page that produced nothing new is a strong
+                // signal that the next one will not either. Buying it anyway is
+                // the single largest avoidable cost in a mature pool, where
+                // most of what a search returns is already held.
+                for await (const page of session.pages({
+                    q: q.q,
+                    location: q.l,
+                    uds: cached?.uds ?? null,
+                    qOverride: cached?.q_override ?? null,
+                    dateWindow,
+                })) {
+                    pagesBought += 1;
+                    resultsSeen += page.results.length;
+                    stats.raw_items += page.results.length;
+                    if (page.filter) harvested = page.filter;
+
+                    // Stored before anything is parsed. When the adapter turns
+                    // out to be wrong next month, a fix can be replayed over
+                    // retained history instead of losing every posting that
+                    // arrived while it was wrong. The URL is already redacted.
                     await query(
                         `INSERT INTO job_source_payloads
                             (id, organization_id, source_id, run_id, request_url,
                              http_status, content_type, body, body_bytes, postings_found)
                          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-                        [uuidv4(), orgId, provider.id, runId, payload.url.slice(0, 1000),
-                            payload.status, payload.contentType,
-                            payload.body ? payload.body.slice(0, PAYLOAD_KEEP_BYTES) : null,
-                            payload.bytes, payload.found],
+                        [uuidv4(), orgId, provider.id, runId, page.payload.url.slice(0, 1000),
+                            page.payload.status, page.payload.contentType,
+                            page.payload.body ? page.payload.body.slice(0, PAYLOAD_KEEP_BYTES) : null,
+                            page.payload.bytes, page.payload.found],
                     );
-                }
 
-                if (result.errors.length > 0) {
-                    providerFailed = true;
-                    stats.queries_failed += 1;
-                    notes.push(`${provider.label}: ${result.errors.slice(0, 3).join(' | ')}`);
-                }
-
-                for (const raw of result.results) {
-                    const adapted = jobResultToPosting(raw);
-
-                    // Quarantined, never dropped. A result the adapter cannot
-                    // read is the first sign of a changed contract, and it is
-                    // only visible if somebody kept it.
-                    if (!adapted) {
-                        stats.quarantined += 1;
-                        await query(
-                            `INSERT INTO job_parse_quarantine
-                                (id, organization_id, source_id, run_id, reason, raw_fragment)
-                             VALUES ($1,$2,$3,$4,$5,$6)`,
-                            [uuidv4(), orgId, provider.id, runId,
-                                'Missing company, title or apply link',
-                                JSON.stringify(raw).slice(0, 4000)],
-                        );
-                        continue;
+                    if (page.error) {
+                        providerFailed = true;
+                        stats.queries_failed += 1;
+                        notes.push(`${provider.label}: ${page.error}`);
+                        break;
                     }
 
-                    // Attribution resolves to a row so per-board yield stays
-                    // measurable (spec item 16). An unrecognised board lands on
-                    // OTHER rather than being lost.
-                    const sourceRow = sources.byName.get(adapted.source)
-                        ?? sources.byName.get('OTHER')
-                        ?? provider;
+                    let newInPage = 0;
 
-                    if (!sourceRow.is_enabled) {
-                        stats.filtered_by_portal += 1;
-                        continue;
+                    for (const raw of page.results) {
+                        const adapted = jobResultToPosting(raw);
+
+                        // Quarantined, never dropped. A result the adapter
+                        // cannot read is the first sign of a changed contract,
+                        // and it is only visible if somebody kept it.
+                        if (!adapted) {
+                            stats.quarantined += 1;
+                            await query(
+                                `INSERT INTO job_parse_quarantine
+                                    (id, organization_id, source_id, run_id, reason, raw_fragment)
+                                 VALUES ($1,$2,$3,$4,$5,$6)`,
+                                [uuidv4(), orgId, provider.id, runId,
+                                    'Missing company, title or apply link',
+                                    JSON.stringify(raw).slice(0, 4000)],
+                            );
+                            continue;
+                        }
+
+                        // Attribution resolves to a row so per-board yield stays
+                        // measurable (spec item 16). An unrecognised board lands
+                        // on OTHER rather than being lost.
+                        const sourceRow = sources.byName.get(adapted.source)
+                            ?? sources.byName.get('OTHER')
+                            ?? provider;
+
+                        if (!sourceRow.is_enabled) {
+                            stats.filtered_by_portal += 1;
+                            continue;
+                        }
+
+                        stats.parsed_ok += 1;
+                        const { isNew } = await withTransaction((client) => upsertPosting(client, {
+                            orgId,
+                            sourceId: sourceRow.id,
+                            runId,
+                            posting: adapted.posting,
+                            workTypeId: lookups.workType[adapted.posting.workType] ?? null,
+                            portalTypeId: lookups.portalType[adapted.portalType] ?? null,
+                        }));
+
+                        if (isNew) {
+                            stats.postings_new += 1;
+                            newInPage += 1;
+                        } else {
+                            stats.postings_duplicate += 1;
+                        }
                     }
 
-                    stats.parsed_ok += 1;
-                    const { isNew } = await withTransaction((client) => upsertPosting(client, {
-                        orgId,
-                        sourceId: sourceRow.id,
-                        runId,
-                        posting: adapted.posting,
-                        workTypeId: lookups.workType[adapted.posting.workType] ?? null,
-                        portalTypeId: lookups.portalType[adapted.portalType] ?? null,
-                    }));
+                    newFromQuery += newInPage;
 
-                    if (isNew) stats.postings_new += 1; else stats.postings_duplicate += 1;
+                    if (newInPage === 0) {
+                        // Nothing new on a page we already paid for. Do not buy
+                        // the next one.
+                        stoppedEarly = true;
+                        break;
+                    }
                 }
+
+                // Credits this query chose not to spend. Counted rather than
+                // estimated, so the saving is auditable next to the spend.
+                if (stoppedEarly) {
+                    stats.credits_saved += Math.max(0, provider.max_pages - pagesBought);
+                }
+
+                // Keep a freshly harvested handle for next time.
+                if (harvested) {
+                    await rememberFilter(orgId, q, dateWindow, harvested).catch(() => {});
+                } else if (cached && resultsSeen === 0 && pagesBought > 0) {
+                    // We filtered with a stored handle and Google returned
+                    // nothing at all. A rotated handle behaves exactly like this
+                    // — no error, just an empty result — so drop it and let the
+                    // next run rediscover it rather than searching into a void
+                    // every cycle from now on.
+                    await forgetFilter(orgId, q, dateWindow).catch(() => {});
+                    notes.push(`Recency filter for "${q.q}" returned nothing and was reset.`);
+                }
+
+                yieldPerQuery.push(
+                    `"${q.q}": ${newFromQuery} new from ${pagesBought} page(s)`
+                    + (stoppedEarly ? ' — stopped early, last page was all repeats' : ''),
+                );
             }
+
+            // Per-term yield, so the terms that never earn their credits are
+            // visible rather than inferred. This is what an operator reads
+            // before cutting DISCOVERY_MAX_QUERIES.
+            if (yieldPerQuery.length > 0) notes.push(yieldPerQuery.join('\n'));
 
             stats.provider_calls = session.calls;
             if (session.budgetExhausted) {
@@ -417,13 +913,16 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                     + 'calls. Raise DISCOVERY_MAX_CALLS_PER_RUN, or send fewer search terms.');
             }
 
+            // Health is recorded against THIS agency's provider row, so one
+            // tenant's failed search cannot mark the provider broken for
+            // another sharing the same installation.
             await query(
-                `UPDATE lkp_job_sources
+                `UPDATE organization_providers
                     SET last_success_at = CASE WHEN $2 THEN last_success_at ELSE now() END,
                         consecutive_failures = CASE WHEN $2 THEN consecutive_failures + 1 ELSE 0 END,
                         last_error = $3
                   WHERE id = $1`,
-                [provider.id, providerFailed,
+                [orgProvider.id, providerFailed,
                     providerFailed ? notes[notes.length - 1]?.slice(0, 500) : null],
             );
         }
@@ -478,37 +977,27 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
             }
         }
 
-        /* ── fill queues, respecting the daily cap (R-17) ──────────── */
+        /* ── create queue items — NO cap here ─────────────────────── */
+        //
+        // The cap used to be applied at this point, which was wrong once
+        // preparation became a separate stage: a slot spent here is a slot
+        // spent before the item is usable, so a failed or slow preparation
+        // would burn a consultant's whole day without one application going
+        // out. Every match becomes a QUEUED item; the cap is applied when an
+        // item reaches READY. See promoteToReady().
         for (const consultant of consultants) {
-            const { rows: usedRows } = await query(
-                `SELECT COUNT(*)::int AS used
-                   FROM queue_items
-                  WHERE consultant_id = $1 AND queued_at::date = CURRENT_DATE`,
-                [consultant.id],
-            );
-            const remaining = Math.max(0, consultant.dailyCap - usedRows[0].used);
-
             const { rows: pending } = await query(
-                `SELECT id, posting_id, score
-                   FROM job_matches
-                  WHERE consultant_id = $1 AND status IN ('PENDING','HELD')
-                  ORDER BY score DESC, matched_at ASC`,
+                `SELECT m.id, m.posting_id, m.score,
+                        COALESCE(pt.is_automatable, FALSE) AS automatable
+                   FROM job_matches m
+                   JOIN job_postings p ON p.id = m.posting_id
+              LEFT JOIN lkp_portal_types pt ON pt.id = p.portal_type_id
+                  WHERE m.consultant_id = $1 AND m.status IN ('PENDING','HELD')
+                  ORDER BY m.score DESC, m.matched_at ASC`,
                 [consultant.id],
             );
 
-            for (let i = 0; i < pending.length; i += 1) {
-                const match = pending[i];
-
-                if (i >= remaining) {
-                    // Held, not discarded. Tomorrow's run reconsiders it.
-                    await query(
-                        "UPDATE job_matches SET status = 'HELD' WHERE id = $1 AND status <> 'QUEUED'",
-                        [match.id],
-                    );
-                    stats.held_by_cap += 1;
-                    continue;
-                }
-
+            for (const match of pending) {
                 // R-01 / R-03: the same posting legitimately reaches several
                 // consultants. Flag it for visibility; never block it.
                 const { rows: others } = await query(
@@ -518,15 +1007,21 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                 );
                 const isOverlap = others.length > 0;
 
+                // The lane, decided here because the portal is known here.
+                // Recorded rather than recomputed later: teaching the app a new
+                // system must not silently rewrite what happened historically.
+                // BOT, AGENT or HUMAN — see config/queueLanes.js.
+                const channel = await laneFor(orgId, match.automatable);
+
                 const inserted = await query(
                     `INSERT INTO queue_items
                         (id, organization_id, consultant_id, posting_id, match_id,
-                         status_id, is_overlap, run_id)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                         status_id, is_overlap, run_id, channel)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                      ON CONFLICT (consultant_id, posting_id) DO NOTHING
                      RETURNING id`,
                     [uuidv4(), orgId, consultant.id, match.posting_id, match.id,
-                        lookups.queueStatus.QUEUED, isOverlap, runId],
+                        lookups.queueStatus.QUEUED, isOverlap, runId, channel],
                 );
 
                 if (inserted.rowCount > 0) {
@@ -535,7 +1030,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                             (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
                          VALUES ($1,$2,$3,NULL,$4,$5)`,
                         [uuidv4(), orgId, inserted.rows[0].id, lookups.queueStatus.QUEUED,
-                            `Matched by discovery run (score ${match.score})`],
+                            `Matched by discovery run (score ${match.score}, ${channel} lane)`],
                     );
                     stats.queued += 1;
 
@@ -549,6 +1044,11 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                 await query("UPDATE job_matches SET status = 'QUEUED' WHERE id = $1", [match.id]);
             }
         }
+
+        /* ── promote to READY under the daily cap (R-17) ───────────── */
+        const promoted = await promoteToReady(orgId);
+        stats.queued = promoted.promoted;
+        stats.awaiting_cap = promoted.heldByCap;
     } catch (err) {
         notes.push(`Run aborted: ${err.message}`);
         await query(
@@ -583,7 +1083,7 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
             description: `Discovery ${trigger.toLowerCase()}: `
                 + `${stats.provider_calls} API call(s), `
                 + `${stats.postings_new} new postings, ${stats.postings_duplicate} repeats, `
-                + `${stats.matches_found} matches, ${stats.queued} queued, ${stats.held_by_cap} held by cap`
+                + `${stats.matches_found} matches, ${stats.queued} queued, ${stats.awaiting_cap} held by cap`
                 + (stats.queries_failed ? ` — ${stats.queries_failed} search(es) failed` : ''),
             ipAddress: null,
         }).catch(() => {});
@@ -652,23 +1152,66 @@ export const listSources = async (req, res, next) => {
         );
 
         const cfg = providerConfig();
-        const provider = rows.find((r) => r.fetch_mode === 'PROVIDER') ?? null;
+        const settings = await loadOrgSettings(req.user.orgId);
+        const cycleHours = clampCycleHours(settings?.discovery_cycle_hours);
+        const orgProviders = await loadProviders(req.user.orgId);
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
+        const spend = await monthlyBudgetState(
+            req.user.orgId, orgProvider?.monthly_budget ?? 0, 'MANUAL',
+        );
+
+        // PROVIDER rows carry a global `is_enabled` that no longer decides
+        // anything — enablement is per agency. Overlaying it here keeps the
+        // screen from showing a toggle in the opposite position to reality.
+        const byId = new Map(orgProviders.map((p) => [p.source_id, p]));
+        const sources = rows.map((s) => (s.fetch_mode === 'PROVIDER' && byId.has(s.id)
+            ? {
+                ...s,
+                is_enabled: byId.get(s.id).is_enabled,
+                max_pages: byId.get(s.id).max_pages,
+                rate_limit_ms: byId.get(s.id).rate_limit_ms,
+            }
+            : s));
 
         return res.json({
-            sources: rows,
+            sources,
+            // Every provider this agency could use. One today; the shape takes
+            // several so adding one is a row rather than a release.
+            providers: orgProviders.map((p) => ({
+                sourceId: p.source_id,
+                name: p.name,
+                label: p.label,
+                enabled: p.is_enabled,
+                monthlyBudget: p.monthly_budget,
+                maxPages: p.max_pages,
+                lastSuccessAt: p.last_success_at,
+                lastError: p.last_error,
+                consecutiveFailures: p.consecutive_failures,
+            })),
             provider: {
                 name: cfg.name,
-                label: provider?.label ?? cfg.label,
+                label: orgProvider?.label ?? cfg.label,
+                sourceId: orgProvider?.source_id ?? null,
                 // Whether a key is present. The key itself is never returned,
                 // and never leaves the server.
                 configured: isConfigured(),
-                enabled: provider?.is_enabled ?? false,
+                enabled: orgProvider?.is_enabled ?? false,
                 maxQueries: cfg.maxQueries,
-                maxPages: provider?.max_pages ?? cfg.maxPages,
+                maxPages: orgProvider?.max_pages ?? cfg.maxPages,
                 maxCallsPerRun: cfg.maxCallsPerRun,
-                lastSuccessAt: provider?.last_success_at ?? null,
-                lastError: provider?.last_error ?? null,
-                consecutiveFailures: provider?.consecutive_failures ?? 0,
+                // What "recent" means to this tenant, how often it asks, and
+                // what it has spent. All three drive the bill, so all three
+                // belong on the screen next to the estimate.
+                datePosted: settings?.discovery_date_posted ?? 'day',
+                cycleHours,
+                runsPerDay: runsPerDay(cycleHours),
+                monthlyBudget: spend.budget,
+                creditsUsedThisMonth: spend.used,
+                creditsRemaining: spend.remaining,
+                percentUsed: spend.percentUsed,
+                lastSuccessAt: orgProvider?.last_success_at ?? null,
+                lastError: orgProvider?.last_error ?? null,
+                consecutiveFailures: orgProvider?.consecutive_failures ?? 0,
             },
         });
     } catch (err) {
@@ -678,9 +1221,25 @@ export const listSources = async (req, res, next) => {
 
 /* ── the automatic cycle ──────────────────────────────────────────────── */
 
+/**
+ * Every field optional, at least one required — the screen sends only what
+ * changed, so a toggle does not have to restate the budget and vice versa.
+ */
 export const scheduleSchema = Joi.object({
-    enabled: Joi.boolean().required(),
-});
+    enabled: Joi.boolean(),
+    cycleHours: Joi.number().integer().min(MIN_CYCLE_HOURS).max(MAX_CYCLE_HOURS),
+    datePosted: Joi.string().valid('day', '3days', 'week', 'month'),
+    timezone: Joi.string().max(64),
+    // Housekeeping. Bounds match the database CHECK, so a bad value is refused
+    // with a readable message instead of a constraint violation.
+    leaseExpiryMinutes: Joi.number().integer().min(5).max(1440),
+    unpreparedExpiryHours: Joi.number().integer().min(1).max(168),
+    reviewExpiryDays: Joi.number().integer().min(1).max(90),
+    postingStaleDays: Joi.number().integer().min(1).max(365),
+    // Belongs to the agency-provider pair now, not the agency: an agency
+    // running two providers has two quotas.
+    monthlyBudget: Joi.number().integer().min(0).max(1_000_000),
+}).min(1);
 
 /**
  * GET /api/management/discovery/schedule
@@ -693,13 +1252,11 @@ export const scheduleSchema = Joi.object({
  */
 export const getSchedule = async (req, res, next) => {
     try {
-        const { rows } = await query(
-            'SELECT discovery_schedule_enabled FROM organizations WHERE id = $1',
-            [req.user.orgId],
-        );
-        if (rows.length === 0) return res.status(404).json({ error: 'Organization not found.' });
+        const settings = await loadOrgSettings(req.user.orgId);
+        if (!settings) return res.status(404).json({ error: 'Organization not found.' });
 
-        const enabled = rows[0].discovery_schedule_enabled;
+        const enabled = settings.discovery_schedule_enabled;
+        const cycleHours = clampCycleHours(settings.discovery_cycle_hours);
         const available = isSchedulerAvailable();
         const now = new Date();
 
@@ -712,17 +1269,46 @@ export const getSchedule = async (req, res, next) => {
             [req.user.orgId],
         );
 
+        const lastRunAt = last[0]?.started_at ?? null;
+        const cfg = providerConfig();
+        const orgProviders = await loadProviders(req.user.orgId);
+        const { provider: orgProvider } = selectSearchProvider(orgProviders);
+        const spend = await monthlyBudgetState(
+            req.user.orgId, orgProvider?.monthly_budget ?? 0, 'MANUAL',
+        );
+
         return res.json({
             enabled,
+            timezone: settings.timezone || schedulerTimezone(),
+            // Housekeeping intervals, all editable.
+            leaseExpiryMinutes: settings.lease_expiry_minutes,
+            unpreparedExpiryHours: settings.unprepared_expiry_hours,
+            reviewExpiryDays: settings.review_expiry_days,
+            postingStaleDays: settings.posting_stale_days,
             // Whether the server process runs the cycle at all. When this is
             // false the switch below still saves, but nothing will fire — and
             // the screen says so rather than looking armed.
             schedulerAvailable: available,
-            cycleHours: CYCLE_HOURS,
-            timezone: schedulerTimezone(),
+            cycleHours,
+            minCycleHours: MIN_CYCLE_HOURS,
+            maxCycleHours: MAX_CYCLE_HOURS,
+            datePosted: settings.discovery_date_posted,
+            monthlyBudget: spend.budget,
+            creditsUsedThisMonth: spend.used,
+            percentUsed: spend.percentUsed,
+            // What a cycle at this interval costs, so the admin sees the
+            // consequence of the number they are typing as they type it.
+            creditsPerRun: Math.min(
+                cfg.maxQueries * (orgProvider?.max_pages ?? cfg.maxPages),
+                cfg.maxCallsPerRun,
+            ),
+            runsPerDay: runsPerDay(cycleHours),
             serverTime: now.toISOString(),
-            nextRunAt: enabled && available ? nextRunAfter(now).toISOString() : null,
-            lastScheduledRunAt: last[0]?.started_at ?? null,
+            nextRunAt: enabled && available
+                ? nextRunAfter(lastRunAt, cycleHours, now).toISOString()
+                : null,
+            dueNow: enabled && available && isDue(lastRunAt, cycleHours, now),
+            lastScheduledRunAt: lastRunAt,
         });
     } catch (err) {
         return next(err);
@@ -738,42 +1324,152 @@ export const getSchedule = async (req, res, next) => {
  */
 export const updateSchedule = async (req, res, next) => {
     try {
-        const enabled = req.body.enabled;
+        const before = await loadOrgSettings(req.user.orgId);
+        if (!before) return res.status(404).json({ error: 'Organization not found.' });
 
+        const providersBefore = await loadProviders(req.user.orgId);
+        const { provider: target } = selectSearchProvider(providersBefore);
+
+        // COALESCE so the screen can send one field without restating the rest.
         const { rows } = await query(
             `UPDATE organizations
-                SET discovery_schedule_enabled = $2
+                SET discovery_schedule_enabled = COALESCE($2, discovery_schedule_enabled),
+                    discovery_cycle_hours      = COALESCE($3, discovery_cycle_hours),
+                    discovery_date_posted      = COALESCE($4, discovery_date_posted),
+                    timezone                   = COALESCE($5, timezone),
+                    lease_expiry_minutes       = COALESCE($6, lease_expiry_minutes),
+                    unprepared_expiry_hours    = COALESCE($7, unprepared_expiry_hours),
+                    review_expiry_days         = COALESCE($8, review_expiry_days),
+                    posting_stale_days         = COALESCE($9, posting_stale_days)
               WHERE id = $1
-              RETURNING name, discovery_schedule_enabled`,
-            [req.user.orgId, enabled],
+              RETURNING name, discovery_schedule_enabled, discovery_cycle_hours,
+                        discovery_date_posted, timezone, lease_expiry_minutes,
+                        unprepared_expiry_hours, review_expiry_days, posting_stale_days`,
+            [req.user.orgId,
+                req.body.enabled ?? null,
+                req.body.cycleHours ?? null,
+                req.body.datePosted ?? null,
+                req.body.timezone ?? null,
+                req.body.leaseExpiryMinutes ?? null,
+                req.body.unpreparedExpiryHours ?? null,
+                req.body.reviewExpiryDays ?? null,
+                req.body.postingStaleDays ?? null],
         );
-        if (rows.length === 0) return res.status(404).json({ error: 'Organization not found.' });
 
-        logAction({
-            orgId: req.user.orgId,
-            module: 'discovery',
-            action: enabled ? 'Enabled Schedule' : 'Disabled Schedule',
-            entityType: 'DiscoverySchedule',
-            entityId: req.user.orgId,
-            entityName: rows[0].name,
-            performedBy: req.user.id,
-            performedByRole: req.user.role,
-            description: `${enabled ? 'Switched on' : 'Switched off'} the automatic `
-                + `${CYCLE_HOURS}-hour job discovery cycle`,
-            ipAddress: req.ip,
-        }).catch(() => {});
+        // The budget belongs to this agency's row for the provider, not to the
+        // agency itself — two providers mean two quotas.
+        if (req.body.monthlyBudget !== undefined && target) {
+            await query(
+                'UPDATE organization_providers SET monthly_budget = $2 WHERE id = $1',
+                [target.id, req.body.monthlyBudget],
+            );
+        }
+
+        const after = rows[0];
+
+        // One audit row per thing that actually changed. A no-op PATCH writes
+        // nothing, so the log stays a record of changes rather than of clicks.
+        const changes = [];
+        if (req.body.enabled !== undefined
+            && req.body.enabled !== before.discovery_schedule_enabled) {
+            changes.push({
+                action: req.body.enabled ? 'Enabled Schedule' : 'Disabled Schedule',
+                description: `${req.body.enabled ? 'Switched on' : 'Switched off'} the automatic `
+                    + `${after.discovery_cycle_hours}-hour job discovery cycle`,
+            });
+        }
+        if (req.body.cycleHours !== undefined
+            && req.body.cycleHours !== before.discovery_cycle_hours) {
+            changes.push({
+                action: 'Changed Cycle Interval',
+                description: `Discovery interval ${before.discovery_cycle_hours}h → `
+                    + `${after.discovery_cycle_hours}h `
+                    + `(${runsPerDay(after.discovery_cycle_hours)} run(s) per day)`,
+            });
+        }
+        if (req.body.monthlyBudget !== undefined && target
+            && req.body.monthlyBudget !== target.monthly_budget) {
+            changes.push({
+                action: 'Changed Search Budget',
+                description: `${target.label} monthly search budget `
+                    + `${target.monthly_budget} → ${req.body.monthlyBudget} credits`,
+            });
+        }
+        for (const [field, column, what] of [
+            ['leaseExpiryMinutes', 'lease_expiry_minutes', 'Lease expiry (minutes)'],
+            ['unpreparedExpiryHours', 'unprepared_expiry_hours', 'Unprepared expiry (hours)'],
+            ['reviewExpiryDays', 'review_expiry_days', 'Review expiry (days)'],
+            ['postingStaleDays', 'posting_stale_days', 'Posting ageing (days)'],
+            ['timezone', 'timezone', 'Agency timezone'],
+        ]) {
+            if (req.body[field] !== undefined && req.body[field] !== before[column]) {
+                changes.push({
+                    action: 'Changed Discovery Setting',
+                    description: `${what} ${before[column]} → ${after[column]}`,
+                });
+            }
+        }
+        if (req.body.datePosted !== undefined
+            && req.body.datePosted !== before.discovery_date_posted) {
+            changes.push({
+                action: 'Changed Recency Window',
+                description: `Job recency window ${before.discovery_date_posted} → `
+                    + `${after.discovery_date_posted}`,
+            });
+        }
+
+        for (const change of changes) {
+            logAction({
+                orgId: req.user.orgId,
+                module: 'discovery',
+                action: change.action,
+                entityType: 'DiscoverySchedule',
+                entityId: req.user.orgId,
+                entityName: after.name,
+                performedBy: req.user.id,
+                performedByRole: req.user.role,
+                description: change.description,
+                ipAddress: req.ip,
+            }).catch(() => {});
+        }
 
         const now = new Date();
+        const available = isSchedulerAvailable();
+        const cycleHours = clampCycleHours(after.discovery_cycle_hours);
+
+        const { rows: last } = await query(
+            `SELECT started_at FROM discovery_runs
+              WHERE organization_id = $1 AND trigger = 'SCHEDULED'
+              ORDER BY started_at DESC LIMIT 1`,
+            [req.user.orgId],
+        );
+        const lastRunAt = last[0]?.started_at ?? null;
+        const providersAfter = await loadProviders(req.user.orgId);
+        const { provider: activeProvider } = selectSearchProvider(providersAfter);
+        const spend = await monthlyBudgetState(
+            req.user.orgId, activeProvider?.monthly_budget ?? 0, 'MANUAL',
+        );
+
         return res.json({
-            message: enabled
-                ? 'Automatic discovery is on.'
-                : 'Automatic discovery is off.',
-            enabled,
-            schedulerAvailable: isSchedulerAvailable(),
+            message: 'Discovery settings saved.',
+            enabled: after.discovery_schedule_enabled,
+            cycleHours,
+            datePosted: after.discovery_date_posted,
+            timezone: after.timezone || schedulerTimezone(),
+            leaseExpiryMinutes: after.lease_expiry_minutes,
+            unpreparedExpiryHours: after.unprepared_expiry_hours,
+            reviewExpiryDays: after.review_expiry_days,
+            postingStaleDays: after.posting_stale_days,
+            monthlyBudget: spend.budget,
+            creditsUsedThisMonth: spend.used,
+            percentUsed: spend.percentUsed,
+            runsPerDay: runsPerDay(cycleHours),
+            schedulerAvailable: available,
             serverTime: now.toISOString(),
-            nextRunAt: enabled && isSchedulerAvailable()
-                ? nextRunAfter(now).toISOString()
+            nextRunAt: after.discovery_schedule_enabled && available
+                ? nextRunAfter(lastRunAt, cycleHours, now).toISOString()
                 : null,
+            lastScheduledRunAt: lastRunAt,
         });
     } catch (err) {
         return next(err);

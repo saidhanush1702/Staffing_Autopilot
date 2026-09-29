@@ -56,7 +56,7 @@ const PasswordCell = ({ userId, onReset }) => {
 
     if (error) {
         return (
-            <span className="flex items-center gap-2 text-xs text-red-600">
+            <span className="flex items-center gap-2 text-xs text-danger-600">
                 {error}
                 <button type="button" onClick={hide} className="underline">retry</button>
             </span>
@@ -91,7 +91,7 @@ const PasswordCell = ({ userId, onReset }) => {
                     className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
                 >
                     {copied
-                        ? <Check className="h-3.5 w-3.5 text-emerald-600" />
+                        ? <Check className="h-3.5 w-3.5 text-success-600" />
                         : <Copy className="h-3.5 w-3.5" />}
                 </button>
             )}

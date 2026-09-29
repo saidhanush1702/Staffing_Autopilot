@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartApply - End-to-End Workflow Diagram</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #09090b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --primary: #3b82f6;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+        }
+        #sidebar {
+            width: 400px;
+            background: linear-gradient(180deg, rgba(15,23,42,0.95) 0%, rgba(9,9,11,0.95) 100%);
+            border-right: 1px solid var(--glass-border);
+            backdrop-filter: blur(20px);
+            padding: 2.5rem 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            z-index: 10;
+            box-shadow: 15px 0 40px rgba(0,0,0,0.5);
+            overflow-y: auto;
+        }
+        .header-content h1 {
+            font-size: 1.75rem;
+            margin: 0 0 0.5rem 0;
+            background: linear-gradient(90deg, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 700;
+        }
+        .header-content p {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            margin: 0;
+            line-height: 1.5;
+        }
+        h2 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #cbd5e1;
+            border-bottom: 1px solid var(--glass-border);
+            padding-bottom: 0.75rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        
+        .gate-alert {
+            background: rgba(245, 158, 11, 0.1);
+            border-left: 4px solid var(--warning);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 1rem;
+        }
+        .gate-alert h3 {
+            margin: 0 0 0.25rem 0;
+            font-size: 0.95rem;
+            color: #fcd34d;
+        }
+        .gate-alert p {
+            margin: 0;
+            font-size: 0.85rem;
+            color: #cbd5e1;
+            line-height: 1.4;
+        }
+
+        #diagram-container {
+            flex-grow: 1;
+            position: relative;
+            cursor: grab;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: radial-gradient(circle at center, #1e293b 0%, #09090b 100%);
+        }
+        #diagram-container:active {
+            cursor: grabbing;
+        }
+        .mermaid {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        }
+        .mermaid.loaded {
+            opacity: 1;
+        }
+        .controls {
+            position: absolute;
+            bottom: 2rem;
+            right: 2rem;
+            display: flex;
+            gap: 0.75rem;
+            z-index: 9999;
+            pointer-events: auto;
+        }
+        button {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--glass-border);
+            color: white;
+            padding: 0.75rem 1.25rem;
+            border-radius: 8px;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            transition: all 0.2s ease;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 500;
+            font-size: 0.9rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        }
+        button:hover {
+            background: rgba(30, 41, 59, 0.9);
+            border-color: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+
+        /* Print styling for perfect PDF generation */
+        @media print {
+            body {
+                background: #09090b !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            #sidebar, .controls {
+                display: none !important;
+            }
+            #diagram-container {
+                width: 100%;
+                height: 100vh;
+                position: absolute;
+                top: 0;
+                left: 0;
+                background: #09090b !important;
+            }
+            @page {
+                size: landscape;
+                margin: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <div class="header-content">
+            <h1>End-to-End Workflow Design</h1>
+            <p>Prepared for Dhanush.<br>The complete consultant journey from initial setup to a submitted job application.</p>
+        </div>
+        
+        <div>
+            <h2>The 4 Human Gates</h2>
+            <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+                Nothing about a consultant is used until a human has explicitly approved it. These gates ensure absolute control.
+            </p>
+            
+            <div class="gate-alert">
+                <h3>1. Profile Approval</h3>
+                <p>No unverified personal details reach an employer. A reviewer must check every field.</p>
+            </div>
+            
+            <div class="gate-alert">
+                <h3>2. Criteria Activation</h3>
+                <p>No job searching begins until a recruiter confirms the titles, pay, and keywords.</p>
+            </div>
+            
+            <div class="gate-alert">
+                <h3>3. Answer Approval</h3>
+                <p>No form is filled with an unapproved answer. Salary & work-auth go strictly to the Owner.</p>
+            </div>
+            
+            <div class="gate-alert">
+                <h3>4. Final Submit Review</h3>
+                <p>The machine NEVER submits alone. The consultant must click submit on every single application.</p>
+            </div>
+        </div>
+        
+        <p style="font-size: 0.8rem; color: #475569; margin-top: auto; text-align: center;">
+            Interactive Canvas<br>Scroll to zoom · Drag to pan
+        </p>
+    </div>
+
+    <div id="diagram-container">
+        <div class="mermaid" id="mermaid-graph">
+flowchart TD
+    %% Styling
+    classDef onboarding fill:#1e293b,stroke:#3b82f6,color:#f8fafc,stroke-width:2px;
+    classDef gate fill:#78350f,stroke:#f59e0b,color:#fde68a,stroke-width:2px,rx:8,ry:8;
+    classDef discovery fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff,stroke-width:2px;
+    classDef preparation fill:#4c1d95,stroke:#c084fc,color:#f3e8ff,stroke-width:2px;
+    classDef botlane fill:#451a03,stroke:#fbbf24,color:#fef3c7,stroke-width:2px;
+    classDef humanlane fill:#064e3b,stroke:#34d399,color:#d1fae5,stroke-width:2px;
+    classDef record fill:#020617,stroke:#94a3b8,color:#f8fafc,stroke-width:2px;
+    classDef parked fill:#7f1d1d,stroke:#ef4444,color:#fee2e2,stroke-width:2px;
+
+    subgraph PHASE1 ["1. Consultant Setup & Onboarding"]
+        direction TB
+        ADD["<b>Consultant Added</b><br/>Account & empty profile created"]:::onboarding
+        FILL_PROF["Consultant fills profile details"]:::onboarding
+        REV_PROF{"GATE 1:<br/>Profile Review"}:::gate
+        PROF_LIVE["Profile goes <b>LIVE</b>"]:::onboarding
+        
+        SET_CRIT["Recruiter sets search criteria<br/>(Titles, keywords, locations)"]:::onboarding
+        ACTIVATE{"GATE 2:<br/>Criteria Activation"}:::gate
+        
+        ANSWERS["Consultant answers standard Q's"]:::onboarding
+        REV_ANS{"GATE 3:<br/>Answer Review"}:::gate
+        ANS_BANK["Answers enter the Approved Bank"]:::onboarding
+
+        ADD --> FILL_PROF --> REV_PROF
+        REV_PROF -->|Rejected| FILL_PROF
+        REV_PROF -->|Approved| PROF_LIVE
+        
+        PROF_LIVE --> SET_CRIT --> ACTIVATE
+        PROF_LIVE --> ANSWERS --> REV_ANS
+        REV_ANS -->|Rejected| ANSWERS
+        REV_ANS -->|Approved| ANS_BANK
+    end
+
+    subgraph PHASE2 ["2. Job Discovery (Every 4 Hours)"]
+        direction TB
+        FIND["<b>Discovery Cycle</b><br/>Finds jobs across the market"]:::discovery
+        SCORE_JOB["Scores jobs per consultant"]:::discovery
+        QUEUE["Job enters Queue<br/>(Status: Not Yet Ready)"]:::discovery
+        
+        ACTIVATE -->|Approved| FIND
+        FIND --> SCORE_JOB --> QUEUE
+    end
+
+    subgraph PHASE3 ["3. AI Preparation"]
+        direction TB
+        TAILOR["<b>AI Worker</b><br/>Tailors resume & scores fit"]:::preparation
+        MARK_READY["Item marked <b>READY</b>"]:::preparation
+
+        QUEUE --> TAILOR
+        ANS_BANK -.->|Feeds approved answers| TAILOR
+        TAILOR --> MARK_READY
+    end
+
+    subgraph PHASE4 ["4. The Application Lanes"]
+        direction TB
+        LANE{"Which Application System?"}:::gate
+        
+        subgraph BOT ["Bot Lane (Desktop App)"]
+            direction TB
+            APP_FILL["<b>Desktop App</b> fills the form<br/>using consultant's browser"]:::botlane
+            UNKNOWN{"Unknown<br/>Question?"}:::gate
+            PARK["<b>PARKED</b><br/>Wait for answer approval"]:::parked
+            REV_BOT{"GATE 4:<br/>Consultant Reviews"}:::gate
+            SUB_BOT["Consultant Clicks <b>SUBMIT</b>"]:::botlane
+            
+            APP_FILL --> UNKNOWN
+            UNKNOWN -->|Yes| PARK
+            PARK -.->|Requires new answer in| ANSWERS
+            UNKNOWN -->|No| REV_BOT -->|Approves| SUB_BOT
+        end
+        
+        subgraph HUMAN ["Human Lane (Web Portal)"]
+            direction TB
+            SHOW["<b>Portal</b> shows the job<br/>& tailored resume"]:::humanlane
+            APP_DIR["Consultant applies directly<br/>in their browser"]:::humanlane
+            SUB_HUM["Consultant Marks as Applied"]:::humanlane
+            
+            SHOW --> APP_DIR --> SUB_HUM
+        end
+        
+        MARK_READY --> LANE
+        LANE -->|LinkedIn, Built In, etc| APP_FILL
+        LANE -->|Greenhouse, Workday, etc| SHOW
+    end
+
+    subgraph PHASE5 ["5. Post-Submission Record"]
+        direction TB
+        PERM["<b>Permanent Record Store</b><br/>Every exact question, exact answer,<br/>and exact resume kept forever"]:::record
+        
+        SUB_BOT --> PERM
+        SUB_HUM --> PERM
+    end
+        </div>
+        <div class="controls" data-html2canvas-ignore="true">
+            <button onclick="downloadPDF()" style="background: rgba(59, 130, 246, 0.9); border-color: #60a5fa; font-weight: bold;">📥 Download PDF</button>
+            <button onclick="safeZoomIn()">Zoom In</button>
+            <button onclick="safeZoomOut()">Zoom Out</button>
+            <button onclick="safeResetZoom()">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true, 
+            theme: 'dark',
+            securityLevel: 'loose',
+            fontFamily: 'Outfit, sans-serif',
+            flowchart: {
+                useMaxWidth: false,
+                htmlLabels: true,
+                curve: 'linear'
+            }
+        });
+
+        let panZoom;
+        
+        // Wait for mermaid to render the SVG, then initialize pan-zoom
+        const observer = new MutationObserver((mutations, obs) => {
+            const svg = document.querySelector('#mermaid-graph svg');
+            if (svg) {
+                setTimeout(() => {
+                    try {
+                        svg.style.width = '100%';
+                        svg.style.height = '100%';
+                        svg.style.maxWidth = 'none';
+                        
+                        panZoom = svgPanZoom(svg, {
+                            zoomEnabled: true,
+                            controlIconsEnabled: false,
+                            fit: true,
+                            center: true,
+                            minZoom: 0.1,
+                            maxZoom: 10,
+                            zoomScaleSensitivity: 0.2
+                        });
+                        
+                        document.getElementById('mermaid-graph').classList.add('loaded');
+                    } catch (e) {
+                        console.error('Error initializing panZoom:', e);
+                    }
+                }, 300);
+                
+                obs.disconnect();
+            }
+        });
+        
+        observer.observe(document.getElementById('mermaid-graph'), {
+            childList: true,
+            subtree: true
+        });
+
+        window.addEventListener('resize', function() {
+            try {
+                if(panZoom) {
+                    panZoom.resize();
+                    panZoom.fit();
+                    panZoom.center();
+                }
+            } catch(e) {}
+        });
+
+        function safeZoomIn() { try { if (panZoom) panZoom.zoomIn(); } catch(e) {} }
+        function safeZoomOut() { try { if (panZoom) panZoom.zoomOut(); } catch(e) {} }
+        function safeResetZoom() { try { if (panZoom) { panZoom.resetZoom(); panZoom.center(); } } catch(e) {} }
+
+        function downloadPDF() {
+            try {
+                // Temporarily reset zoom to capture the whole diagram properly
+                if (panZoom) {
+                    panZoom.resetZoom();
+                    panZoom.center();
+                }
+            } catch (e) {
+                console.error(e);
+            }
+            
+            // Wait a moment for zoom to reset, then trigger the browser's native print dialog
+            setTimeout(() => {
+                window.print();
+            }, 300);
+        }
+    </script>
+</body>
+</html>

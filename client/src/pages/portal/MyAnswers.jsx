@@ -5,10 +5,8 @@ import {
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
 import Modal, { ModalActions } from '../../components/ui/Modal.jsx';
-import {
-    card, cardPad, inputBase, fieldLabel, btn, btnSm, badge, sectionTitle,
-    TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle,
-} from '../../design/tokens.js';
+import { card, cardPad, inputBase, fieldLabel, btn, btnSm, badge, sectionTitle, TONE, TONE_ALERT, pageTitle, pageSubtitle, tabBar, tabNav, tabItem, tabActive, tabIdle, alertShellSm, alertShell } from '../../design/tokens.js';
+import { formatDate } from '../../utils/datetime.js';
 
 const STATUS_TONE = {
     PENDING: 'info',
@@ -100,7 +98,6 @@ const MyAnswers = () => {
 
                 <p className="mt-1 text-xs text-slate-400">
                     {a.category_label}
-                    {a.requires_owner_approval && ' · approved by your organization admin'}
                 </p>
 
                 {/* When a reviewer edited before approving, both texts are shown.
@@ -128,7 +125,7 @@ const MyAnswers = () => {
                 )}
 
                 {a.review_note && (
-                    <div className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>
+                    <div className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>
                         <strong>Reviewer note:</strong> {a.review_note}
                     </div>
                 )}
@@ -138,8 +135,8 @@ const MyAnswers = () => {
                         {a.reviewed_at
                             ? `Reviewed by ${a.reviewed_by_name ?? 'a reviewer'}`
                               + (a.reviewed_by_role ? ` (${a.reviewed_by_role})` : '')
-                              + ` on ${new Date(a.reviewed_at).toLocaleDateString()}`
-                            : `Submitted ${new Date(a.answered_at).toLocaleDateString()} — awaiting review`}
+                              + ` on ${formatDate(a.reviewed_at)}`
+                            : `Submitted ${formatDate(a.answered_at)} — awaiting review`}
                     </p>
                     {a.status_name !== 'PENDING' && (
                         <button
@@ -164,7 +161,7 @@ const MyAnswers = () => {
                 applications on your behalf — but only after they are approved.
             </p>
 
-            <div className={`mt-5 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.info}`}>
+            <div className={`mt-5 ${alertShell} ${TONE_ALERT.info}`}>
                 <Lock className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
                     Nothing you write here is used until a reviewer approves it. Pay and
@@ -251,21 +248,21 @@ const MyAnswers = () => {
                         <ModalActions
                             onCancel={() => setEditing(null)}
                             onConfirm={submit}
-                            confirmLabel="Submit for approval"
+                            confirmLabel="Save answer"
                             busy={busy}
                             disabled={!text.trim() || text.trim() === editing.current?.proposed_text}
                         />
                     )}
                 >
                     {saveError && (
-                        <div className={`mb-3 flex items-start gap-2 rounded-lg p-3 text-sm ${TONE_ALERT.danger}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.danger}`}>
                             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                             <span>{saveError}</span>
                         </div>
                     )}
 
                     {editing.current?.review_note && (
-                        <div className={`mb-3 rounded-lg p-3 text-sm ${TONE_ALERT.warning}`}>
+                        <div className={`mb-3 ${alertShell} ${TONE_ALERT.warning}`}>
                             <strong>What to change:</strong> {editing.current.review_note}
                         </div>
                     )}
@@ -282,9 +279,14 @@ const MyAnswers = () => {
                             className={`mt-1 ${inputBase}`}
                         />
                     </label>
+                    {/* No approval step any more: this is the consultant
+                        answering about themselves, to send their own
+                        application. Waiting for a reviewer meant postings
+                        closed first. */}
                     <p className="mt-2 text-xs text-slate-400">
-                        This replaces your previous answer, which stays on record. It goes back
-                        for approval before it can be used.
+                        This replaces your previous answer, which stays on record. It is used
+                        on your next application straight away — applications already sent
+                        keep the wording they went out with.
                     </p>
                 </Modal>
             )}

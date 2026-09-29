@@ -60,11 +60,51 @@ import {
 } from './controllers/questionController.js';
 import {
     triggerRun, listRuns, listSources, getSchedule, updateSchedule, scheduleSchema,
+    previewQueries,
 } from './controllers/discoveryController.js';
 import {
     listPostings, getPosting, listConsultantQueue, updateSource, toggleSourceSchema,
 } from './controllers/postingController.js';
+import {
+    getQueueItem, skipItem, requeueItem, transitionItem, cancelItem, transitionSchema,
+    listApplications, getApplication,
+} from './controllers/queueController.js';
+import { verifyDevice } from './middleware/verifyDevice.js';
+import {
+    activate, activateSchema, heartbeat, deviceQueue,
+    leaseItem, reportFilled, reportParked, reportSkipped, reclassify, askQuestions,
+    reportSubmitted, reportSchema, reportBoardStatus, boardStatusSchema,
+    listDevices, issueDevice, issueDeviceSchema, revokeDevice, deviceResume,
+    deviceApplications, deviceQuestions, deviceAnswerQuestion, deviceAnswerSchema,
+    deviceAnswers,
+    revealActivationCode,
+} from './controllers/deviceController.js';
+import {
+    receiveWebhook as jobspipeWebhook,
+    getSettings as getJobsPipeSettings,
+    rotateToken as rotateJobsPipeToken,
+    revealToken as revealJobsPipeToken,
+    setEnabled as setJobsPipeEnabled,
+    listEvents as listJobsPipeEvents,
+    sendTestEvent as sendJobsPipeTest,
+    enabledSchema as jobspipeEnabledSchema,
+} from './controllers/jobspipeListener.js';
+import {
+    getPullStatus, previewPoll, runPollNow, setPullEnabled,
+    pollSchema, pullEnabledSchema,
+} from './controllers/jobspipePullController.js';
 import { startDiscoveryScheduler } from './jobs/discoveryScheduler.js';
+import { startQueueMaintenance } from './jobs/queueMaintenance.js';
+import { startWorker } from './jobs/worker.js';
+// The JobsPipe PULL path (Phase 5c). A third ingestion door: the webhook needs
+// a paid plan, so the search API is the only JobsPipe surface that can be
+// trialled. Off unless JOBSPIPE_POLL_ENABLED=true — see jobs/jobspipePoller.js.
+import { startJobsPipePoller } from './jobs/jobspipePoller.js';
+// Importing the handler modules is what registers them with the worker.
+// Without this line the worker starts, claims a tailoring job, finds no
+// handler for its kind, and dead-letters it — which looks exactly like a
+// broken pipeline rather than a missing import.
+import './jobs/handlers/index.js';
 import { myDashboard } from './controllers/portalController.js';
 import { getLookups } from './controllers/lookupController.js';
 import { getModuleAuditLogs } from './controllers/auditLogController.js';
@@ -78,6 +118,42 @@ import {
     submitChangeSchema, reviewSchema,
 } from './controllers/profileChangeController.js';
 import { uploadResume, downloadResume, listResumes } from './controllers/resumeController.js';
+import {
+    listReviews, reviewCount, getReview, approveReview, rejectReview, retryReview,
+    reviewDecisionSchema,
+} from './controllers/resumeReviewController.js';
+import {
+    listSection, getFullProfile, createRow, updateRow, deleteRow, reorderSection,
+    searchSkillsEndpoint, addSkill, removeSkill,
+    updateBasics, careerReadiness,
+    validateSection, reorderSchema, skillSchema, basicsSchema,
+} from './controllers/profileSectionsController.js';
+import {
+    getResumeSettings, updateResumeSettings, resumeSettingsSchema,
+} from './controllers/resumeSettingsController.js';
+import {
+    getLlmSettings, updateLlmSettings, resetLlmSettings, testLlmSettings,
+    llmSettingsSchema, llmTestSchema,
+} from './controllers/llmSettingsController.js';
+import {
+    linkCandidates, linkPosting, linkSchema,
+} from './controllers/postingLinkController.js';
+import {
+    listContacts, queueItemContacts, applicationContacts, deviceQueueContacts,
+    findContactNow, setDoNotContact, contactUsage, dncSchema,
+    updateProviderSettings, providerSettingsSchema,
+} from './controllers/contactController.js';
+import { aiUsage } from './controllers/aiUsageController.js';
+import {
+    agentStart, agentStep, agentFinish, getAgentSettings, updateAgentSettings,
+    agentStartSchema, agentStepSchema, agentFinishSchema, agentSettingsSchema,
+} from './controllers/agentController.js';
+import {
+    questionSuggestions, questionSuggestionsSchema,
+} from './controllers/questionSuggestionController.js';
+import { listConsultantJobs } from './controllers/consultantJobsController.js';
+import { requestTailoring, tailorRequestSchema } from './controllers/tailoringRequestController.js';
+import { prefillFromResume } from './controllers/profilePrefillController.js';
 import { resumeUpload } from './utils/upload.js';
 
 const app = express();
@@ -291,6 +367,9 @@ app.patch('/api/management/questions/:id',
 // consultant's queue is empty should be able to see that a source is failing.
 
 app.post('/api/management/discovery/run', [verifyToken, isOrgAdmin], triggerRun);
+// What a run would ask the provider for, before spending anything on it.
+app.get('/api/management/discovery/preview',
+    [verifyToken, isOrgAdmin], previewQueries);
 app.get('/api/management/discovery/runs', [verifyToken, isManagement], listRuns);
 app.get('/api/management/discovery/sources', [verifyToken, isManagement], listSources);
 // Enabling a board is when this system starts reaching out to the open web,
@@ -304,9 +383,319 @@ app.get('/api/management/discovery/schedule', [verifyToken, isManagement], getSc
 app.patch('/api/management/discovery/schedule',
     [verifyToken, isOrgAdmin, validate(scheduleSchema)], updateSchedule);
 
+/* ────── JobsPipe real-time push (Phase 5b — parallel trial) ────── */
+//
+// A SECOND ingestion path, beside the scheduled cycle above and changing
+// nothing about it. The cycle pulls on a heartbeat and pays per page; this is
+// pushed to as jobs are published and costs nothing per job. Both feed the same
+// pool through the same de-duplication, the same pre-filter and the same
+// preparation gate — see controllers/jobspipeListener.js.
+//
+// ── WHY THE WEBHOOK IS NOT BEHIND verifyToken ────────────────────────
+//
+// It is the one write route in this API with no user and no cookie: JobsPipe is
+// a server posting to a public URL. The per-agency shared secret in the header
+// is the identity, and it decides BOTH admission and which tenant's pool the
+// job lands in. That is why it sits outside the /api/management block rather
+// than being given a weaker guard inside it.
+//
+// It keeps the standard /api rate limit — a push feed that suddenly sends 300
+// deliveries a minute is a runaway sender or somebody else, and neither should
+// be absorbed silently.
+app.post('/api/webhooks/jobspipe', jobspipeWebhook);
+
+// The operator surface. Reading the funnel is management, because a recruiter
+// wondering why a queue is quiet should be able to see whether the feed is
+// arriving. Everything that changes the credential or turns the feed on is
+// ORG_ADMIN and audited, exactly as enabling a board is.
+app.get('/api/management/jobspipe', [verifyToken, isManagement], getJobsPipeSettings);
+app.get('/api/management/jobspipe/events', [verifyToken, isManagement], listJobsPipeEvents);
+app.post('/api/management/jobspipe/token', [verifyToken, isOrgAdmin], rotateJobsPipeToken);
+app.get('/api/management/jobspipe/token', [verifyToken, isOrgAdmin], revealJobsPipeToken);
+app.patch('/api/management/jobspipe',
+    [verifyToken, isOrgAdmin, validate(jobspipeEnabledSchema)], setJobsPipeEnabled);
+app.post('/api/management/jobspipe/test', [verifyToken, isOrgAdmin], sendJobsPipeTest);
+
+/* ────── JobsPipe PULL path (Phase 5c — the search API) ────────── */
+//
+// The third ingestion door, and the operator surface deliberately mirrors
+// SerpApi's so the two read the same way on the Job Discovery screen:
+//
+//   SerpApi    POST /api/management/discovery/run
+//   JobsPipe   POST /api/management/jobspipe/poll
+//
+// Both spend real money and both write into the same pool through the same
+// fingerprint and matcher, so both are ORG_ADMIN and both are audited.
+//
+// `/poll/preview` is declared BEFORE `/poll` would shadow it, and is GET
+// because it spends nothing: it answers "what would a run ask for" without
+// buying the answer. On a 100-credit month that distinction is the difference
+// between configuring this feed and paying to configure it.
+app.get('/api/management/jobspipe/pull', [verifyToken, isManagement], getPullStatus);
+app.get('/api/management/jobspipe/poll/preview', [verifyToken, isManagement], previewPoll);
+app.post('/api/management/jobspipe/poll',
+    [verifyToken, isOrgAdmin, validate(pollSchema)], runPollNow);
+app.patch('/api/management/jobspipe/pull',
+    [verifyToken, isOrgAdmin, validate(pullEnabledSchema)], setPullEnabled);
+
 app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
 app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
+
+// ── linking a job to a consultant by hand ──
+//
+// The matcher refuses jobs a recruiter can see are right — a perfect title in
+// the wrong city scores below the pass mark, and on the live pool that is most
+// of what it rejects. This is the override.
+//
+// isManagement, not isOrgAdmin: placing their own consultants is a recruiter's
+// job. The narrowing to THEIR consultants happens inside the controller, via
+// canAccessConsultant, because it cannot be expressed as a route guard.
+app.get('/api/management/postings/:id/link-candidates',
+    [verifyToken, isManagement], linkCandidates);
+app.post('/api/management/postings/:id/link',
+    [verifyToken, isManagement, validate(linkSchema)], linkPosting);
 app.get('/api/management/consultants/:id/queue', [verifyToken, isManagement], listConsultantQueue);
+
+/* ──────────────────────── the queue (portal) ───────────────────── */
+//
+// Same state machine the desktop app calls, so a move that is illegal for one
+// is illegal for the other. Cancelling is ORG_ADMIN only: it voids a queue
+// rather than declining a job.
+//
+// Nothing here moves an item to a different consultant. R-03 is enforced by the
+// absence of a route, not by a permission check.
+app.get('/api/management/queue/:id', [verifyToken, isManagement], getQueueItem);
+app.post('/api/management/queue/:id/skip',
+    [verifyToken, isManagement, validate(transitionSchema)], skipItem);
+app.post('/api/management/queue/:id/requeue',
+    [verifyToken, isManagement, validate(transitionSchema)], requeueItem);
+app.post('/api/management/queue/:id/transition',
+    [verifyToken, isManagement, validate(transitionSchema)], transitionItem);
+// The permanent record. Read-only by construction: no route edits or deletes
+// one, and the database refuses it regardless of who asks.
+app.get('/api/management/consultants/:id/applications',
+    [verifyToken, isManagement], listApplications);
+// Every job for one consultant, queued and submitted alike, on one screen.
+// The consultant reaches the same view through /api/portal/jobs below.
+app.get('/api/management/consultants/:id/jobs',
+    [verifyToken, isManagement], listConsultantJobs);
+app.get('/api/management/applications/:id', [verifyToken, isManagement], getApplication);
+
+app.post('/api/management/queue/:id/cancel',
+    [verifyToken, isOrgAdmin, validate(transitionSchema)], cancelItem);
+
+/* ──────────── the fabrication review gate (Phase 7) ────────────── */
+//
+// A tailored resume whose independent check found a claim it could not trace
+// back to the base resume stops here instead of going out.
+//
+// isManagement, not isOrgAdmin: a recruiter reviews their own consultants'
+// resumes, narrowed inside the controller by canAccessConsultant — the same
+// split profile changes and the answer bank already use.
+//
+// Approving is management's. The consultant gets the parallel portal routes
+// below, where they can see every flag and REJECT, but not approve: the person
+// whose name is on the document may refuse what was written under it, and the
+// reviewer is somebody else, exactly as with every other approval here.
+
+app.get('/api/management/resume-reviews', [verifyToken, isManagement], listReviews);
+app.get('/api/management/resume-reviews/count', [verifyToken, isManagement], reviewCount);
+app.get('/api/management/resume-reviews/:itemId', [verifyToken, isManagement], getReview);
+app.post('/api/management/resume-reviews/:itemId/approve',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], approveReview);
+app.post('/api/management/resume-reviews/:itemId/reject',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], rejectReview);
+app.post('/api/management/resume-reviews/:itemId/retry',
+    [verifyToken, isManagement, validate(reviewDecisionSchema)], retryReview);
+
+/* ────────────── the consultant's career record (Phase 8) ───────────── */
+//
+// education · experience · projects · certifications · skills
+//
+// ── WHY THE CONSULTANT SIDE IS READ-ONLY HERE NOW ─────────────────────
+//
+// These used to be self-service: a consultant's own history, saved the
+// instant they touched it, on the reasoning that an approval queue forty
+// entries deep would stall onboarding on somebody else's inbox. My Profile
+// and My Career were two pages on two engines for that reason.
+//
+// The client asked for one page and one reviewer gate over EVERYTHING a
+// consultant submits — identity and career together. So the write routes
+// below moved: a consultant's edits now travel through
+// POST /api/portal/profile/change-request (profileChangeController.js),
+// exactly like phone and city always did, and this section keeps only the
+// READS a consultant needs to pre-fill that form with their current,
+// approved data.
+//
+// Management keeps instant writes below: an ORG_ADMIN or RECRUITER editing a
+// consultant's career directly needs no approval, because they ARE the
+// approver — the same precedent adminUpdateProfile already sets for identity
+// fields (controllers/profileController.js).
+
+// The skills vocabulary is shared, not tenant data — every agency would
+// otherwise rebuild the same list of what React is called.
+app.get('/api/skills/search', [verifyToken], searchSkillsEndpoint);
+
+// ── consultant, read-only — loads the merged profile form ──
+app.get('/api/portal/profile/full', [verifyToken, isConsultant], getFullProfile);
+// The "not enough to build a resume" signal on the merged page. Reads live,
+// APPROVED data only — same rule the tailoring step applies, so this can
+// never disagree with what a job actually goes out carrying.
+app.get('/api/portal/career/readiness', [verifyToken, isConsultant], careerReadiness);
+app.get('/api/portal/profile/:section', [verifyToken, isConsultant], listSection);
+
+// ── management, for a consultant they can reach ──
+app.get('/api/management/consultants/:consultantId/profile/full',
+    [verifyToken, isManagement], getFullProfile);
+app.get('/api/management/consultants/:consultantId/career/readiness',
+    [verifyToken, isManagement], careerReadiness);
+app.get('/api/management/consultants/:consultantId/profile/:section',
+    [verifyToken, isManagement], listSection);
+app.post('/api/management/consultants/:consultantId/profile/:section',
+    [verifyToken, isManagement, validateSection], createRow);
+app.patch('/api/management/consultants/:consultantId/profile/:section/:id',
+    [verifyToken, isManagement, validateSection], updateRow);
+app.delete('/api/management/consultants/:consultantId/profile/:section/:id',
+    [verifyToken, isManagement], deleteRow);
+app.put('/api/management/consultants/:consultantId/profile/:section/order',
+    [verifyToken, isManagement, validate(reorderSchema)], reorderSection);
+
+app.patch('/api/management/consultants/:consultantId/profile-basics',
+    [verifyToken, isManagement, validate(basicsSchema)], updateBasics);
+app.post('/api/management/consultants/:consultantId/profile-skills',
+    [verifyToken, isManagement, validate(skillSchema)], addSkill);
+app.delete('/api/management/consultants/:consultantId/profile-skills/:skillId',
+    [verifyToken, isManagement], removeSkill);
+
+/* ── how this agency builds resumes ─────────────────────────────────── */
+//
+// Readable by management so a recruiter can see why a resume looks the way it
+// does; writable by ORG_ADMIN only, because it changes what goes out under
+// every consultant's name.
+app.get('/api/management/resume-settings', [verifyToken, isManagement], getResumeSettings);
+app.patch('/api/management/resume-settings',
+    [verifyToken, isOrgAdmin, validate(resumeSettingsSchema)], updateResumeSettings);
+
+// Which model runs each AI task, and how. ORG_ADMIN only, read included: the
+// screen shows which providers have keys, which is not a recruiter's business.
+// Keys themselves never pass through here — see llmSettingsController.js.
+app.get('/api/management/llm-settings', [verifyToken, isOrgAdmin], getLlmSettings);
+app.put('/api/management/llm-settings/:stage',
+    [verifyToken, isOrgAdmin, validate(llmSettingsSchema)], updateLlmSettings);
+app.delete('/api/management/llm-settings/:stage', [verifyToken, isOrgAdmin], resetLlmSettings);
+app.post('/api/management/llm-settings/:stage/test',
+    [verifyToken, isOrgAdmin, validate(llmTestSchema)], testLlmSettings);
+
+/* ─────────────────────────── contacts ───────────────────────────── */
+//
+// Every read here writes an audit row, and there is deliberately no route that
+// returns the whole store in one call — see controllers/contactController.js.
+// `/usage` is declared before `/:id` so that "usage" is not read as an id.
+
+// What the AI stage cost this month, and whether caching and the flag rate
+// are where they should be. Read-only — the budget itself is an org setting.
+app.get('/api/management/ai-usage', [verifyToken, isManagement], aiUsage);
+// Whether the AI agent may fill forms, and its per-job limits. Anyone in
+// management can read it; only an organisation admin can change it.
+app.get('/api/management/ai-agent', [verifyToken, isManagement], getAgentSettings);
+app.put('/api/management/ai-agent',
+    [verifyToken, isOrgAdmin, validate(agentSettingsSchema)], updateAgentSettings);
+
+app.get('/api/management/contacts', [verifyToken, isManagement], listContacts);
+app.get('/api/management/contacts/usage', [verifyToken, isManagement], contactUsage);
+// The switch that starts this agency spending Apollo credits, plus its
+// monthly ceiling. Writes organization_providers directly — see
+// controllers/contactController.js for why this cannot go through
+// /discovery/sources/:id the way a search provider does.
+app.patch('/api/management/contacts/provider',
+    [verifyToken, isOrgAdmin, validate(providerSettingsSchema)], updateProviderSettings);
+app.post('/api/management/contacts/:id/do-not-contact',
+    [verifyToken, isManagement, validate(dncSchema)], setDoNotContact);
+app.get('/api/management/queue/:id/contacts', [verifyToken, isManagement], queueItemContacts);
+app.get('/api/management/applications/:id/contacts',
+    [verifyToken, isManagement], applicationContacts);
+// The on-demand lookup: one job, one credit, for a recruiter who wants the
+// contact before the application goes out rather than after it.
+app.post('/api/management/queue/:id/find-contact',
+    [verifyToken, isManagement], findContactNow);
+
+/* ─────────────── consultant desktop app (device auth) ──────────── */
+//
+// A separate identity from the browser session: `verifyDevice` authenticates a
+// MACHINE and yields exactly one consultant, so nothing here can reach another
+// person's data or any management route. Activation is the only open route,
+// and it trades a one-time code issued by the owner for a bound device token.
+
+app.post('/api/device/activate', [validate(activateSchema)], activate);
+
+app.get('/api/device/heartbeat', [verifyDevice], heartbeat);
+app.get('/api/device/queue', [verifyDevice], deviceQueue);
+// What this consultant has already applied to, so the app can show its own
+// history rather than forgetting each application the moment it is submitted.
+app.get('/api/device/applications', [verifyDevice], deviceApplications);
+
+// Questions with an application waiting on them, answered where the job is.
+// These need no second approval: a consultant answering about their own notice
+// period, to send their own application, is not the case two-person review was
+// written for — and waiting for it let jobs close. Profile changes still are.
+app.get('/api/device/questions', [verifyDevice], deviceQuestions);
+// The whole bank — what the app actually types into applications.
+app.get('/api/device/answers', [verifyDevice], deviceAnswers);
+app.post('/api/device/questions/:id/answer',
+    [verifyDevice, validate(deviceAnswerSchema)], deviceAnswerQuestion);
+
+// Every state change goes through the shared queue state machine, so the app
+// cannot reach a state the portal would refuse.
+app.post('/api/device/queue/:id/lease', [verifyDevice], leaseItem);
+// Per job, never in bulk (spec §6) — the queue item is part of the path, and
+// every delivery is audited with the device that asked.
+app.get('/api/device/queue/:id/resume', [verifyDevice], deviceResume);
+// Same rule as the resume: one job per call, audited with the device that
+// asked. The device identity is a single consultant, so there is nothing wider
+// this could reach.
+app.get('/api/device/queue/:id/contacts', [verifyDevice], deviceQueueContacts);
+app.post('/api/device/queue/:id/filled', [verifyDevice, validate(reportSchema)], reportFilled);
+// Raise the questions a form asked WITHOUT giving the job up. The device
+// calls this the moment it meets one it cannot answer, shows the consultant a
+// countdown, and only calls `parked` below if nobody answers in time.
+app.post('/api/device/queue/:id/questions', [verifyDevice, validate(reportSchema)], askQuestions);
+app.post('/api/device/queue/:id/parked', [verifyDevice, validate(reportSchema)], reportParked);
+app.post('/api/device/queue/:id/skipped', [verifyDevice, validate(reportSchema)], reportSkipped);
+app.post('/api/device/queue/:id/reclassify', [verifyDevice, validate(reportSchema)], reclassify);
+
+// The AI agent: fills an application when a coded recipe cannot. The loop runs
+// on the device, where the signed-in browser is; every model call comes through
+// here, where the key, the budget and the ledger are. See agentController.js.
+app.post('/api/device/queue/:id/agent/start',
+    [verifyDevice, validate(agentStartSchema)], agentStart);
+app.post('/api/device/agent/runs/:runId/step',
+    [verifyDevice, validate(agentStepSchema)], agentStep);
+app.post('/api/device/agent/runs/:runId/finish',
+    [verifyDevice, validate(agentFinishSchema)], agentFinish);
+// Differently-worded questions that an existing approved answer may already
+// cover. Suggestions only — nothing is answered until the consultant accepts.
+app.post('/api/device/questions/suggestions',
+    [verifyDevice, validate(questionSuggestionsSchema)], questionSuggestions);
+// R-02: this RECORDS a submission the consultant already made. It never causes
+// one, and it is the only route that can create an application record.
+app.post('/api/device/queue/:id/submitted',
+    [verifyDevice, validate(reportSchema)], reportSubmitted);
+
+app.post('/api/device/board-status',
+    [verifyDevice, validate(boardStatusSchema)], reportBoardStatus);
+
+/* ─────────────── desktop app access (owner-managed) ────────────── */
+//
+// R-21: only the owner grants access, one live device per consultant, revocable
+// instantly. Issuing replaces whatever that consultant had before.
+app.get('/api/management/devices', [verifyToken, isManagement], listDevices);
+app.post('/api/management/devices',
+    [verifyToken, isOrgAdmin, validate(issueDeviceSchema)], issueDevice);
+// Shown again on demand, like a user's password. ORG_ADMIN only, and audited
+// every time — reading a credential is an event somebody may need to account for.
+app.get('/api/management/devices/:id/activation-code',
+    [verifyToken, isOrgAdmin], revealActivationCode);
+app.delete('/api/management/devices/:id', [verifyToken, isOrgAdmin], revokeDevice);
 
 /* ─────────────────────── consultant portal ─────────────────────── */
 
@@ -317,7 +706,33 @@ app.get('/api/portal/answers/count', [verifyToken, isConsultant], myOutstandingC
 app.post('/api/portal/answers',
     [verifyToken, isConsultant, validate(submitAnswerSchema)], submitAnswer);
 app.get('/api/portal/dashboard', [verifyToken, isConsultant], myDashboard);
+// The consultant's own jobs. Same handler and same payload management gets —
+// the id is taken from the session, so there is nothing here to tamper with.
+app.get('/api/portal/jobs', [verifyToken, isConsultant], listConsultantJobs);
+// Tailoring is asked for, per job — see controllers/tailoringRequestController.js.
+// The consultant reaches only their own jobs; the management route checks the
+// consultant behind every item it is given.
+app.post('/api/portal/jobs/tailor',
+    [verifyToken, isConsultant, validate(tailorRequestSchema)], requestTailoring);
+app.post('/api/management/jobs/tailor',
+    [verifyToken, isManagement, validate(tailorRequestSchema)], requestTailoring);
+
+// The consultant's own view of a flagged resume. Same payload the reviewer
+// sees, minus the ability to approve it.
+app.get('/api/portal/resume-reviews', [verifyToken, isConsultant], listReviews);
+app.get('/api/portal/resume-reviews/count', [verifyToken, isConsultant], reviewCount);
+app.get('/api/portal/resume-reviews/:itemId', [verifyToken, isConsultant], getReview);
+app.post('/api/portal/resume-reviews/:itemId/reject',
+    [verifyToken, isConsultant, validate(reviewDecisionSchema)], rejectReview);
+// One application at a time, their own only. There is no portal route that
+// lists the contact store — see controllers/contactController.js.
+app.get('/api/portal/applications/:id/contacts',
+    [verifyToken, isConsultant], applicationContacts);
 app.post('/api/portal/resume', [verifyToken, isConsultant], resumeUpload, uploadResume);
+// "Fill with resume": reads a file and returns values for the form. Saves nothing and
+// does not touch the base resume — see controllers/profilePrefillController.js.
+app.post('/api/portal/profile/prefill-from-resume',
+    [verifyToken, isConsultant], resumeUpload, prefillFromResume);
 app.post('/api/portal/profile/change-request',
     [verifyToken, isConsultant, validate(submitChangeSchema)], submitChangeRequest);
 app.delete('/api/portal/profile/change-request',
@@ -345,6 +760,17 @@ const start = async () => {
     }
 
     startDiscoveryScheduler();
+    // Deliberately NOT gated on DISCOVERY_ENABLED: expiring an abandoned lease
+    // or releasing a stale cap slot is repair work on state we already hold,
+    // not a reason to reach out to a provider.
+    startQueueMaintenance();
+    // The AI preparation and contact-discovery worker. Off unless
+    // WORKER_ENABLED=true, so a fresh checkout never spends money on its own.
+    startWorker();
+    // The JobsPipe pull path. Off unless JOBSPIPE_POLL_ENABLED=true, for the
+    // same reason: 1 credit = 1 request on a 100-a-month plan, so a server
+    // that polls the moment it boots has spent somebody's allowance by lunch.
+    startJobsPipePoller();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);

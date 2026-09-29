@@ -1,0 +1,2355 @@
+/**
+ * ── THE WORK LOOP ─────────────────────────────────────────────────────
+ *
+ * One pass over whatever is waiting in the consultant's queue:
+ *
+ *   pull the queue  →  for each item, one at a time:
+ *       bot-check the board     stop for the day if challenged
+ *       sign in                 the consultant does it; we wait for them
+ *       lease it                the hub grants it, with an expiry
+ *       open it                 in that board's own browser profile
+ *       classify                can we fill this, or must a human?
+ *       fill                    approved answers and the profile, nothing else
+ *       report                  filled, parked, or handed over
+ *
+ * ── THIS IS NOT A SCHEDULED CYCLE ─────────────────────────────────────
+ *
+ * The four-hour figure in the specification belongs to the hub and governs
+ * DISCOVERY — how often new jobs are found. The app itself is not on that
+ * clock: it works whenever there is something in the queue and goes quiet when
+ * there is not. A pass is therefore cheap and frequent, and "nothing to do" is
+ * the normal outcome rather than a failure.
+ *
+ * ── WHERE THE LIMITS LIVE ─────────────────────────────────────────────
+ *
+ * One application at a time (R-19), a full stop on any board that shows a
+ * bot-check (R-22), and working files deleted at both ends of every pass
+ * (R-20). All of it is here, in the engine, so that no board recipe can forget
+ * one of them.
+ *
+ * ── NOTHING IS RATIONED ANY MORE ──────────────────────────────────────
+ *
+ * There is no daily application cap and no per-board ceiling. Every job that
+ * reaches the queue is worked — filled here if the board is one we handle,
+ * handed to the consultant if not. Two controls remain, and neither is a quota:
+ * `is_paused` stops a consultant entirely, and a bot-check stops one board for
+ * the day because the board has told us it noticed.
+ *
+ * ── AND WHAT THE ENGINE WILL NOT DO ───────────────────────────────────
+ *
+ * It never submits. A filled form is reported to the hub as AWAITING_REVIEW and
+ * put in front of the consultant, who presses submit themselves (R-02). It also
+ * refuses to fill a board whose recipe is unverified, so a guessed selector
+ * cannot type into a real employer's form.
+ */
+const fs = require('node:fs');
+const { BOARDS, boardForPortal } = require('./browser/boards.js');
+const { fillForm, describeFields } = require('./browser/filler.js');
+const { runApplyFlow, pressSubmit, CLOSED_SELECTOR } = require('./browser/applyFlow.js');
+const { tenantFor, profileKey } = require('./browser/destinations.js');
+const { runAgent: runAgentDefault } = require('./agent/runAgent.js');
+const { pressAgentSubmit } = require('./agent/actions.js');
+const { stillAsksForPassword, stillChallenged } = require('./agent/observe.js');
+const { normaliseQuestion } = require('./browser/answers.js');
+const { WAIT_MS } = require('./attention.js');
+const {
+    POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS, SIGNIN_WAIT_MS, SIGNIN_POLL_MS,
+} = require('./config.js');
+
+/** The useful part of an error: Playwright appends a whole call log. */
+const firstLine = (message) => String(message ?? '').split(/\r?\n/)[0];
+
+/** Where a URL lives, without the www. Null for anything that is not a URL. */
+const hostOf = (url) => {
+    try {
+        return new URL(url).host.replace(/^www\./, '') || null;
+    } catch {
+        return null;
+    }
+};
+
+/**
+ * What the AI agent reports under when a job has no board of its own — a job
+ * in the AGENT lane, found on a site nothing is coded for.
+ */
+const AGENT_BOARD = { name: 'AGENT', label: 'AI agent' };
+
+/**
+ * ── WHEN A RECIPE'S FAILURE IS THE AGENT'S WORK ───────────────────────
+ *
+ * The page was not what the recipe expected: no apply flow where one should
+ * be, a site it does not know, a form that refused to move. Those are exactly
+ * what reading the page afresh can fix.
+ *
+ * What is NOT here matters as much. A sign-in nobody completed, a captcha, a
+ * set of terms, a question nobody has answered — those belong to a PERSON, and
+ * an agent trying its hand at them is at best wasted money and at worst the
+ * thing R-22 exists to prevent.
+ */
+const AGENT_WORTHY = new Set(['NO_APPLY_FLOW', 'NOT_VERIFIED', 'LEFT_THE_BOARD', 'EXTERNAL_APPLY']);
+
+/**
+ * A browser session for a site nothing is coded for.
+ *
+ * Board-shaped, like a destination tenant, so sessions, sign-in waits and the
+ * review screen all work on it unchanged. One per host, for the same reason as
+ * Workday tenants: an account at one employer is nothing at the next.
+ */
+const agentSession = (host, url) => ({
+    name: profileKey('agent', host),
+    label: host,
+    host,
+    loginUrl: url,
+    sessionProbeUrl: url,
+    signedIn: { present: [], absent: [] },
+    botCheck: [],
+    botCheckWaitMs: 0,
+    neverAutoSubmit: false,
+    verified: false,
+});
+
+/** A pause a person would take, not a fixed delay a log can spot. */
+const humanPause = (min, max) => new Promise((r) => {
+    setTimeout(r, min + Math.random() * (max - min));
+});
+
+/** Everything in `work` is transient by definition — see R-20. */
+const clearWorkDir = (dir) => {
+    let removed = 0;
+    try {
+        for (const entry of fs.readdirSync(dir)) {
+            fs.rmSync(`${dir}/${entry}`, { recursive: true, force: true });
+            removed += 1;
+        }
+    } catch { /* nothing there yet */ }
+    return removed;
+};
+
+/**
+ * How long to wait before looking for work again.
+ *
+ * Busy means come back soon; idle means come back in a while. Both are
+ * jittered, so a machine that has been running for a week is not polling on the
+ * same second it started on (spec §5.3).
+ */
+const nextPollMs = (hadWork, rand = Math.random) => {
+    const base = hadWork ? POLL_MS : IDLE_POLL_MS;
+    return Math.round(base + rand() * POLL_JITTER_MS);
+};
+
+class CycleEngine {
+    constructor({
+        hub, sessions, store, outbox, paths, log = () => {},
+        // Owns every "the bot needs a person" pause: the notification, the
+        // countdown on screen, and the two buttons. Optional so the suite can
+        // run the engine without one, in which case every gate behaves as it
+        // did before this existed -- it waits, and nobody is told.
+        attention = null,
+        // Board-tagged progress. `log` is one flat stream for the whole app;
+        // this says WHICH board a line belongs to, so the screen can keep
+        // LinkedIn's story separate from Built In's instead of interleaving
+        // them into something nobody can follow.
+        activity = () => {},
+        // Injectable so the suite can prove the sign-in gate without waiting
+        // five real minutes for a fake browser to be signed into.
+        signInWaitMs = SIGNIN_WAIT_MS,
+        signInPollMs = SIGNIN_POLL_MS,
+        // The AI agent's loop. Injectable for the same reason the browser is:
+        // the engine's decisions about WHEN to hand a job to the agent can be
+        // proven without a model or a page.
+        runAgent = runAgentDefault,
+    }) {
+        this.hub = hub;
+        this.sessions = sessions;
+        this.store = store;
+        this.outbox = outbox;
+        this.paths = paths;
+        this.log = log;
+        this.activity = activity;
+        this.signInWaitMs = signInWaitMs;
+        this.signInPollMs = signInPollMs;
+        this.attention = attention;
+        this.runAgent = runAgent;
+        this.running = false;
+        this.stopRequested = false;
+        // ── "HAVE WE ASKED AI ABOUT THIS WORDING BEFORE?" ──────────────
+        //
+        // Keyed by the normalised question, for the life of the engine — the
+        // same session-level cache the Questions tab already keeps for the
+        // identical endpoint (see `suggestionCache` in index.js), so a
+        // question this consultant's forms keep asking in slightly different
+        // words is not re-sent to a model on every single job that shows it.
+        // A wording the exact-match bank has already learned never reaches
+        // this cache at all, because it never becomes "unknown" again.
+        this.matchCache = new Map();
+    }
+
+    /**
+     * Ask the pass in progress to stop.
+     *
+     * ── WHY A FLAG AND NOT A KILL ─────────────────────────────────────
+     *
+     * Stop used to clear the next timer and nothing else, so a pass already
+     * under way carried on through every remaining job — pressing Stop appeared
+     * to do nothing at all, because the visible effect only arrived once the
+     * queue ran out.
+     *
+     * It stops BETWEEN jobs rather than mid-application. Abandoning a
+     * half-filled form would leave the board holding an application nobody
+     * finished and nothing in our record saying so; one more job is a far
+     * smaller cost than that.
+     */
+    requestStop() {
+        this.stopRequested = true;
+    }
+
+    /**
+     * Undo a stop, so work can begin again.
+     *
+     * Separate from `run()` on purpose. If a pass cleared the flag on its way
+     * in, a stop asked for while the app happened to be idle would be forgotten
+     * by the next scheduled pass — stopped has to mean stopped until somebody
+     * presses Start.
+     */
+    allowStart() {
+        this.stopRequested = false;
+    }
+
+    /**
+     * Has stopping been asked for?
+     *
+     * Only the engine's own flag. Whether automation is switched on at all is
+     * the main process's business, checked before a pass is ever started —
+     * consulting it here as well made the engine refuse to work whenever that
+     * setting had not been written yet.
+     */
+    #shouldStop() {
+        return this.stopRequested;
+    }
+
+    /**
+     * One pass. Never throws for an operational problem — a pass that dies on
+     * the first awkward item is a loop that stops working in week one. Every
+     * failure is recorded against its own item and the pass continues.
+     */
+    async run() {
+        if (this.running) return { skipped: 'already running' };
+        this.running = true;
+
+        // ── WHAT THE PASS DID, ITEM BY ITEM ───────────────────────────
+        //
+        // The counters answer "how many"; `outcomes` answers "which, and why".
+        // A consultant looking at "6 skipped" has no way to tell a run that hit
+        // six closed postings from one that broke six times, and those call for
+        // completely different responses. Every entry carries the job's name and
+        // the reason in the same words the hub was given.
+        const stats = {
+            startedAt: new Date().toISOString(),
+            pulled: 0, leased: 0, opened: 0,
+            filled: 0, submitted: 0, parked: 0, handedToHuman: 0, skipped: 0, closed: 0,
+            agentTried: 0, agentFilled: 0,
+            signInNeeded: [], botChecked: [], errors: [], outcomes: [],
+        };
+
+        /** Write one line of the ledger. */
+        const record = (item, board, result, reason, extra = {}) => {
+            stats.outcomes.push({
+                company: item.company,
+                title: item.title,
+                board: board?.label ?? item.portal,
+                result,
+                reason: reason ? String(reason).slice(0, 300) : null,
+                // `filledBy: 'AGENT'` marks a job the AI agent handled, so the
+                // summary can say which applications a person should read
+                // most closely.
+                ...extra,
+            });
+        };
+
+        try {
+            // Anything left in `work` is from a pass that did not finish
+            // cleanly. Clearing on the way IN as well as out means a crash
+            // cannot leave a resume on disk indefinitely (R-20).
+            clearWorkDir(this.paths.work);
+
+            const beat = await this.hub.heartbeat();
+            this.store.set({
+                paused: beat.paused,
+                pausedBoards: beat.pausedBoards ?? [],
+                outstandingQuestions: beat.outstandingQuestions ?? 0,
+            });
+
+            // A paused consultant's app does nothing at all. This is now the
+            // ONLY thing that stops a pass before it starts — the daily cap it
+            // used to share that job with is gone.
+            if (beat.paused) {
+                this.log('consultant is paused — nothing to do');
+                return { ...stats, paused: true };
+            }
+
+            const pausedUntil = new Map(
+                (beat.pausedBoards ?? []).map((b) => [b.board, b.until]),
+            );
+
+            const { items, approvedAnswers, profile } = await this.hub.queue();
+            stats.pulled = items.length;
+            this.store.set({ queue: items });
+
+            let worked = 0;
+
+            for (const item of items) {
+                // Checked before every job, so Stop takes effect within one
+                // application rather than at the end of the queue.
+                if (this.#shouldStop()) {
+                    this.log('stopping — no more jobs will be started');
+                    return { ...stats, stopped: true };
+                }
+
+                const board = boardForPortal(item.portal);
+                if (!board) {
+                    // ── NO RECIPE: THE AGENT'S LANE ───────────────────────
+                    //
+                    // An AGENT-lane job, or one the hub thought was ours that
+                    // we have no recipe for. The AI agent may try it; if it
+                    // may not, or cannot finish, it goes back to the
+                    // consultant exactly as it always did.
+                    let took = null;
+                    try {
+                        took = await this.#workWithAgentOnly(item, stats, {
+                            approvedAnswers, profile, record,
+                        });
+                    } catch (err) {
+                        if (err.name === 'Revoked') throw err;
+                        stats.errors.push(`${item.company} — ${err.message}`);
+                        this.activity(AGENT_BOARD.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
+                        took = { reason: `the AI agent hit a problem: ${firstLine(err.message)}` };
+                    }
+                    if (took === 'counted') {
+                        worked += 1;
+                        await humanPause(1500, 4000);
+                        continue;
+                    }
+
+                    const why = took?.reason ? ` — ${took.reason}` : '';
+                    await this.#reportReclassify(item.id, {
+                        reason: `No recipe for portal ${item.portal}${why}`.slice(0, 500),
+                    });
+                    stats.handedToHuman += 1;
+                    record(item, null, 'HANDED_OVER', `the app has no recipe for ${item.portal}${why}`);
+                    continue;
+                }
+
+                if (pausedUntil.has(board.name)) {
+                    this.log(`${board.label} is paused until ${pausedUntil.get(board.name)}`);
+                    continue;
+                }
+
+                try {
+                    const outcome = await this.#workOne(
+                        item, board, stats, { approvedAnswers, profile, record },
+                    );
+                    if (outcome === 'counted') worked += 1;
+                    // R-19: never parallel, and a real gap between applications.
+                    await humanPause(1500, 4000);
+                } catch (err) {
+                    stats.errors.push(`${item.company} — ${err.message}`);
+                    this.activity(board.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
+                    // R-26: a failure parks the item with a clear reason. It
+                    // never leaves something half-done looking finished.
+                    await this.#reportSkipped(item.id, {
+                        reason: `The app could not process this: ${err.message}`.slice(0, 500),
+                    });
+                    stats.skipped += 1;
+                    record(item, board, 'ERROR', firstLine(err.message));
+                }
+            }
+
+            return stats;
+        } finally {
+            // R-20: nothing transient survives the pass.
+            clearWorkDir(this.paths.work);
+            this.store.set({ lastCycleAt: new Date().toISOString() });
+            this.store.appendCycle({ at: new Date().toISOString(), ...stats });
+            this.running = false;
+        }
+    }
+
+    /**
+     * Fetch the current state of things without working any of it.
+     *
+     * ── WHY THIS IS NOT A SHORT CYCLE ─────────────────────────────────
+     *
+     * "Check now" used to start a work pass, which meant it could only be
+     * offered while automation was running — and pressing it did something
+     * consequential: it applied to jobs. Two different actions were wearing one
+     * button.
+     *
+     * This one only ever reads. It refreshes the queue, the pause state and the
+     * board holds, so a consultant can see what has arrived without committing
+     * to anything. That is why it can be available at all times, including
+     * while stopped.
+     */
+    async refresh() {
+        const beat = await this.hub.heartbeat();
+        this.store.set({
+            paused: beat.paused,
+            pausedBoards: beat.pausedBoards ?? [],
+            outstandingQuestions: beat.outstandingQuestions ?? 0,
+        });
+
+        const { items } = await this.hub.queue();
+        this.store.set({ queue: items, lastCheckedAt: new Date().toISOString() });
+        return { ok: true, waiting: items.length, paused: Boolean(beat.paused) };
+    }
+
+    /**
+     * Pause and ask the consultant for something, if there is anybody to ask.
+     *
+     * Falls back to a plain silent wait when no Attention was supplied -- the
+     * suite, and any build without a window -- so the gates keep working
+     * without one and nothing here has to check twice.
+     *
+     * @returns 'done' | 'skipped' | 'timeout'
+     */
+    async #askHuman({
+        kind, board, company, title, message, check, waitMs, holdUntilDeadline,
+    }) {
+        if (this.attention) {
+            return this.attention.raise({
+                kind,
+                board: board?.name ?? null,
+                boardLabel: board?.label ?? null,
+                company: company ?? null,
+                title: title ?? null,
+                message,
+                check,
+                waitMs,
+                // Dropped here, this parameter did nothing at all: every caller
+                // that asked for the full window — most importantly a form the
+                // consultant may be typing into — had its wish silently ignored,
+                // because Attention.raise() only holds when told to. See
+                // attention.js for why polling a form early is actively wrong.
+                holdUntilDeadline: Boolean(holdUntilDeadline),
+            });
+        }
+        const ok = await this.#waitOut(
+            waitMs ?? this.signInWaitMs, check, Boolean(holdUntilDeadline),
+        );
+        return ok ? 'done' : 'timeout';
+    }
+
+    /**
+     * Wait for the consultant to sign in, having opened the window for them.
+     *
+     * The stall is reported to the hub BEFORE the wait, not after, so a
+     * recruiter looking at the dashboard sees "waiting for sign-in" while it is
+     * happening rather than five minutes later (spec §5.2).
+     */
+    async #waitForSignIn(board) {
+        await this.#reportBoardStatus({
+            board: board.name,
+            state: 'SESSION_EXPIRED',
+            detail: 'Waiting for the consultant to sign in',
+        });
+
+        await this.sessions.promptSignIn(board);
+        this.log(`${board.label}: waiting for you to sign in`);
+
+        const outcome = await this.#askHuman({
+            kind: 'SIGN_IN',
+            board,
+            message: `Sign in to ${board.label} in the window that just opened. `
+                + 'The app never sees your password.',
+            waitMs: this.signInWaitMs,
+            // Looks at the page in front of the consultant rather than
+            // navigating it — polling with a navigation would reload the login
+            // form they are typing into, every few seconds.
+            check: () => this.sessions.isSignedInNow(board),
+        });
+
+        if (outcome === 'done') {
+            // Close the sign-in window and reload the automation's own page,
+            // which is still showing what it loaded while signed out.
+            await this.sessions.finishSignIn?.(board.name);
+            // Written down straight away. Waiting until the app quits would
+            // mean a crash -- or a consultant killing the window -- threw away
+            // the sign-in they just did.
+            await this.sessions.saveSession?.(board.name);
+            this.log(`${board.label}: signed in — carrying on`);
+            this.activity(board.name, 'SIGNED_IN', 'Signed in — carrying on');
+            await this.#reportBoardStatus({
+                board: board.name, state: 'OK', detail: 'Signed in',
+            });
+            return true;
+        }
+
+        this.log(`${board.label}: still not signed in — leaving it for now`);
+        return false;
+    }
+
+    /**
+     * Poll a condition for up to `timeoutMs`, on `this.signInPollMs` ticks.
+     *
+     * The same shape as `#waitForSignIn`'s own loop, pulled out so a second
+     * kind of "give the person a moment" -- clearing a captcha, getting past a
+     * mid-flow sign-in gate -- does not have to reinvent it. Neither of those
+     * needs `#waitForSignIn`'s extra machinery (opening a login URL, reporting
+     * SESSION_EXPIRED to the hub), which is why this stays a plain poll rather
+     * than a third copy of that whole method.
+     *
+     * @param condition called on every tick; resolving true ends the wait
+     * @param holdUntilDeadline when true, `condition` is only consulted once
+     *   the clock runs out — the same reason Attention.raise() holds: a form
+     *   half-typed by a person reads as "answered" from the first keystroke,
+     *   so polling it early is wrong, not merely premature.
+     */
+    async #waitOut(timeoutMs, condition, holdUntilDeadline = false) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            await new Promise((r) => { setTimeout(r, this.signInPollMs); });
+            if (holdUntilDeadline) continue;
+            if (await condition()) return true;
+        }
+        return condition();
+    }
+
+    /**
+     * One item: bot-check, sign-in, lease, open, classify, fill.
+     *
+     * @returns 'counted' when a cap slot was genuinely used
+     */
+    async #workOne(item, board, stats, { approvedAnswers, profile, record = () => {} }) {
+        // Bot-check FIRST. Asking a challenged board for anything else is how a
+        // temporary challenge becomes a blocked account (R-22).
+        if (await this.sessions.isBotChecked(board)) {
+            // ── ASK BEFORE GIVING UP ON THE WHOLE BOARD ───────────────
+            //
+            // R-22's full stop exists because working AROUND a challenge is
+            // what turns a temporary block into a permanent one. Asking a
+            // person to solve it is not working around it -- it is the
+            // intended way through, and they are sitting right there. Only if
+            // nobody answers does the board stop for the day, exactly as
+            // before.
+            this.activity(board.name, 'STOPPED', `${board.label} is asking for a human check`);
+            await this.sessions.page(board.name).then((p) => p.bringToFront()).catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'BOT_CHECK',
+                board,
+                company: item.company,
+                title: item.title,
+                message: `${board.label} is asking for a human check. Solve it in the browser `
+                    + 'window and this carries on by itself.',
+                check: () => this.sessions.isBotChecked(board).then((v) => !v),
+            });
+
+            if (said !== 'done') {
+                stats.botChecked.push(board.name);
+                this.activity(board.name, 'STOPPED',
+                    'Stopped for today — this board showed a bot check');
+                await this.#reportBoardStatus({
+                    board: board.name,
+                    state: 'BOT_CHECK',
+                    detail: 'Challenge page detected — stopping this board for the day',
+                });
+                record(item, board, 'BOARD_STOPPED', said === 'skipped'
+                    ? 'you skipped the human check'
+                    : 'this board showed a bot check and nobody cleared it');
+                return 'stopped';
+            }
+            this.log(`${board.label}: human check cleared — carrying on`);
+            this.activity(board.name, 'WORKING', 'Check cleared — carrying on');
+        }
+
+        // The consultant signs in themselves (R-18). We open the window, wait,
+        // and then carry straight on with this same item — the work does not
+        // sit until the next poll just because a login was needed.
+        // ── THE SIGN-IN GATE ONLY APPLIES TO BOARDS WE FILL ───────────
+        //
+        // On an unverified board the app opens the job, reads which host the
+        // apply flow lands on, and hands the item to the consultant. It types
+        // nothing and needs no session to do any of that.
+        //
+        // Gating it on sign-in was actively harmful: the detection selectors
+        // are unverified guesses too, so a consultant who WAS signed in got
+        // told their session had expired, and every item on that board stalled
+        // for five minutes waiting for a login that had already happened. An
+        // unproven check was blocking work that did not depend on it.
+        //
+        // Once a recipe is verified — which means its selectors have been seen
+        // matching a real page — the gate applies again, because from that
+        // point on the app really is typing into a form behind a login.
+        if (board.verified && !(await this.sessions.isSignedIn(board))) {
+            stats.signInNeeded.push(board.name);
+            this.activity(board.name, 'SIGNED_OUT', 'Signed out — waiting for you to sign in');
+            if (!(await this.#waitForSignIn(board))) {
+                record(item, board, 'NEEDS_SIGN_IN', 'nobody signed in while this job waited');
+                return 'stopped';
+            }
+        }
+
+        // Lease before opening. The hub decides whether this device may have
+        // the item, and the lease expires — so a crash here releases it rather
+        // than locking it forever.
+        this.activity(board.name, 'CONNECTING', `Opening ${item.company} — ${item.title}`);
+
+        await this.hub.lease(item.id);
+        stats.leased += 1;
+
+        await this.sessions.openJob(board.name, item.source_url);
+        stats.opened += 1;
+        this.activity(board.name, 'WORKING', `Reading the page for ${item.company}`);
+
+        // ── classify ──────────────────────────────────────────────────
+        //
+        // ── READING A PAGE AND TYPING INTO IT ARE DIFFERENT RIGHTS ────
+        //
+        // `verified` used to decide both, and short-circuited here: an
+        // unverified board never reached its own recipe, so every item came
+        // back as "Built In form filling is not verified yet". True, and
+        // useless — the consultant opens the job and finds it applies on
+        // Workday, or that the posting was removed a fortnight ago. The recipe
+        // knew both of those things and was never asked.
+        //
+        // So the two are split. ANY board with a recipe gets to classify, which
+        // costs nothing and types nothing; `verified` still governs the only
+        // dangerous act, which is filling a real employer's form. A board that
+        // hosts no application of its own — Built In — is therefore fully
+        // useful while staying permanently unverified, because there is nothing
+        // there to verify.
+        const page = await this.sessions.page(board.name);
+        const landedOn = new URL(page.url()).host.replace(/^www\./, '');
+        const stillOnBoard = landedOn.endsWith(
+            new URL(board.loginUrl).host.replace(/^www\./, ''),
+        );
+
+        if (!stillOnBoard) {
+            let reason = `Applying happens on ${landedOn}, which the app does not fill`;
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED', trigger: reason,
+                stats, record, approvedAnswers, profile,
+            });
+            if (agent === 'counted') return 'counted';
+            if (agent?.reason) reason = `${reason} — ${agent.reason}`;
+            await this.#reportReclassify(item.id, { reason });
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+            return 'counted';
+        }
+
+        // No recipe and no permission to fill leaves nothing to try.
+        if (!board.apply && !board.verified) {
+            let reason = `${board.label} form filling is not verified yet`;
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED', trigger: reason,
+                stats, record, approvedAnswers, profile,
+            });
+            if (agent === 'counted') return 'counted';
+            if (agent?.reason) reason = `${reason} — ${agent.reason}`;
+            await this.#reportReclassify(item.id, { reason });
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+            return 'counted';
+        }
+
+        // ── fill ──────────────────────────────────────────────────────
+        //
+        // The resume is fetched for THIS job and lands in `work`, which is
+        // wiped at the end of the pass (spec §6, R-20).
+        this.activity(board.name, 'FILLING', `Filling the application for ${item.company}`);
+        // Fetched only when this board may actually fill. The hub audits every
+        // delivery against this device, so pulling a consultant's CV down for a
+        // job we were never going to fill puts a record in the audit trail that
+        // did not happen for any reason.
+        const resumePath = board.verified
+            ? await this.hub.resume(item.id, this.paths.work)
+            : null;
+        const fillOptions = { profile, approvedAnswers, resumePath };
+
+        // ── ONE FORM, OR A WIZARD? ────────────────────────────────────
+        //
+        // A board that declares an `apply` recipe hides its application behind
+        // a button and pages through it — LinkedIn's Easy Apply. Everything
+        // else has the form on the job page and is filled in one pass.
+        //
+        // Either way the ending is the same: the form is complete, nothing has
+        // been sent, and it goes to the consultant to submit.
+        let result;
+        if (board.apply) {
+            const flow = await runApplyFlow(page, board, fillOptions, {
+                log: this.log,
+                // Classification is free; typing is not. See the note above.
+                canFill: Boolean(board.verified),
+            });
+            this.log(`${item.company}: ${flow.outcome} — ${flow.detail}`);
+
+            // Outcomes that are nobody's fault and nothing to fill.
+            this.activity(board.name, 'FILLING', `${item.company}: ${flow.detail}`);
+
+            if (flow.outcome === 'ALREADY_APPLIED') {
+                await this.#reportSkipped(item.id, {
+                    reason: 'The board says this consultant has already applied.',
+                });
+                stats.skipped += 1;
+                record(item, board, 'ALREADY_APPLIED', 'the board already has an application from you');
+                return 'counted';
+            }
+
+            // ── A SHUT POSTING IS NOT WORK FOR ANYBODY ────────────────
+            //
+            // It used to reach the consultant as "no apply button — applying
+            // happens elsewhere", which is true and useless: they opened it and
+            // found a red notice saying applications are closed. Nobody can act
+            // on this one, so it is skipped with the reason the board gave.
+            if (flow.outcome === 'CLOSED') {
+                await this.#reportSkipped(item.id, {
+                    reason: 'This job is expired — the posting is no longer accepting '
+                        + 'applications.',
+                });
+                stats.skipped += 1;
+                stats.closed += 1;
+                record(item, board, 'CLOSED', flow.detail);
+                this.activity(board.name, 'CLOSED', `${item.company}: ${flow.detail}`);
+                return 'counted';
+            }
+
+            // ── FOLLOW THE HAND-OFF, WHERE WE CAN ────────────────────
+            //
+            // Built In applies nowhere itself; every job leaves for the
+            // employer's own system. Stopping at the doorstep means the app
+            // does nothing for an entire board, so when the destination is one
+            // we handle, the work continues there instead.
+            if (flow.outcome === 'EXTERNAL_APPLY' && flow.externalUrl) {
+                const tenant = tenantFor(flow.externalUrl);
+                if (tenant) {
+                    return this.#workDestination(item, board, tenant, flow, stats, {
+                        approvedAnswers, profile, record,
+                    });
+                }
+            }
+
+            if (AGENT_WORTHY.has(flow.outcome)) {
+                let reason = flow.outcome === 'EXTERNAL_APPLY'
+                    ? `${flow.detail}, so it needs you`
+                    : flow.detail;
+                const agent = await this.#agentForFlow({
+                    item, board, page, flow, stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) reason = `${reason} — ${agent.reason}`;
+                await this.#reportReclassify(item.id, { reason });
+                stats.handedToHuman += 1;
+                record(item, board, 'HANDED_OVER', reason);
+                this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+                return 'counted';
+            }
+
+            result = {
+                qa: flow.qa,
+                unknown: flow.unknown,
+                attachedResume: flow.attachedResume,
+                refusals: [],
+                readyToSubmit: flow.outcome === 'READY_TO_SUBMIT',
+                steps: flow.steps,
+            };
+
+            // The wizard stopped somewhere that is neither a review screen nor
+            // a known question. Hand it over rather than leaving a part-filled
+            // application nobody knows about (R-26).
+            if (flow.outcome === 'INCOMPLETE' && result.unknown.every((u) => !u.required)) {
+                // The recipe ran and the page was not what it expected -- the
+                // agent's case exactly. It carries on from where the recipe
+                // stopped, keeping every answer the recipe already put in.
+                const agent = await this.#tryAgent({
+                    item, board, page, entry: 'RECIPE_FAILED', trigger: flow.detail,
+                    stats, record, approvedAnswers, profile, resumePath,
+                    root: board.apply?.dialog ?? null,
+                    prior: { qa: flow.qa, attachedResume: flow.attachedResume },
+                });
+                if (agent === 'counted') return 'counted';
+                await this.#reportReclassify(item.id, {
+                    reason: (`The application could not be completed: ${flow.detail}`
+                        + (agent?.reason ? ` — ${agent.reason}` : '')).slice(0, 500),
+                });
+                stats.handedToHuman += 1;
+                record(item, board, 'HANDED_OVER', flow.detail);
+                return 'counted';
+            }
+        } else {
+            result = await fillForm(page, fillOptions);
+            result.readyToSubmit = true;
+        }
+
+        for (const r of result.refusals ?? []) this.log(`refused: ${r.label} — ${r.reason}`);
+
+        // A question nobody has approved an answer for stops this application.
+        // Only a REQUIRED one, though: parking on an optional extra would stall
+        // the queue over a field the consultant could simply leave blank.
+        let blocking = result.unknown.filter((u) => u.required);
+        // Carried forward through both the AI-match attempt below and the
+        // human-answer refill after it, so neither one throws away what the
+        // other just found.
+        let currentAnswers = approvedAnswers;
+        if (blocking.length > 0) {
+            // ── LET AI CHECK BEFORE ASKING A PERSON ───────────────────────
+            const ai = await this.#matchBlockingWithAI({
+                item, board, blocking, approvedAnswers: currentAnswers,
+            });
+            if (ai.matched) {
+                currentAnswers = ai.approvedAnswers;
+                const afterAI = board.apply
+                    ? await runApplyFlow(page, board, { ...fillOptions, approvedAnswers: currentAnswers },
+                        { log: this.log, canFill: Boolean(board.verified) })
+                    : await fillForm(page, { ...fillOptions, approvedAnswers: currentAnswers });
+                result = board.apply
+                    ? {
+                        qa: afterAI.qa,
+                        unknown: afterAI.unknown,
+                        attachedResume: afterAI.attachedResume,
+                        refusals: [],
+                        readyToSubmit: afterAI.outcome === 'READY_TO_SUBMIT',
+                        steps: afterAI.steps,
+                    }
+                    : { ...afterAI, readyToSubmit: true };
+                blocking = result.unknown.filter((u) => u.required);
+            }
+        }
+
+        if (blocking.length > 0) {
+            const said = await this.#askUnanswered({
+                item,
+                board,
+                page,
+                root: board.apply?.dialog ?? null,
+                blocking,
+                allUnknown: result.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') return 'counted';
+
+            // Answered while the form was still on screen. Fill again with the
+            // answers as they stand now -- the same page, the same step, no
+            // re-walking of anything -- and carry on from there.
+            const fresh = await this.hub.queue().catch(() => null);
+            const answersNow = fresh?.approvedAnswers ?? currentAnswers;
+            const second = board.apply
+                ? await runApplyFlow(page, board, { ...fillOptions, approvedAnswers: answersNow },
+                    { log: this.log, canFill: Boolean(board.verified) })
+                : await fillForm(page, { ...fillOptions, approvedAnswers: answersNow });
+
+            result = board.apply
+                ? {
+                    qa: second.qa,
+                    unknown: second.unknown,
+                    attachedResume: second.attachedResume,
+                    refusals: [],
+                    readyToSubmit: second.outcome === 'READY_TO_SUBMIT',
+                    steps: second.steps,
+                }
+                : { ...second, readyToSubmit: true };
+
+            // Still blocked after all that -- an answer that did not match, or
+            // a step behind this one asking something new. Park for real now
+            // rather than looping a person round the same countdown.
+            const stillBlocking = (result.unknown ?? []).filter((u) => u.required);
+            if (stillBlocking.length > 0) {
+                await this.#reportParked(item.id, {
+                    unknownQuestions: result.unknown.map((u) => ({
+                        questionText: u.questionText,
+                        fieldType: u.fieldType,
+                        options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
+                    })),
+                });
+                stats.parked += 1;
+                record(item, board, 'PARKED',
+                    `still waiting on ${stillBlocking.length} question(s) after answering`);
+                this.activity(board.name, 'PARKED',
+                    `${item.company}: still ${stillBlocking.length} unanswered`);
+                return 'counted';
+            }
+        }
+
+        // ── "FILLED" HAS TO MEAN SOMETHING ────────────────────────────
+        //
+        // A job page with no application form on it produces an empty result:
+        // no answers, no resume, no unknowns worth parking on. Reporting that
+        // as AWAITING_REVIEW would put an application in front of the
+        // consultant that was never filled in — and mark it, at the hub, as
+        // work this device completed.
+        //
+        // This is not hypothetical. A LinkedIn posting without Easy Apply is
+        // exactly this shape: the apply button leaves for the employer's own
+        // site, and all that remains on the page is LinkedIn's own furniture —
+        // a search box and a language picker. The right answer there is the
+        // same as for any job we cannot fill: hand it to the consultant.
+        if (result.qa.length === 0) {
+            const agent = await this.#tryAgent({
+                item, board, page, entry: 'RECIPE_FAILED',
+                trigger: 'no application form was found on the page',
+                stats, record, approvedAnswers, profile, resumePath,
+            });
+            if (agent === 'counted') return 'counted';
+            await this.#reportReclassify(item.id, {
+                reason: ('No application form was found on the page — apply on the '
+                    + `employer site instead${agent?.reason ? ` (${agent.reason})` : ''}`).slice(0, 500),
+            });
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', 'no application form was found on the page');
+            this.activity(board.name, 'HANDED_OVER',
+                `${item.company}: no application form on the page — apply on the employer site`);
+            this.log(`no form to fill on ${item.company} — handed to you`);
+            return 'counted';
+        }
+
+        // ── FINISH IT, OR HAND IT OVER ────────────────────────────────
+        //
+        // The application is complete and sitting on its submit step. Which of
+        // those two happens next is the consultant's own choice, made before
+        // they pressed Start and held in `autoSubmit`.
+        //
+        // When it does submit, it submits HERE — not from the review screen.
+        // The app drives one browser page per board, so moving to the next job
+        // navigates this form away; this is the only moment it is still on
+        // screen. That is also the bug the review screen kept hitting.
+        await this.#reportFilled(item.id);
+        this.#rememberForReview(item, board, result, { profile, approvedAnswers, resumePath });
+        stats.filled += 1;
+
+        // A board can refuse auto-submission outright, and that refusal beats
+        // the toggle. `autoSubmit` is a preference someone sets once and forgets;
+        // `neverAutoSubmit` is a decision recorded against the board itself, for
+        // boards whose applications are to be read before they are sent.
+        if (board.neverAutoSubmit && this.store.get('autoSubmit')) {
+            this.log(`${board.label}: filled and left for you — this board never submits by itself`);
+        }
+
+        if (this.store.get('autoSubmit') && !board.neverAutoSubmit && result.readyToSubmit) {
+            this.activity(board.name, 'SUBMITTING',
+                `${item.company}: submitting ${result.qa.length} answer(s)`);
+
+            const pressed = await pressSubmit(page, board);
+            if (pressed.ok) {
+                await this.reportSubmitted(item.id, {
+                    confirmed: pressed.confirmed,
+                    detail: pressed.detail,
+                });
+                stats.submitted += 1;
+                record(item, board, 'SUBMITTED', pressed.detail);
+                this.activity(board.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
+                this.log(`submitted ${item.company} — ${item.title}`);
+                return 'counted';
+            }
+
+            // It stays in the review list rather than being recorded as sent.
+            // A record claiming an employer received something they did not is
+            // worse than having no record at all.
+            record(item, board, 'READY_TO_SUBMIT', `could not submit — ${pressed.error}`);
+            this.activity(board.name, 'READY_TO_SUBMIT',
+                `${item.company}: could not submit — ${pressed.error}`);
+            this.log(`could not submit ${item.company}: ${pressed.error}`);
+            return 'counted';
+        }
+
+        record(item, board, 'READY_TO_SUBMIT',
+            `filled ${result.qa.length} field(s) — waiting for you to submit`);
+        this.activity(board.name, 'READY_TO_SUBMIT',
+            `${item.company}: filled ${result.qa.length} field(s) — waiting for you to submit`);
+        this.log(`filled ${item.company} — ${item.title}, waiting for your review`);
+        return 'counted';
+    }
+
+    /**
+     * Carry on into the system a board handed the job to.
+     *
+     * ── THE SAME WORK, SOMEWHERE ELSE ─────────────────────────────────
+     *
+     * A destination is deliberately shaped like a board, so everything below is
+     * machinery that already existed: its own browser profile, its own sign-in
+     * gate, its own bot-check stop, the same apply flow and the same filler.
+     * Nothing here is a second implementation of anything.
+     *
+     * ── AND WHY THE PROFILE IS PER EMPLOYER ───────────────────────────
+     *
+     * Workday is not one site; each employer runs their own, with their own
+     * accounts. `tenantFor` keys the session by host for that reason, so
+     * signing in at one employer never makes the app look signed in at another.
+     *
+     * Anything it cannot finish becomes a hand-over with the reason attached.
+     * The consultant is going to open this job either way — the only question
+     * is whether they are told why before they do.
+     */
+    async #workDestination(item, board, tenant, flow, stats, { approvedAnswers, profile, record }) {
+        const handOver = async (reason) => {
+            await this.#reportReclassify(item.id, { reason });
+            stats.handedToHuman += 1;
+            record(item, board, 'HANDED_OVER', reason);
+            this.activity(board.name, 'HANDED_OVER', `${item.company}: ${reason}`);
+            return 'counted';
+        };
+
+        this.activity(board.name, 'CONNECTING',
+            `${item.company}: following through to ${tenant.label}`);
+        this.log(`${item.company}: ${board.label} hands off to ${tenant.label}`);
+
+        await this.sessions.openJob(tenant.name, flow.externalUrl);
+        const page = await this.sessions.page(tenant.name);
+
+        // R-22 first, exactly as for a board. SmartRecruiters answers automated
+        // requests with a DataDome challenge.
+        if (await this.sessions.isBotChecked(tenant)) {
+            // ── A CHALLENGE IS NOT ALWAYS "STOP FOR THE DAY" ──────────
+            //
+            // A board gets R-22's full stop, because working AROUND a
+            // challenge -- retrying, rotating something -- is what turns a
+            // temporary block into a permanent one. This is different: a
+            // destination that declares `botCheckWaitMs` is asking for thirty
+            // seconds for a PERSON to clear it, the same human act as typing a
+            // sign-in password, not an automated workaround. Zero means the
+            // old behaviour: stop immediately.
+            if (tenant.botCheckWaitMs > 0) {
+                this.activity(board.name, 'STOPPED',
+                    `${item.company}: ${tenant.label} wants a human check — over to you`);
+                await page.bringToFront().catch(() => {});
+                const said = await this.#askHuman({
+                    kind: 'BOT_CHECK',
+                    board,
+                    company: item.company,
+                    title: item.title,
+                    message: `${tenant.label} is asking for a human check. Solve it in the `
+                        + 'browser window and this carries on by itself.',
+                    waitMs: tenant.botCheckWaitMs,
+                    check: () => this.sessions.isBotChecked(tenant).then((v) => !v),
+                });
+                if (said === 'skipped') {
+                    return handOver(`You skipped this one while ${tenant.label} was asking for a human check`);
+                }
+                const clearedByHand = said === 'done';
+                if (clearedByHand) {
+                    this.log(`${item.company}: ${tenant.label} check cleared — carrying on`);
+                    this.activity(board.name, 'WORKING',
+                        `${item.company}: check cleared — carrying on`);
+                } else {
+                    stats.botChecked.push(tenant.name);
+                    return handOver(
+                        `${tenant.label} is asking for a human check, so this one needs you`,
+                    );
+                }
+            } else {
+                stats.botChecked.push(tenant.name);
+                this.activity(board.name, 'STOPPED',
+                    `${item.company}: ${tenant.label} is asking for a human check`);
+                return handOver(`${tenant.label} is asking for a human check, so this one needs you`);
+            }
+        }
+
+        // Accepting terms is a decision, not a step. A tenant that shows a legal
+        // notice is handed over rather than agreed with.
+        if (tenant.legalGate && await page.locator(tenant.legalGate).count() > 0) {
+            // Agreeing to terms on somebody's behalf is still not the app's to
+            // do. But it can put the page in front of them and wait, which is
+            // the difference between "you must go and find this later" and
+            // "read this now, it takes ten seconds".
+            await page.bringToFront().catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'LEGAL_GATE',
+                board,
+                company: item.company,
+                title: item.title,
+                message: `${tenant.label} wants you to accept its terms before the form appears. `
+                    + 'Read them and choose — the app will not decide this for you.',
+                check: () => page.locator(tenant.legalGate).count().then((n) => n === 0),
+            });
+            if (said !== 'done') {
+                return handOver(
+                    `${tenant.label} asks you to accept its terms first, which is yours to decide`,
+                );
+            }
+        }
+
+        // The consultant signs in themselves (R-18), once per employer.
+        if (!(await this.sessions.isSignedIn(tenant))) {
+            this.activity(board.name, 'SIGNED_OUT',
+                `${item.company}: waiting for you to sign in to ${tenant.label}`);
+            if (!(await this.#waitForSignIn(tenant))) {
+                stats.signInNeeded.push(tenant.name);
+                return handOver(`${tenant.label} needs you to sign in before anything can be filled`);
+            }
+        }
+
+        const resumePath = tenant.verified
+            ? await this.hub.resume(item.id, this.paths.work)
+            : null;
+
+        // Mid-flow gates -- Workday's own sign-in, met only after "Apply
+        // Manually" is pressed -- are handled the same way as the header
+        // gate: front the page, wait, poll for the gate's own selector to
+        // disappear. Owned here rather than in applyFlow.js because that
+        // module has no clock strategy and no hub client of its own.
+        const waitForHuman = async (p, clearedWhenGoneSelector, message) => {
+            this.activity(board.name, 'SIGNED_OUT', `${item.company}: ${message}`);
+            await p.bringToFront().catch(() => {});
+            const said = await this.#askHuman({
+                kind: 'ACCOUNT_WALL',
+                board,
+                company: item.company,
+                title: item.title,
+                message,
+                waitMs: this.signInWaitMs,
+                check: () => p.locator(clearedWhenGoneSelector).count().then((n) => n === 0),
+            });
+            return said === 'done';
+        };
+
+        const inner = await runApplyFlow(page, tenant, {
+            profile, approvedAnswers, resumePath,
+        }, { log: this.log, canFill: Boolean(tenant.verified), waitForHuman });
+
+        this.log(`${item.company} @ ${tenant.label}: ${inner.outcome} — ${inner.detail}`);
+
+        if (inner.outcome === 'ALREADY_APPLIED') {
+            await this.#reportSkipped(item.id, {
+                reason: `${tenant.label} says this consultant has already applied.`,
+            });
+            stats.skipped += 1;
+            record(item, board, 'ALREADY_APPLIED', `${tenant.label}: already applied`);
+            return 'counted';
+        }
+
+        if (inner.outcome === 'CLOSED') {
+            await this.#reportSkipped(item.id, {
+                reason: 'This job is expired — the posting is no longer accepting applications.',
+            });
+            stats.skipped += 1;
+            stats.closed += 1;
+            record(item, board, 'CLOSED', `${tenant.label}: ${inner.detail}`);
+            return 'counted';
+        }
+
+        let agentTried = false;
+        if (inner.outcome !== 'READY_TO_SUBMIT' && inner.outcome !== 'INCOMPLETE') {
+            if (AGENT_WORTHY.has(inner.outcome)) {
+                const agent = await this.#tryAgent({
+                    item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                    trigger: `${tenant.label}: ${inner.detail}`,
+                    stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) return handOver(`${tenant.label}: ${inner.detail} — ${agent.reason}`);
+            }
+            return handOver(`${tenant.label}: ${inner.detail}`);
+        }
+
+        // A question nobody has answered stops it here, the same as on a board —
+        // and it lands in the same Questions tab, because it is the same bank.
+        let filled = inner;
+        let blocking = (filled.unknown ?? []).filter((u) => u.required);
+        let currentAnswers = approvedAnswers;
+        if (blocking.length > 0) {
+            // ── LET AI CHECK BEFORE ASKING A PERSON ───────────────────────
+            const ai = await this.#matchBlockingWithAI({
+                item, board, blocking, approvedAnswers: currentAnswers,
+            });
+            if (ai.matched) {
+                currentAnswers = ai.approvedAnswers;
+                filled = await runApplyFlow(page, tenant, {
+                    profile, approvedAnswers: currentAnswers, resumePath,
+                }, { log: this.log, canFill: Boolean(tenant.verified) });
+                blocking = (filled.unknown ?? []).filter((u) => u.required);
+            }
+        }
+
+        if (blocking.length > 0) {
+            // Identical treatment to a board's own form: ask, hold the page
+            // open, and only give the job up if nobody answers. A Workday
+            // wizard is five steps deep by this point, so re-walking it later
+            // is far more expensive here than on a one-page form.
+            const said = await this.#askUnanswered({
+                item,
+                board,
+                page,
+                root: tenant.apply?.dialog ?? null,
+                blocking,
+                allUnknown: filled.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') return 'counted';
+
+            const fresh = await this.hub.queue().catch(() => null);
+            filled = await runApplyFlow(page, tenant, {
+                profile,
+                approvedAnswers: fresh?.approvedAnswers ?? currentAnswers,
+                resumePath,
+            }, { log: this.log, canFill: Boolean(tenant.verified) });
+
+            const stillBlocking = (filled.unknown ?? []).filter((u) => u.required);
+            if (stillBlocking.length > 0) {
+                await this.#reportParked(item.id, {
+                    unknownQuestions: filled.unknown.map((u) => ({
+                        questionText: u.questionText,
+                        fieldType: u.fieldType,
+                        options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
+                    })),
+                });
+                stats.parked += 1;
+                record(item, board, 'PARKED',
+                    `${tenant.label} — still waiting on ${stillBlocking.length} question(s)`);
+                this.activity(board.name, 'PARKED',
+                    `${item.company}: still ${stillBlocking.length} unanswered`);
+                return 'counted';
+            }
+        }
+
+        // ── THE WIZARD STOPPED, AND NOTHING IS WAITING ON A PERSON ────
+        //
+        // Workday's step refused to advance -- a button dropdown the recipe
+        // could not drive, a flow it did not know. Without the agent this is
+        // filled as far as it went and left for the consultant, as before.
+        if (filled.outcome === 'INCOMPLETE' && !(filled.unknown ?? []).some((u) => u.required)) {
+            agentTried = true;
+            const agent = await this.#tryAgent({
+                item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                trigger: `${tenant.label}: ${filled.detail}`,
+                stats, record, approvedAnswers, profile, resumePath,
+                root: tenant.apply?.dialog ?? null,
+                prior: { qa: filled.qa, attachedResume: filled.attachedResume },
+            });
+            if (agent === 'counted') return 'counted';
+        }
+
+        if ((filled.qa ?? []).length === 0) {
+            if (!agentTried) {
+                const agent = await this.#tryAgent({
+                    item, board: tenant, activityBoard: board, page, entry: 'RECIPE_FAILED',
+                    trigger: `${tenant.label}: nothing on the page could be filled`,
+                    stats, record, approvedAnswers, profile, resumePath,
+                });
+                if (agent === 'counted') return 'counted';
+                if (agent?.reason) {
+                    return handOver(`${tenant.label}: nothing on the page could be filled — ${agent.reason}`);
+                }
+            }
+            return handOver(`${tenant.label}: nothing on the page could be filled`);
+        }
+
+        // Filled, and left exactly there. Every destination carries
+        // `neverAutoSubmit`, so the toggle cannot send one of these — the
+        // consultant reads it and presses the button themselves.
+        await this.#reportFilled(item.id);
+        this.#rememberForReview(item, tenant, {
+            ...filled,
+            refusals: [],
+            readyToSubmit: filled.outcome === 'READY_TO_SUBMIT',
+        }, { profile, approvedAnswers, resumePath });
+        stats.filled += 1;
+        record(item, board, 'READY_TO_SUBMIT',
+            `${tenant.label} — filled ${filled.qa.length} field(s), waiting for you to submit`);
+        this.activity(board.name, 'READY_TO_SUBMIT',
+            `${item.company}: filled on ${tenant.label} — waiting for you to submit`);
+        return 'counted';
+    }
+
+    /*
+     * ════════════════════════════════════════════════════════════════════
+     *  THE AI AGENT
+     * ════════════════════════════════════════════════════════════════════
+     *
+     * Three lines, tried in order: the coded recipe, then the agent, then the
+     * consultant. Everything below is the middle line. It is called at the
+     * points where a recipe used to give a job straight to the consultant, and
+     * it answers in one of two ways:
+     *
+     *   'counted'    the agent dealt with the job; the caller is done
+     *   { reason }   it did not; the caller hands over as it always did,
+     *                with the agent's reason added so nobody wonders why
+     *
+     * It never throws for an operational problem. An agent that cannot run is
+     * the same as an agent that is switched off: the job goes to a person.
+     */
+
+    /**
+     * Ask the hub whether the agent may try this job.
+     *
+     * The ORGANISATION decides that (off, shadow, on), along with the budget
+     * and the limits. The consultant's own switch can only say no.
+     */
+    async #startAgent(item, { entry, host, trigger }) {
+        if (this.store.get('agentFallback') === false) return { ok: false };
+        if (typeof this.hub.agentStart !== 'function') return { ok: false };
+        try {
+            const res = await this.hub.agentStart(item.id, {
+                entry,
+                host: host ?? null,
+                trigger: String(trigger ?? '').slice(0, 500) || null,
+            });
+            if (!res?.ok) {
+                if (res?.reason) this.log(`AI agent not used for ${item.company}: ${res.reason}`);
+                return { ok: false };
+            }
+            return { ok: true, runId: res.runId, mode: res.mode, limits: res.limits ?? {} };
+        } catch (err) {
+            if (err.name === 'Revoked') throw err;
+            this.log(`AI agent unavailable for ${item.company}: ${firstLine(err.message)}`);
+            return { ok: false };
+        }
+    }
+
+    /** Record how a run ended. Best effort: the job's own outcome is already decided. */
+    async #finishAgent(started, { outcome, detail, actions = 0, refused = 0 }) {
+        if (!started?.runId || typeof this.hub.agentFinish !== 'function') return;
+        await this.hub.agentFinish(started.runId, {
+            outcome: String(outcome ?? 'UNKNOWN').slice(0, 30),
+            detail: String(detail ?? '').slice(0, 500) || null,
+            actions,
+            refusedActions: refused,
+        }).catch(() => {});
+    }
+
+    /**
+     * A job whose own page says it is shut is not the agent's to attempt.
+     *
+     * ── WHY THIS IS A SEPARATE CHECK FROM THE RECIPE'S ────────────────
+     *
+     * The recipe looks for a closed notice first, but only in the words it
+     * knows. When a board words it differently — LinkedIn's "Not currently
+     * accepting applications" was the one that got through — the recipe sees no
+     * verdict and hands the job on as if it were merely something it could not
+     * read, and the agent, which is meant to rescue jobs the recipe FAILED at,
+     * then starts a paid model run against a posting nobody can apply to. The
+     * agent's own prompt says to stop on a closed posting, but only if it is
+     * looking at the posting: it was being pointed at a followed link instead.
+     *
+     * So before any agent run, ask the page the recipe was on. Cheap, local,
+     * and it turns a wasted run (and a second browser window) into the skip it
+     * should always have been.
+     *
+     * @returns 'counted' when the job was skipped as expired, otherwise null
+     */
+    async #skipIfClosed({ item, board, activityBoard = null, page, stats, record }) {
+        let closed = false;
+        try {
+            closed = typeof page?.locator === 'function'
+                && (await page.locator(CLOSED_SELECTOR).count()) > 0;
+        } catch { /* a page that cannot be asked is not a closed one */ }
+        if (!closed) return null;
+
+        await this.#reportSkipped(item.id, {
+            reason: 'This job is expired — the posting is no longer accepting applications.',
+        });
+        stats.skipped += 1;
+        stats.closed += 1;
+        const where = activityBoard ?? board;
+        record(item, board, 'CLOSED', 'the page says the posting is not accepting applications');
+        this.activity(where.name, 'CLOSED',
+            `${item.company}: the page says it is not accepting applications`);
+        return 'counted';
+    }
+
+    /** Let the agent try the page the recipe was on. */
+    async #tryAgent({
+        item, board, activityBoard = null, page, entry, trigger, stats, record,
+        approvedAnswers, profile, resumePath = null, root = null, prior = null,
+    }) {
+        const closed = await this.#skipIfClosed({ item, board, activityBoard, page, stats, record });
+        if (closed) return closed;
+
+        const started = await this.#startAgent(item, {
+            entry, host: hostOf(page.url()), trigger,
+        });
+        if (!started.ok) return null;
+        return this.#runAgentOn({
+            item, board, activityBoard, page, started, stats, record,
+            approvedAnswers, profile, resumePath, root, prior,
+        });
+    }
+
+    /**
+     * A recipe's verdict, handed to the agent.
+     *
+     * An external apply link is followed into a session of its own -- the
+     * employer's site, which no recipe knows. Anything else is tried on the
+     * page the recipe was already looking at.
+     */
+    async #agentForFlow({
+        item, board, page, flow, stats, record, approvedAnswers, profile, resumePath,
+    }) {
+        const closed = await this.#skipIfClosed({ item, board, page, stats, record });
+        if (closed) return closed;
+
+        if (flow.outcome === 'EXTERNAL_APPLY' && flow.externalUrl) {
+            const host = hostOf(flow.externalUrl);
+            if (!host) return null;
+
+            // A link back to the very page we are already on is not somewhere
+            // to "follow" to. Opening it would start a second, signed-out
+            // browser profile on the same site — a new window, and an
+            // authwall, for a job that is right here in front of us.
+            const samePage = (() => {
+                try {
+                    const there = new URL(flow.externalUrl);
+                    const here = new URL(page.url());
+                    return hostOf(flow.externalUrl) === hostOf(page.url())
+                        && there.pathname === here.pathname;
+                } catch { return false; }
+            })();
+            if (samePage) return null;
+
+            const started = await this.#startAgent(item, {
+                entry: 'RECIPE_FAILED', host, trigger: flow.detail,
+            });
+            if (!started.ok) return null;
+
+            const session = agentSession(host, flow.externalUrl);
+            this.activity(board.name, 'CONNECTING',
+                `${item.company}: the AI agent is following the apply link to ${host}`);
+            try {
+                await this.sessions.openJob(session.name, flow.externalUrl);
+            } catch (err) {
+                await this.#finishAgent(started, { outcome: 'NOT_OPENED', detail: firstLine(err.message) });
+                return { reason: `the AI agent could not open ${host}` };
+            }
+            const agentPage = await this.sessions.page(session.name);
+            return this.#runAgentOn({
+                item, board: session, activityBoard: board, page: agentPage, started, stats, record,
+                approvedAnswers, profile, resumePath, root: null, prior: null,
+            });
+        }
+
+        return this.#tryAgent({
+            item, board, page, entry: 'RECIPE_FAILED', trigger: flow.detail,
+            stats, record, approvedAnswers, profile, resumePath,
+            root: board.apply?.dialog ?? null,
+        });
+    }
+
+    /**
+     * A job no board owns: open it in its own session and let the agent work.
+     *
+     * The hub is asked BEFORE anything is leased or opened, so a switched-off
+     * agent costs one small request and never a browser window.
+     */
+    async #workWithAgentOnly(item, stats, { approvedAnswers, profile, record }) {
+        const host = hostOf(item.source_url);
+        if (!host) return { reason: 'the job has no web address the AI agent could open' };
+
+        const started = await this.#startAgent(item, {
+            entry: 'NO_RECIPE', host, trigger: `no recipe for ${item.portal ?? host}`,
+        });
+        if (!started.ok) return null;
+
+        const session = agentSession(host, item.source_url);
+        this.activity(AGENT_BOARD.name, 'CONNECTING', `Opening ${item.company} — ${item.title}`);
+
+        try {
+            await this.hub.lease(item.id);
+        } catch (err) {
+            await this.#finishAgent(started, { outcome: 'NOT_LEASED', detail: firstLine(err.message) });
+            throw err;
+        }
+        stats.leased += 1;
+
+        await this.sessions.openJob(session.name, item.source_url);
+        stats.opened += 1;
+        const page = await this.sessions.page(session.name);
+
+        return this.#runAgentOn({
+            item, board: session, activityBoard: AGENT_BOARD, page, started, stats, record,
+            approvedAnswers, profile, resumePath: null, root: null, prior: null,
+        });
+    }
+
+    /**
+     * Run the loop, answer anything it asks, and act on how it ends.
+     *
+     * @param board          where the page lives — the board, a tenant, or an
+     *                       agent session. Its `neverAutoSubmit` is honoured.
+     * @param activityBoard  which card on the Boards screen the progress shows
+     *                       on, when that is not `board`
+     */
+    async #runAgentOn({
+        item, board, activityBoard, page, started, stats, record,
+        approvedAnswers, profile, resumePath, root, prior,
+    }) {
+        const where = activityBoard ?? board ?? AGENT_BOARD;
+        const shadow = started.mode === 'SHADOW';
+        const say = (state, message) => this.activity(where.name, state, `${item.company}: ${message}`);
+
+        stats.agentTried += 1;
+        say('AGENT', shadow
+            ? 'the AI agent is looking at this one (shadow mode — it will not type)'
+            : 'the AI agent is taking over');
+        this.log(`${item.company}: AI agent ${shadow ? 'in shadow mode' : 'taking over'}`);
+
+        // The resume is fetched only when something may actually be uploaded.
+        // Every delivery is audited against this device (R-20).
+        let resume = resumePath;
+        if (!resume && !shadow) {
+            resume = await this.hub.resume(item.id, this.paths.work).catch(() => null);
+        }
+
+        const waitForHuman = async (p, message) => {
+            await p.bringToFront?.().catch(() => {});
+            say('SIGNED_OUT', message);
+            const said = await this.#askHuman({
+                kind: 'ACCOUNT_WALL',
+                board: where,
+                company: item.company,
+                title: item.title,
+                message,
+                waitMs: this.signInWaitMs,
+                check: async () => !(await stillAsksForPassword(p)),
+            });
+            if (said === 'done') await this.sessions.saveSession?.(board?.name ?? where.name);
+            return said === 'done';
+        };
+
+        const waitForBotCheck = async (p) => {
+            await p.bringToFront?.().catch(() => {});
+            say('STOPPED', 'the site is asking for a human check');
+            const said = await this.#askHuman({
+                kind: 'BOT_CHECK',
+                board: where,
+                company: item.company,
+                title: item.title,
+                message: 'This site is asking for a human check. Solve it in the browser window '
+                    + 'and the AI agent carries on.',
+                check: async () => !(await stillChallenged(p)),
+            });
+            return said === 'done';
+        };
+
+        let answers = approvedAnswers;
+        let carried = prior;
+        let result;
+        const totals = { actions: 0, refused: 0 };
+
+        // ── A QUESTION NOBODY HAS ANSWERED ────────────────────────────
+        //
+        // The agent may only pick from approved answers, so a genuinely new
+        // question comes to the consultant exactly as it does from a recipe:
+        // banked, a countdown, and the job held open. Once answered, the agent
+        // picks up where it stopped. Twice at most — a form that keeps asking
+        // new things is one to park, not to sit through.
+        for (let round = 0; ; round += 1) {
+            result = await this.runAgent(page, {
+                hub: this.hub,
+                runId: started.runId,
+                fillOptions: { profile, approvedAnswers: answers, resumePath: resume },
+                root,
+                log: this.log,
+                activity: (m) => say('AGENT', m),
+                waitForHuman,
+                waitForBotCheck,
+                shadow,
+                prior: carried,
+                maxActions: started.limits?.maxActions,
+            });
+            totals.actions += result.agent?.actions ?? 0;
+            totals.refused += result.agent?.refused ?? 0;
+
+            const blocking = (result.unknown ?? []).filter((u) => u.required !== false);
+            if (shadow || result.outcome !== 'INCOMPLETE' || blocking.length === 0 || round >= 2) break;
+
+            const said = await this.#askUnanswered({
+                item,
+                board: where,
+                page,
+                root: root ?? 'body',
+                blocking,
+                allUnknown: result.unknown,
+                record,
+                stats,
+            });
+            if (said !== 'answered') {
+                await this.#finishAgent(started, { outcome: 'PARKED', detail: result.detail, ...totals });
+                return 'counted';
+            }
+            const fresh = await this.hub.queue().catch(() => null);
+            answers = fresh?.approvedAnswers ?? answers;
+            carried = { qa: result.qa, attachedResume: result.attachedResume };
+        }
+
+        await this.#finishAgent(started, { outcome: result.outcome, detail: result.detail, ...totals });
+        this.log(`${item.company}: AI agent ${result.outcome} — ${result.detail}`);
+
+        switch (result.outcome) {
+        case 'READY_TO_SUBMIT':
+            return this.#finishAgentFill({
+                item, board, where, page, result, stats, record,
+                approvedAnswers: answers, profile, resumePath: resume,
+            });
+
+        case 'CLOSED':
+            await this.#reportSkipped(item.id, {
+                reason: 'This job is expired — the posting is no longer accepting applications.',
+            });
+            stats.skipped += 1;
+            stats.closed += 1;
+            record(item, where, 'CLOSED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
+            say('CLOSED', result.detail);
+            return 'counted';
+
+        case 'ALREADY_APPLIED':
+            await this.#reportSkipped(item.id, {
+                reason: 'The site says this consultant has already applied.',
+            });
+            stats.skipped += 1;
+            record(item, where, 'ALREADY_APPLIED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
+            return 'counted';
+
+        case 'SHADOW':
+            // Watched, not acted on. The job is handed over as if the agent
+            // did not exist, and the run's proposals are on the hub to review.
+            return { reason: null, shadow: true };
+
+        default:
+            say('HANDED_OVER', `the AI agent could not finish: ${result.detail}`);
+            return { reason: `the AI agent could not finish it: ${result.detail}` };
+        }
+    }
+
+    /**
+     * The agent filled the form. From here it is the same ending as a recipe.
+     *
+     * The consultant's autoSubmit choice applies — unless the board or site
+     * itself says it never submits, which beats the toggle for the agent
+     * exactly as it does for a recipe.
+     */
+    async #finishAgentFill({
+        item, board, where, page, result, stats, record, approvedAnswers, profile, resumePath,
+    }) {
+        const count = result.qa.length;
+        await this.#reportFilled(item.id);
+        this.#rememberForReview(item, where, { ...result, refusals: [], readyToSubmit: true }, {
+            profile,
+            approvedAnswers,
+            resumePath,
+            filledBy: 'AGENT',
+            session: board?.name ?? where.name,
+            pageUrl: page.url(),
+            submit: result.submit,
+        });
+        stats.filled += 1;
+        stats.agentFilled += 1;
+
+        const neverAuto = Boolean(board?.neverAutoSubmit || where?.neverAutoSubmit);
+        if (neverAuto && this.store.get('autoSubmit')) {
+            this.log(`${where.label}: filled by the AI agent and left for you — this site never submits by itself`);
+        }
+
+        if (this.store.get('autoSubmit') && !neverAuto) {
+            this.activity(where.name, 'SUBMITTING',
+                `${item.company}: submitting what the AI agent filled`);
+            const pressed = await pressAgentSubmit(page, result.submit, this.log);
+            if (pressed.ok) {
+                await this.reportSubmitted(item.id, {
+                    confirmed: pressed.confirmed,
+                    detail: pressed.detail,
+                });
+                stats.submitted += 1;
+                record(item, where, 'SUBMITTED', `AI agent: ${pressed.detail}`, { filledBy: 'AGENT' });
+                this.activity(where.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
+                return 'counted';
+            }
+            record(item, where, 'READY_TO_SUBMIT',
+                `the AI agent filled it, but it could not be submitted — ${pressed.error}`,
+                { filledBy: 'AGENT' });
+            this.activity(where.name, 'READY_TO_SUBMIT',
+                `${item.company}: could not submit — ${pressed.error}`);
+            return 'counted';
+        }
+
+        record(item, where, 'READY_TO_SUBMIT',
+            `the AI agent filled ${count} field(s) — waiting for you to submit`, { filledBy: 'AGENT' });
+        this.activity(where.name, 'READY_TO_SUBMIT',
+            `${item.company}: the AI agent filled ${count} field(s) — waiting for you to submit`);
+        return 'counted';
+    }
+
+    /**
+     * Submit an agent-filled application because the consultant asked.
+     *
+     * Only if the page the agent finished on is still the page on screen. There
+     * is no recipe to rebuild it with, and pressing a submit button on whatever
+     * page is there now would send a different application.
+     */
+    async #submitAgentFill(entry) {
+        const session = entry.session ?? entry.board;
+        const page = await this.sessions.page(session);
+        const parse = (u) => { try { return new URL(u); } catch { return null; } };
+        const here = parse(page.url());
+        const was = parse(entry.pageUrl ?? entry.url);
+        if (!here || !was || here.host !== was.host || here.pathname !== was.pathname) {
+            return {
+                ok: false,
+                error: 'The AI agent filled this application on a page that is no longer open. '
+                    + 'Open it in the browser, check it, and submit it there.',
+            };
+        }
+
+        this.activity(entry.board, 'SUBMITTING', `Submitting ${entry.company} — you asked for this`);
+        const pressed = await pressAgentSubmit(page, entry.submit, this.log);
+        if (!pressed.ok) {
+            this.activity(entry.board, 'ERROR', `${entry.company}: ${pressed.error}`);
+            return pressed;
+        }
+        this.activity(entry.board, 'SUBMITTED', `${entry.company}: ${pressed.detail}`);
+        const reported = await this.reportSubmitted(entry.itemId, {
+            confirmed: pressed.confirmed,
+            detail: pressed.detail,
+        });
+        return { ...reported, ...pressed };
+    }
+
+    /**
+     * ── LET AI CHECK FOR AN ANSWER BEFORE A PERSON IS ASKED ────────────
+     *
+     * The rule-based filler only ever matches a question to an approved answer
+     * on the WHOLE normalised wording — deliberately tight, because it is
+     * typing into a real employer's form (see the header of browser/answers.js).
+     * That leaves a real gap: a consultant who has answered "Years of experience
+     * with React" is stopped again by "How many years have you worked with
+     * React.js?", which asks the identical thing in different words.
+     *
+     * This closes that gap the same way the Questions tab already offers a
+     * PERSON to close it — `hub.questionSuggestions`, one model call that
+     * proposes which approved answer a new wording is really asking for — run
+     * here automatically, before the countdown that would otherwise interrupt
+     * the consultant for something they have, in substance, already answered.
+     *
+     * ── WHAT THIS WILL NOT DO ──────────────────────────────────────────
+     *
+     *   · It never invents an answer. The match endpoint itself only returns
+     *     what it is confident about ("when in doubt, leave the question out" —
+     *     see questionSuggestionController.js), and this trusts that gate
+     *     completely rather than adding a looser one of its own.
+     *   · It never touches a question the organisation has switched the AI
+     *     off for. `agentFallback` is the consultant's own narrowing of that
+     *     same permission (see Controls.jsx), and this is gated on it exactly
+     *     as the full agent fallback is — a person who turned AI off gets the
+     *     old behaviour, always, with nothing silently re-added here.
+     *   · An unreachable hub, an exhausted budget, or a stage nobody
+     *     configured all read as "no match" and fall straight through to the
+     *     ordinary countdown — never as an error, and never as a reason to
+     *     stop the pass.
+     *
+     * A match that IS used is banked under the wording THIS page asked, via
+     * the same `askQuestions` → `answerQuestion` pair a human's own answer
+     * goes through — so it becomes an ordinary approved answer from that
+     * moment on, findable by the exact-match rule with no model involved,
+     * and every future job asking it this same way costs nothing at all.
+     *
+     * @returns { matched: boolean, approvedAnswers } — `approvedAnswers` is
+     *   `approvedAnswers` with every matched answer added, keyed under the
+     *   wording this page used, ready to hand straight to a refill.
+     */
+    async #matchBlockingWithAI({ item, board, blocking, approvedAnswers }) {
+        const none = { matched: false, approvedAnswers };
+
+        if (this.store.get('agentFallback') === false) return none;
+        if (typeof this.hub.questionSuggestions !== 'function') return none;
+
+        // Skip whatever this session has already asked about, whichever way
+        // it was answered — a "no match" is as much an answer as a match is.
+        const fresh = blocking.filter((u) => !this.matchCache.has(normaliseQuestion(u.questionText)));
+
+        if (fresh.length > 0) {
+            let res;
+            try {
+                res = await this.hub.questionSuggestions({
+                    questions: fresh.map((u) => ({ questionText: u.questionText })),
+                });
+            } catch {
+                res = null;               // offline, or the hub blinked -- not "AI said no"
+            }
+            const bySuggested = new Map(
+                (res?.suggestions ?? [])
+                    .filter((s) => s.suggestedAnswer)
+                    .map((s) => [normaliseQuestion(s.questionText), s]),
+            );
+            for (const u of fresh) {
+                const key = normaliseQuestion(u.questionText);
+                // `null` marks "asked, nothing came back" so it is not asked
+                // again this session; a real suggestion overwrites it.
+                this.matchCache.set(key, bySuggested.get(key) ?? null);
+            }
+        }
+
+        const matched = blocking
+            .map((u) => ({ unknown: u, suggestion: this.matchCache.get(normaliseQuestion(u.questionText)) }))
+            .filter((m) => m.suggestion);
+        if (matched.length === 0) return none;
+
+        const banked = [];
+        for (const { unknown: u, suggestion: s } of matched) {
+            try {
+                // Raised the same way an unanswered question always is, so it
+                // exists to answer at all -- `answerQuestion` answers a
+                // question that has been asked, not an arbitrary label.
+                const raised = await this.#reportAskQuestions(item.id, {
+                    unknownQuestions: [{ questionText: u.questionText, fieldType: u.fieldType, required: true }],
+                });
+                const questionId = raised?.questions?.[0]?.id;
+                if (!questionId) continue;
+
+                await this.hub.answerQuestion(questionId, {
+                    answerText: s.suggestedAnswer, source: 'AI_MATCH',
+                });
+                banked.push({
+                    question_id: questionId, question_text: u.questionText, answer_text: s.suggestedAnswer,
+                });
+                this.log(`${item.company}: "${u.questionText.slice(0, 60)}" answered by AI `
+                    + `— matched to "${s.fromQuestion.slice(0, 60)}" (${s.confidence} confidence)`);
+                this.activity(board.name, 'FILLING',
+                    `${item.company}: AI matched "${u.questionText.slice(0, 60)}" to an approved answer`);
+            } catch (err) {
+                if (err.name === 'Revoked') throw err;
+                // Not banked, but still usable for THIS application below --
+                // a hub blip here should not throw away a match already found.
+                banked.push({ question_id: null, question_text: u.questionText, answer_text: s.suggestedAnswer });
+            }
+        }
+        if (banked.length === 0) return none;
+
+        return { matched: true, approvedAnswers: [...approvedAnswers, ...banked] };
+    }
+
+    /**
+     * Put unanswered questions in front of the consultant and hold the job open.
+     *
+     * ── WHY THIS IS NOT JUST PARKING ANY MORE ─────────────────────────
+     *
+     * Parking was the right answer when nobody was watching: bank the question,
+     * give the job up, and let someone answer it hours later. With the
+     * consultant sitting at the machine it is the wrong answer twice over --
+     * they are RIGHT THERE, and the application is already open on the very
+     * step that needs the answer. Giving up and re-walking five wizard steps
+     * later is pure waste.
+     *
+     * So the questions are banked immediately (without parking), the consultant
+     * is shown a countdown, and the job is only given up if nobody answers.
+     *
+     * ── TWO WAYS TO SATISFY IT, BECAUSE PEOPLE DO BOTH ────────────────
+     *
+     * A consultant may answer in the app's Questions tab, or simply type into
+     * the form that is open in front of them. Both are watched:
+     *
+     *   the bank   the answer is saved and every future job that asks the same
+     *              question is answered without anybody being interrupted
+     *   the form   the field is no longer empty, so THIS application can go on
+     *              -- but nothing was learned, and the next job asking the same
+     *              thing will stop again
+     *
+     * The bank is the better outcome and the message says so, but a job that
+     * can proceed should proceed, so the form counts too.
+     *
+     * @returns 'answered' when the job may carry on, 'parked' when it may not
+     */
+    async #askUnanswered({
+        item, board, page, root, blocking, allUnknown, record, stats,
+    }) {
+        const payload = allUnknown.map((u) => ({
+            questionText: u.questionText,
+            fieldType: u.fieldType,
+            required: u.required !== false,
+            // The exact choices THIS form offered, for a radio, select or
+            // checkbox group — so the Questions tab can show the real options
+            // instead of a free-text box. A consultant typing "Yes" against
+            // options worded "Yes, I am authorized" / "No, I am not" answers
+            // correctly in their own mind and unanswerably as far as the
+            // filler is concerned; offering the actual labels means what gets
+            // saved is one of them, verbatim.
+            options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
+        }));
+
+        // Raise them first, so they are already on the Questions tab when the
+        // countdown appears. The ids come back with them, which is what lets
+        // an answer typed into the BROWSER be banked afterwards.
+        const raised = await this.#reportAskQuestions(item.id, {
+            unknownQuestions: payload,
+        }).catch(() => null);
+
+        const idFor = new Map(
+            (raised?.questions ?? []).map((q) => [normaliseQuestion(q.questionText), q.id]),
+        );
+
+        this.activity(board.name, 'PARKED',
+            `${item.company}: waiting on ${blocking.length} answer(s) — over to you`);
+
+        const wanted = blocking.map((u) => u.questionText);
+
+        // ── TIME PER QUESTION, NOT PER PAGE ───────────────────────────
+        //
+        // One window for the whole step gave a consultant the same two minutes
+        // whether the form asked one question or six, which is the same as
+        // giving them a sixth of the time each. The window is per question, up
+        // to a ceiling -- a step asking twenty things is a step to park and
+        // come back to, not one to sit through.
+        const perQuestion = WAIT_MS.UNKNOWN_QUESTIONS;
+        const waitMs = Math.min(perQuestion * Math.max(1, wanted.length), 10 * 60_000);
+
+        const said = await this.#askHuman({
+            kind: 'UNKNOWN_QUESTIONS',
+            board,
+            company: item.company,
+            title: item.title,
+            waitMs,
+            // The clock decides, not the keystrokes. See attention.js: polling
+            // a form cannot tell "finished typing" from "paused mid-word", and
+            // moving on at the first character of an answer is worse than
+            // waiting. "I’ve done it" is the way to go early.
+            holdUntilDeadline: true,
+            message: wanted.length === 1
+                ? `"${wanted[0]}" — answer it on the Questions tab, or type it straight `
+                  + 'into the form. Either way it is saved for future applications.'
+                : `${wanted.length} questions need answers (about `
+                  + `${Math.round(waitMs / 60_000)} min) — the Questions tab has them, `
+                  + 'or type them straight into the form.',
+            check: async () => {
+                // The bank first: it is the answer that lasts.
+                try {
+                    const res = await this.hub.answers();
+                    const known = new Set(
+                        (res?.answers ?? [])
+                            .filter((a) => (a.answer_text ?? '').trim())
+                            .map((a) => normaliseQuestion(a.question_text)),
+                    );
+                    if (wanted.every((q) => known.has(normaliseQuestion(q)))) return true;
+                } catch { /* offline, or the hub blinked -- try the form */ }
+
+                // Then the form itself: nothing left empty and required.
+                if (!page || !root) return false;
+                try {
+                    const still = await describeFields(page, root);
+                    const empty = still.filter(
+                        (f) => f.required && !f.hasValue && f.visible && !f.disabled
+                            && !['hidden', 'submit', 'button', 'reset', 'image', 'file'].includes(f.type),
+                    );
+                    return empty.length === 0;
+                } catch {
+                    return false;
+                }
+            },
+        });
+
+        if (said === 'done') {
+            // ── KEEP WHAT THEY TYPED ──────────────────────────────────
+            //
+            // An answer typed into the browser gets this one application
+            // through and teaches the app nothing -- the same question stops
+            // the next job, and the one after that. So whatever is in those
+            // boxes now is read back and banked under the question it answers.
+            //
+            // Best effort by design: this is a bonus on top of an application
+            // that is already going to succeed, and a hub that blinks here
+            // must not cost the consultant the job they just answered for.
+            await this.#bankTypedAnswers({ page, root, wanted, idFor });
+
+            this.log(`${item.company}: answered — carrying on`);
+            this.activity(board.name, 'FILLING', `${item.company}: answered — carrying on`);
+            return 'answered';
+        }
+
+        // Nobody answered, or they said move on. This is the old behaviour,
+        // and it is still the right one: bank, park, and let it be picked up
+        // whenever the answer arrives.
+        await this.#reportParked(item.id, { unknownQuestions: payload });
+        stats.parked += 1;
+        record(item, board, 'PARKED', said === 'skipped'
+            ? `you skipped it; still waiting on ${blocking.length} question(s)`
+            : `waiting on ${blocking.length} question(s): `
+              + blocking.map((u) => u.questionText).join('; '));
+        this.activity(board.name, 'PARKED',
+            `${item.company}: parked on ${blocking.length} unanswered question(s)`);
+        this.log(`parked ${item.company}: ${blocking.length} unanswered question(s)`);
+        return 'parked';
+    }
+
+    /**
+     * Save answers the consultant typed into the form, so they last.
+     *
+     * The Questions tab and the browser form are two doors into the same
+     * decision, and only one of them used to be remembered. This makes them
+     * equal: answer it wherever you like, and every future application that
+     * asks the same thing is answered without anybody being interrupted.
+     *
+     * Never throws — see the caller.
+     */
+    async #bankTypedAnswers({ page, root, wanted, idFor }) {
+        if (!page || !root || idFor.size === 0) return 0;
+
+        let saved = 0;
+        try {
+            const fields = await describeFields(page, root);
+            for (const question of wanted) {
+                const key = normaliseQuestion(question);
+                const id = idFor.get(key);
+                if (!id) continue;
+
+                // ── A RADIO GROUP HAS NO ONE FIELD TO FIND ─────────────
+                //
+                // Every option in a radio group shares the SAME question —
+                // that is the whole point of a group — so `.find()` on a
+                // plain label match always returned the FIRST option in DOM
+                // order, whether or not it was the one the consultant
+                // actually picked. "No" typed by picking the second radio
+                // read back as "" from the first, unchecked one, so nothing
+                // was banked and the very same question came back on the
+                // next job as if it had never been answered.
+                //
+                // The fix is the one `fillForm`'s own radio branch already
+                // uses: read whichever SIBLING is checked, not whichever
+                // sibling is first.
+                const radioSiblings = fields.filter((f) => f.type === 'radio'
+                    && normaliseQuestion(f.groupLabel || f.label) === key);
+
+                // Match the field back to the question by the same normaliser
+                // the answer bank uses, so wording that differs only in
+                // punctuation or a trailing asterisk still lines up.
+                const field = radioSiblings.length > 0
+                    ? radioSiblings.find((s) => s.hasValue)
+                    : fields.find((f) => {
+                        const asked = f.groupLabel || f.label;
+                        return asked && normaliseQuestion(asked) === key;
+                    });
+                const text = String(field?.value ?? '').trim();
+                if (!text) continue;
+
+                const ok = await this.hub.answerQuestion(id, { answerText: text })
+                    .then(() => true).catch(() => false);
+                if (ok) {
+                    saved += 1;
+                    this.log(`saved your answer to "${question.slice(0, 60)}" for future jobs`);
+                }
+            }
+        } catch { /* nothing banked; the application still goes ahead */ }
+        return saved;
+    }
+
+    /**
+     * Hold a filled form for the review screen.
+     *
+     * Kept locally rather than re-read from the hub because the Q&A list is
+     * what gets reported after the consultant submits, and it must survive a
+     * restart between filling and submitting.
+     */
+    #rememberForReview(item, board, result, context = {}) {
+        const waiting = (this.store.get('awaitingReview') ?? [])
+            .filter((w) => w.itemId !== item.id);
+
+        waiting.push({
+            itemId: item.id,
+            board: board.name,
+            boardLabel: board.label,
+            company: item.company,
+            title: item.title,
+            url: item.source_url,
+            filledAt: new Date().toISOString(),
+            attachedResume: result.attachedResume,
+            optionalUnanswered: result.unknown.filter((u) => !u.required),
+            qa: result.qa,
+            // Kept so the application can be rebuilt if the browser has moved
+            // on by the time somebody presses Submit on the review screen.
+            profile: context.profile ?? null,
+            approvedAnswers: context.approvedAnswers ?? [],
+            resumePath: context.resumePath ?? null,
+            // RECIPE or AGENT. An agent-filled form has no recipe to walk back
+            // to its submit step, so it is submitted where the agent left it.
+            filledBy: context.filledBy ?? 'RECIPE',
+            session: context.session ?? board.name,
+            pageUrl: context.pageUrl ?? null,
+            submit: context.submit ?? null,
+        });
+
+        this.store.set({ awaitingReview: waiting });
+    }
+
+    /**
+     * Report that the consultant submitted an application themselves.
+     *
+     * The app never reaches this on its own — it is called from the review
+     * screen, after a person has pressed submit on the portal.
+     *
+     * ── WHY THIS MUST NEVER THROW FOR AN ORDINARY FAILURE ─────────────
+     *
+     * Every caller of this reaches it AFTER the click already landed at the
+     * employer — `pressSubmit`/`pressAgentSubmit` only return here once
+     * `pressed.ok` is true. What happens next is telling the HUB about
+     * something that has already happened, and a network blink telling that
+     * story must never change the story itself.
+     *
+     * It used to. `hub.submitted` threw straight out of this function on any
+     * failure, and that throw had two different, both wrong, endings:
+     *
+     *   auto-submit   the throw escaped `#workOne`/`#workDestination`
+     *                 entirely, uncaught there, and landed in `run()`'s
+     *                 per-item catch — which reported the item to the hub as
+     *                 SKIPPED. An application the employer had just received
+     *                 was recorded as one that was never sent at all.
+     *   manual submit the throw reached the IPC handler in index.js, which
+     *                 returned an error to the review screen WITHOUT this
+     *                 entry ever leaving `awaitingReview`. The consultant saw
+     *                 an error, the Submit button was still live, and
+     *                 pressing it again could press a real employer's submit
+     *                 control a second time.
+     *
+     * So the entry comes off the review list unconditionally — the browser
+     * truth is not in question once `pressed.ok` is true, and leaving it
+     * sitting there is what invited a second click — and a failed report to
+     * the hub is queued through `#report`'s outbox instead of thrown. The
+     * hub's own endpoint is built for exactly this: it de-dupes on the queue
+     * item, so a retried report of the same submission never creates a
+     * second application record (see reportSubmitted in the backend's
+     * deviceController.js).
+     */
+    async reportSubmitted(itemId, context = {}) {
+        const waiting = this.store.get('awaitingReview') ?? [];
+        const entry = waiting.find((w) => w.itemId === itemId);
+        if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
+
+        const body = {
+            // DESKTOP_BOT is "filled by the app, submitted by the consultant" —
+            // true whether they pressed the button here or in the browser.
+            submissionMethod: 'DESKTOP_BOT',
+            notes: context.detail ?? null,
+            qa: entry.qa.map((q) => ({
+                questionText: q.questionText,
+                answerText: q.answerText,
+                fieldType: q.fieldType,
+                questionId: q.questionId ?? null,
+            })),
+        };
+
+        // Removed BEFORE the hub is told, not after: the application was
+        // already sent, so a form nobody can press Submit on twice is the
+        // safe state to be in while the report is still in flight or retrying.
+        this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
+
+        const reported = await this.#report(() => this.hub.submitted(itemId, body),
+            { path: `/device/queue/${itemId}/submitted`, body });
+
+        // `ok` reports the fact that matters to every caller: the application
+        // was sent. `hubConfirmed` is a secondary detail for anyone who wants
+        // to know whether the hub has heard about it yet, or is catching up
+        // from the outbox.
+        return { ok: true, hubConfirmed: reported !== null };
+    }
+
+    /**
+     * Submit an application, because the consultant pressed Submit in the app.
+     *
+     * ── THIS IS THE ONE EXCEPTION, AND IT IS DELIBERATE ───────────────
+     *
+     * Everywhere else the app refuses to click a submit control. Here it does,
+     * and only here, on an explicit instruction from the person whose name is
+     * on the application, after they have read every answer in the review
+     * screen. The machine still decides nothing: it performs a click a human
+     * asked for, in the same way pressing the button in the browser would.
+     *
+     * The alternative was to require the consultant to find the browser window
+     * and click Submit there. That is still available and still works — this
+     * exists because reviewing the answers and sending the application in two
+     * different windows is how people submit the wrong one.
+     *
+     * It refuses if the board never got as far as offering a submit button.
+     */
+    async submitFromApp(itemId) {
+        const waiting = this.store.get('awaitingReview') ?? [];
+        const entry = waiting.find((w) => w.itemId === itemId);
+        if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
+
+        // Filled by the AI agent: there is no recipe to walk back to the submit
+        // step, so it is pressed where the agent left it, or not at all.
+        if (entry.filledBy === 'AGENT') return this.#submitAgentFill(entry);
+
+        const board = BOARDS[entry.board];
+        if (!board?.apply?.submit) {
+            return {
+                ok: false,
+                error: 'This application has to be submitted in the browser window — '
+                    + 'this board has no submit button the app can press.',
+            };
+        }
+
+        // ── THE FORM IS PROBABLY GONE ─────────────────────────────────
+        //
+        // One browser page is driven per board, so every job worked after this
+        // one navigated that page away. By the time somebody reads the review
+        // screen and presses Submit, the application they are looking at is
+        // usually no longer displayed — which is what produced "the submit
+        // button is no longer on screen" for anything but the most recent job.
+        //
+        // So it is rebuilt: reopen the job and walk the apply flow back to its
+        // submit step, rather than pressing whatever submit button happens to
+        // be on screen — which would belong to a different application.
+        const page = await this.sessions.page(entry.board);
+        const ready = await this.#reachSubmitStep(page, board, entry);
+        if (!ready.ok) return ready;
+
+        this.activity(entry.board, 'SUBMITTING', `Submitting ${entry.company} — you asked for this`);
+        const pressed = await pressSubmit(page, board);
+        if (!pressed.ok) {
+            this.activity(entry.board, 'ERROR', `${entry.company}: ${pressed.error}`);
+            return pressed;
+        }
+        this.activity(entry.board, 'SUBMITTED', `${entry.company}: ${pressed.detail}`);
+
+        // Record it exactly as it happened, including whether the board
+        // actually confirmed. Then remove it from the review list.
+        const reported = await this.reportSubmitted(itemId, {
+            confirmed: pressed.confirmed,
+            detail: pressed.detail,
+        });
+        return { ...reported, ...pressed };
+    }
+
+    /**
+     * Put the application in `entry` back on screen, at its submit step.
+     *
+     * Reopening rather than trusting whatever the page currently shows: the
+     * alternative is pressing a submit button that belongs to another job.
+     */
+    async #reachSubmitStep(page, board, entry) {
+        const recipe = board.apply;
+        if (!recipe) return { ok: true };
+
+        const sameJob = page.url().includes(new URL(entry.url).pathname);
+        if (sameJob && await page.locator(recipe.submit).first().count() > 0) {
+            return { ok: true };
+        }
+
+        this.activity(entry.board, 'WORKING', `Reopening ${entry.company} to submit it`);
+        await this.sessions.openJob(entry.board, entry.url);
+
+        const flow = await runApplyFlow(page, board, {
+            profile: entry.profile ?? {},
+            approvedAnswers: entry.approvedAnswers ?? [],
+            resumePath: entry.resumePath ?? null,
+        }, { log: this.log });
+
+        if (flow.outcome === 'READY_TO_SUBMIT') return { ok: true };
+        if (flow.outcome === 'ALREADY_APPLIED') {
+            return { ok: false, error: 'The board says this application was already sent.' };
+        }
+        return {
+            ok: false,
+            error: `Could not get back to the submit step: ${flow.detail}. `
+                + 'Open it and finish it in the browser.',
+        };
+    }
+
+    /** Drop a filled form the consultant decided not to send. */
+    async discardReview(itemId, reason) {
+        const waiting = this.store.get('awaitingReview') ?? [];
+        await this.#reportSkipped(itemId, {
+            reason: reason || 'The consultant chose not to submit this one.',
+        });
+        this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
+        return { ok: true };
+    }
+
+    /** Bring a filled form back in front of the consultant. */
+    async openForReview(itemId) {
+        const entry = (this.store.get('awaitingReview') ?? [])
+            .find((w) => w.itemId === itemId);
+        if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
+
+        // An agent-filled form lives in its own session, on the page where the
+        // agent finished rather than the job's first page.
+        const session = entry.session ?? entry.board;
+        const url = entry.pageUrl ?? entry.url;
+        const page = await this.sessions.page(session);
+        if (page.url() !== url) {
+            await this.sessions.openJob(session, url);
+        }
+        await page.bringToFront();
+        return { ok: true };
+    }
+
+    /**
+     * Send a report, or let the caller carry on if the hub is unreachable.
+     *
+     * Reports are facts about work already done. Losing one because the network
+     * blinked would leave the hub's record disagreeing with reality, so nothing
+     * here is ever fire-and-forget.
+     *
+     * ── "QUEUED FOR RETRY" USED TO BE A LIE ────────────────────────────
+     *
+     * The log line said it, but nothing ever queued anything: the outbox this
+     * engine is handed in its constructor sat unused, and a failed report was
+     * simply dropped. A crash-free run never noticed — this only bit when the
+     * network genuinely blinked between the call landing at the hub and the
+     * response getting back here, and what was lost was never a request that
+     * failed, always one whose OUTCOME was never heard from again: a filled
+     * application the hub still thinks is in progress, a lease that then
+     * expires and re-offers the same job (R-08's append-only record is no
+     * defence against a report that never arrived to be appended).
+     *
+     * `retry` is optional so a caller that has nothing safe to replay — there
+     * is none left in this file, but the signature does not require one — can
+     * still get the old best-effort behaviour. Every real call site now
+     * supplies one, through the `#reportX` helpers below, which is also what
+     * keeps this durable without changing which hub method each call site
+     * invokes (and, so, without disturbing what the test suite's fake hub
+     * already asserts was called).
+     *
+     * @param retry {path, body} — the same request, replayed later by
+     *   `outbox.drain()` (wired in index.js's heartbeat). Every endpoint this
+     *   is used for is safe to repeat: `submitted` de-dupes on the queue item
+     *   at the hub, and the rest are state-machine transitions that simply
+     *   refuse a repeat rather than double-apply it.
+     */
+    async #report(fn, retry = null) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (err.name === 'Revoked') throw err;
+            this.log(`queued for retry: ${err.message}`);
+            if (retry) {
+                try {
+                    this.outbox.add(retry.path, retry.body);
+                } catch { /* the outbox itself could not be written; nothing
+                             further to do without risking a crash over a
+                             report that was already going to be best-effort */ }
+            }
+            return null;
+        }
+    }
+
+    /* ── named report shapes, each pairing the hub call the suite already
+     * knows about with the {path, body} the outbox needs to replay it ──── */
+
+    #reportReclassify(itemId, body) {
+        return this.#report(() => this.hub.reclassify(itemId, body),
+            { path: `/device/queue/${itemId}/reclassify`, body });
+    }
+
+    #reportSkipped(itemId, body) {
+        return this.#report(() => this.hub.skipped(itemId, body),
+            { path: `/device/queue/${itemId}/skipped`, body });
+    }
+
+    #reportParked(itemId, body) {
+        return this.#report(() => this.hub.parked(itemId, body),
+            { path: `/device/queue/${itemId}/parked`, body });
+    }
+
+    #reportFilled(itemId, body = {}) {
+        return this.#report(() => this.hub.filled(itemId, body),
+            { path: `/device/queue/${itemId}/filled`, body });
+    }
+
+    #reportBoardStatus(body) {
+        return this.#report(() => this.hub.boardStatus(body),
+            { path: '/device/board-status', body });
+    }
+
+    #reportAskQuestions(itemId, body) {
+        return this.#report(() => this.hub.askQuestions(itemId, body),
+            { path: `/device/queue/${itemId}/questions`, body });
+    }
+}
+
+module.exports = { CycleEngine, nextPollMs, clearWorkDir, humanPause };

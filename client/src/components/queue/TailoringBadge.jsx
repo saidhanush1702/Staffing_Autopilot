@@ -1,0 +1,128 @@
+import { Sparkles, MinusCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { badge, TONE } from '../../design/tokens.js';
+
+/**
+ * ── DID THIS APPLICATION GO OUT WITH A TAILORED RESUME? ───────────────
+ *
+ * One badge, four states, rendered identically in the management queue, the
+ * queue drawer and the consultant's own portal.
+ *
+ * ── WHY THE "NO" STATE IS SHOWN AT ALL ────────────────────────────────
+ *
+ * Because the pipeline is allowed to skip. There is no daily cap and no
+ * blocking failure path: a missing base resume, an exhausted budget, a legacy
+ * `.doc` nobody can parse, or a provider having a bad afternoon each end with
+ * the application going out anyway, carrying the consultant's base resume.
+ *
+ * That is the right behaviour — an untailored application beats no application
+ * — but it is only the right behaviour if it is VISIBLE. Silently sending the
+ * base resume while the product promises tailoring is how a client discovers
+ * the ceiling by noticing results got worse. So the grey badge is not an error
+ * message; it is the feature working, in the open, with its reason attached.
+ *
+ * ── WHY THE REASON IS IN THE BADGE AND NOT A TOOLTIP ONLY ─────────────
+ *
+ * "Not tailored" prompts the question "why not", and the four answers lead to
+ * four different actions — top up the budget, chase a re-upload, wait, or look
+ * at the logs. A tooltip hides that behind a hover nobody performs on a phone.
+ */
+
+const STATES = {
+    TAILORED: {
+        tone: 'success',
+        icon: Sparkles,
+        label: 'Tailored',
+        title: 'This application went out with a resume rewritten for this job.',
+    },
+    PENDING: {
+        tone: 'neutral',
+        icon: Loader2,
+        label: 'Preparing',
+        title: 'The tailored resume is still being prepared.',
+    },
+    FLAGGED: {
+        tone: 'warning',
+        icon: AlertTriangle,
+        label: 'Needs review',
+        title: 'The checker found claims it could not trace back to the base resume.',
+    },
+    NOT_TAILORED: {
+        tone: 'neutral',
+        icon: MinusCircle,
+        label: 'Not tailored',
+        title: 'This application went out with the base resume.',
+    },
+};
+
+/**
+ * Skip reasons, in the words of the person who has to do something about it.
+ *
+ * The database stores a constant; a recruiter needs a sentence. Kept here
+ * rather than in each screen so the four answers cannot drift apart.
+ */
+export const SKIP_REASONS = {
+    BUDGET_EXHAUSTED: "this month's AI budget is used up",
+    NO_BASE_RESUME: 'no base resume on file',
+    UNPARSEABLE_RESUME: 'the base resume could not be read',
+    AI_FAILED: 'the AI stage did not complete',
+};
+
+/**
+ * @param status  the queue status NAME (`PREPARING`, `READY`, …), when the
+ *                caller has it. See the PENDING rule below — without it the
+ *                badge cannot tell "being prepared" from "predates the feature".
+ */
+const TailoringBadge = ({ state, reason, status = null, className = '' }) => {
+    const spec = STATES[state];
+    // An item from before this feature existed has no state at all. Showing
+    // nothing is honest; showing "Not tailored" would claim a decision that was
+    // never made.
+    if (!spec) return null;
+
+    // ── PENDING does not mean "in progress" ───────────────────────────
+    //
+    // `tailoring_state` defaults to PENDING for EVERY queue item, including the
+    // hundreds created before this feature existed. Those items are long since
+    // READY or SUBMITTED and will never be tailored — `promoteToReady` only
+    // ever picks up QUEUED items, so nothing will revisit them.
+    //
+    // Rendering PENDING as a spinning "Preparing" told the opposite story: an
+    // owner opening the jobs screen saw a wall of items apparently mid-flight,
+    // with a spinner implying an AI stage was running and money was being spent.
+    // Nothing was running. The badge was the only thing moving.
+    //
+    // So "Preparing" is claimed ONLY while the item is genuinely at that stage.
+    // Anywhere else, PENDING means "the AI stage never ran for this job", and
+    // the honest rendering of that is nothing at all.
+    if (state === 'PENDING' && status !== null && status !== 'PREPARING') return null;
+
+    // Nothing went wrong and nothing was skipped: tailoring is something a
+    // person asks for, and nobody has asked for this job. Calling that "Not
+    // tailored — reason" reads like a fault; "Base resume" reads like a state.
+    if (state === 'NOT_TAILORED' && reason === 'NOT_REQUESTED') {
+        return (
+            <span
+                className={`${badge} ${TONE.neutral} ${className}`}
+                title="Ready with the consultant's base resume. Select this job to have a resume tailored for it."
+            >
+                <MinusCircle className="h-3 w-3 shrink-0" />
+                Base resume
+            </span>
+        );
+    }
+
+    const { tone, icon: Icon, label, title } = spec;
+    const explained = state === 'NOT_TAILORED' && SKIP_REASONS[reason];
+
+    return (
+        <span
+            className={`${badge} ${TONE[tone]} ${className}`}
+            title={explained ? `${title} Reason: ${SKIP_REASONS[reason]}.` : title}
+        >
+            <Icon className={`h-3 w-3 shrink-0 ${state === 'PENDING' ? 'animate-spin' : ''}`} />
+            {explained ? `Not tailored — ${SKIP_REASONS[reason]}` : label}
+        </span>
+    );
+};
+
+export default TailoringBadge;

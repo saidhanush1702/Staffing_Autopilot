@@ -3,11 +3,9 @@ import { History, Eye, RotateCcw, GitCompare, Loader2 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import Modal, { ModalActions } from '../ui/Modal.jsx';
 import CriteriaView, { VersionByline, describeLocation, describePay } from './CriteriaView.jsx';
-import {
-    card, cardPad, sectionTitle, btnSm, badge, TONE, TONE_ALERT, tableHead,
-    tableHeadCell, tableBody, tableRow, tableCell, tableEmpty,
-} from '../../design/tokens.js';
+import { card, cardPad, sectionTitle, btnSm, badge, TONE, TONE_ALERT, tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty, alertShellSm } from '../../design/tokens.js';
 import { useLookups } from '../../context/LookupContext.jsx';
+import { formatDateTime } from '../../utils/datetime.js';
 
 /** Added / removed between two string lists, in one pass. */
 const listDiff = (before, after) => ({
@@ -77,7 +75,7 @@ const VersionDiff = ({ older, newer }) => {
                 <p className="text-sm text-slate-400">Nothing differs between these two versions.</p>
             )}
 
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-line-soft">
                 {rows.map(([label, b, a]) => (
                     <DiffRow key={label} label={label} before={b} after={a} />
                 ))}
@@ -156,7 +154,7 @@ const VersionHistory = ({ consultantId, versions, currentVersion, canEdit, onRes
             </p>
 
             {error && (
-                <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>{error}</p>
+                <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>{error}</p>
             )}
 
             <div className="mt-3 overflow-x-auto">
@@ -187,7 +185,7 @@ const VersionHistory = ({ consultantId, versions, currentVersion, canEdit, onRes
                                     <p className="text-xs text-slate-400">{v.createdByRole}</p>
                                 </td>
                                 <td className={`${tableCell} whitespace-nowrap text-slate-500`}>
-                                    {new Date(v.createdAt).toLocaleString()}
+                                    {formatDateTime(v.createdAt)}
                                 </td>
                                 <td className={`${tableCell} text-xs text-slate-500`}>
                                     {v.titleCount} titles · {v.keywordCount} keywords · {v.locationCount} locations
@@ -274,7 +272,7 @@ const VersionHistory = ({ consultantId, versions, currentVersion, canEdit, onRes
                         that you restored it today.
                     </p>
                     {error && (
-                        <p className={`mt-3 rounded-lg p-2 text-xs ${TONE_ALERT.danger}`}>{error}</p>
+                        <p className={`mt-3 ${alertShellSm} ${TONE_ALERT.danger}`}>{error}</p>
                     )}
                 </Modal>
             )}
