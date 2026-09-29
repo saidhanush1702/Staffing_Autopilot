@@ -22,14 +22,25 @@ import { query } from '../db.js';
  */
 export const recordBlockers = async (client, { orgId, itemId, asked }) => {
     for (const b of asked) {
+        // The exact option labels this form offered, for a radio, checkbox
+        // group or select — kept so the Questions tab can offer them back
+        // rather than a free-text box. Capped and stringified defensively:
+        // this arrives from the desktop's own reading of a real page, and a
+        // form with an unreasonable number of options should not become an
+        // unbounded row.
+        const options = Array.isArray(b.options) && b.options.length > 0
+            ? b.options.slice(0, 60).map((o) => String(o).slice(0, 200))
+            : null;
+
         await client.query(
             `INSERT INTO queue_item_blockers
                 (id, organization_id, queue_item_id, question_id,
-                 asked_as, field_type, is_required)
-             VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6)
-             ON CONFLICT (queue_item_id, question_id) DO NOTHING`,
+                 asked_as, field_type, is_required, options)
+             VALUES (gen_random_uuid()::text,$1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (queue_item_id, question_id)
+             DO UPDATE SET options = COALESCE(EXCLUDED.options, queue_item_blockers.options)`,
             [orgId, itemId, b.questionId, String(b.askedAs ?? '').slice(0, 2000),
-                b.fieldType ?? null, b.required !== false],
+                b.fieldType ?? null, b.required !== false, options ? JSON.stringify(options) : null],
         );
     }
 };
@@ -107,7 +118,12 @@ export const outstandingForConsultant = async (orgId, consultantId) => {
                 COUNT(DISTINCT b.queue_item_id)::int AS waiting_jobs,
                 MIN(p.company)    AS example_company,
                 c.name            AS category,
-                c.label           AS category_label
+                c.label           AS category_label,
+                -- The most recently seen set of options for this question —
+                -- JSONB has no natural MIN/MAX, so the freshest non-null row
+                -- is picked explicitly rather than an arbitrary one.
+                (array_agg(b.options ORDER BY b.created_at DESC)
+                    FILTER (WHERE b.options IS NOT NULL))[1] AS options
            FROM queue_item_blockers b
            JOIN queue_items q ON q.id = b.queue_item_id
            JOIN job_postings p ON p.id = q.posting_id

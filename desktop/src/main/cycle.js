@@ -172,6 +172,16 @@ class CycleEngine {
         this.runAgent = runAgent;
         this.running = false;
         this.stopRequested = false;
+        // ── "HAVE WE ASKED AI ABOUT THIS WORDING BEFORE?" ──────────────
+        //
+        // Keyed by the normalised question, for the life of the engine — the
+        // same session-level cache the Questions tab already keeps for the
+        // identical endpoint (see `suggestionCache` in index.js), so a
+        // question this consultant's forms keep asking in slightly different
+        // words is not re-sent to a model on every single job that shows it.
+        // A wording the exact-match bank has already learned never reaches
+        // this cache at all, because it never becomes "unknown" again.
+        this.matchCache = new Map();
     }
 
     /**
@@ -776,7 +786,36 @@ class CycleEngine {
         // A question nobody has approved an answer for stops this application.
         // Only a REQUIRED one, though: parking on an optional extra would stall
         // the queue over a field the consultant could simply leave blank.
-        const blocking = result.unknown.filter((u) => u.required);
+        let blocking = result.unknown.filter((u) => u.required);
+        // Carried forward through both the AI-match attempt below and the
+        // human-answer refill after it, so neither one throws away what the
+        // other just found.
+        let currentAnswers = approvedAnswers;
+        if (blocking.length > 0) {
+            // ── LET AI CHECK BEFORE ASKING A PERSON ───────────────────────
+            const ai = await this.#matchBlockingWithAI({
+                item, board, blocking, approvedAnswers: currentAnswers,
+            });
+            if (ai.matched) {
+                currentAnswers = ai.approvedAnswers;
+                const afterAI = board.apply
+                    ? await runApplyFlow(page, board, { ...fillOptions, approvedAnswers: currentAnswers },
+                        { log: this.log, canFill: Boolean(board.verified) })
+                    : await fillForm(page, { ...fillOptions, approvedAnswers: currentAnswers });
+                result = board.apply
+                    ? {
+                        qa: afterAI.qa,
+                        unknown: afterAI.unknown,
+                        attachedResume: afterAI.attachedResume,
+                        refusals: [],
+                        readyToSubmit: afterAI.outcome === 'READY_TO_SUBMIT',
+                        steps: afterAI.steps,
+                    }
+                    : { ...afterAI, readyToSubmit: true };
+                blocking = result.unknown.filter((u) => u.required);
+            }
+        }
+
         if (blocking.length > 0) {
             const said = await this.#askUnanswered({
                 item,
@@ -794,7 +833,7 @@ class CycleEngine {
             // answers as they stand now -- the same page, the same step, no
             // re-walking of anything -- and carry on from there.
             const fresh = await this.hub.queue().catch(() => null);
-            const answersNow = fresh?.approvedAnswers ?? approvedAnswers;
+            const answersNow = fresh?.approvedAnswers ?? currentAnswers;
             const second = board.apply
                 ? await runApplyFlow(page, board, { ...fillOptions, approvedAnswers: answersNow },
                     { log: this.log, canFill: Boolean(board.verified) })
@@ -820,6 +859,7 @@ class CycleEngine {
                     unknownQuestions: result.unknown.map((u) => ({
                         questionText: u.questionText,
                         fieldType: u.fieldType,
+                        options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
                     })),
                 });
                 stats.parked += 1;
@@ -1104,7 +1144,22 @@ class CycleEngine {
         // A question nobody has answered stops it here, the same as on a board —
         // and it lands in the same Questions tab, because it is the same bank.
         let filled = inner;
-        const blocking = (filled.unknown ?? []).filter((u) => u.required);
+        let blocking = (filled.unknown ?? []).filter((u) => u.required);
+        let currentAnswers = approvedAnswers;
+        if (blocking.length > 0) {
+            // ── LET AI CHECK BEFORE ASKING A PERSON ───────────────────────
+            const ai = await this.#matchBlockingWithAI({
+                item, board, blocking, approvedAnswers: currentAnswers,
+            });
+            if (ai.matched) {
+                currentAnswers = ai.approvedAnswers;
+                filled = await runApplyFlow(page, tenant, {
+                    profile, approvedAnswers: currentAnswers, resumePath,
+                }, { log: this.log, canFill: Boolean(tenant.verified) });
+                blocking = (filled.unknown ?? []).filter((u) => u.required);
+            }
+        }
+
         if (blocking.length > 0) {
             // Identical treatment to a board's own form: ask, hold the page
             // open, and only give the job up if nobody answers. A Workday
@@ -1125,7 +1180,7 @@ class CycleEngine {
             const fresh = await this.hub.queue().catch(() => null);
             filled = await runApplyFlow(page, tenant, {
                 profile,
-                approvedAnswers: fresh?.approvedAnswers ?? approvedAnswers,
+                approvedAnswers: fresh?.approvedAnswers ?? currentAnswers,
                 resumePath,
             }, { log: this.log, canFill: Boolean(tenant.verified) });
 
@@ -1135,6 +1190,7 @@ class CycleEngine {
                     unknownQuestions: filled.unknown.map((u) => ({
                         questionText: u.questionText,
                         fieldType: u.fieldType,
+                        options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
                     })),
                 });
                 stats.parked += 1;
@@ -1648,6 +1704,119 @@ class CycleEngine {
     }
 
     /**
+     * ── LET AI CHECK FOR AN ANSWER BEFORE A PERSON IS ASKED ────────────
+     *
+     * The rule-based filler only ever matches a question to an approved answer
+     * on the WHOLE normalised wording — deliberately tight, because it is
+     * typing into a real employer's form (see the header of browser/answers.js).
+     * That leaves a real gap: a consultant who has answered "Years of experience
+     * with React" is stopped again by "How many years have you worked with
+     * React.js?", which asks the identical thing in different words.
+     *
+     * This closes that gap the same way the Questions tab already offers a
+     * PERSON to close it — `hub.questionSuggestions`, one model call that
+     * proposes which approved answer a new wording is really asking for — run
+     * here automatically, before the countdown that would otherwise interrupt
+     * the consultant for something they have, in substance, already answered.
+     *
+     * ── WHAT THIS WILL NOT DO ──────────────────────────────────────────
+     *
+     *   · It never invents an answer. The match endpoint itself only returns
+     *     what it is confident about ("when in doubt, leave the question out" —
+     *     see questionSuggestionController.js), and this trusts that gate
+     *     completely rather than adding a looser one of its own.
+     *   · It never touches a question the organisation has switched the AI
+     *     off for. `agentFallback` is the consultant's own narrowing of that
+     *     same permission (see Controls.jsx), and this is gated on it exactly
+     *     as the full agent fallback is — a person who turned AI off gets the
+     *     old behaviour, always, with nothing silently re-added here.
+     *   · An unreachable hub, an exhausted budget, or a stage nobody
+     *     configured all read as "no match" and fall straight through to the
+     *     ordinary countdown — never as an error, and never as a reason to
+     *     stop the pass.
+     *
+     * A match that IS used is banked under the wording THIS page asked, via
+     * the same `askQuestions` → `answerQuestion` pair a human's own answer
+     * goes through — so it becomes an ordinary approved answer from that
+     * moment on, findable by the exact-match rule with no model involved,
+     * and every future job asking it this same way costs nothing at all.
+     *
+     * @returns { matched: boolean, approvedAnswers } — `approvedAnswers` is
+     *   `approvedAnswers` with every matched answer added, keyed under the
+     *   wording this page used, ready to hand straight to a refill.
+     */
+    async #matchBlockingWithAI({ item, board, blocking, approvedAnswers }) {
+        const none = { matched: false, approvedAnswers };
+
+        if (this.store.get('agentFallback') === false) return none;
+        if (typeof this.hub.questionSuggestions !== 'function') return none;
+
+        // Skip whatever this session has already asked about, whichever way
+        // it was answered — a "no match" is as much an answer as a match is.
+        const fresh = blocking.filter((u) => !this.matchCache.has(normaliseQuestion(u.questionText)));
+
+        if (fresh.length > 0) {
+            let res;
+            try {
+                res = await this.hub.questionSuggestions({
+                    questions: fresh.map((u) => ({ questionText: u.questionText })),
+                });
+            } catch {
+                res = null;               // offline, or the hub blinked -- not "AI said no"
+            }
+            const bySuggested = new Map(
+                (res?.suggestions ?? [])
+                    .filter((s) => s.suggestedAnswer)
+                    .map((s) => [normaliseQuestion(s.questionText), s]),
+            );
+            for (const u of fresh) {
+                const key = normaliseQuestion(u.questionText);
+                // `null` marks "asked, nothing came back" so it is not asked
+                // again this session; a real suggestion overwrites it.
+                this.matchCache.set(key, bySuggested.get(key) ?? null);
+            }
+        }
+
+        const matched = blocking
+            .map((u) => ({ unknown: u, suggestion: this.matchCache.get(normaliseQuestion(u.questionText)) }))
+            .filter((m) => m.suggestion);
+        if (matched.length === 0) return none;
+
+        const banked = [];
+        for (const { unknown: u, suggestion: s } of matched) {
+            try {
+                // Raised the same way an unanswered question always is, so it
+                // exists to answer at all -- `answerQuestion` answers a
+                // question that has been asked, not an arbitrary label.
+                const raised = await this.#reportAskQuestions(item.id, {
+                    unknownQuestions: [{ questionText: u.questionText, fieldType: u.fieldType, required: true }],
+                });
+                const questionId = raised?.questions?.[0]?.id;
+                if (!questionId) continue;
+
+                await this.hub.answerQuestion(questionId, {
+                    answerText: s.suggestedAnswer, source: 'AI_MATCH',
+                });
+                banked.push({
+                    question_id: questionId, question_text: u.questionText, answer_text: s.suggestedAnswer,
+                });
+                this.log(`${item.company}: "${u.questionText.slice(0, 60)}" answered by AI `
+                    + `— matched to "${s.fromQuestion.slice(0, 60)}" (${s.confidence} confidence)`);
+                this.activity(board.name, 'FILLING',
+                    `${item.company}: AI matched "${u.questionText.slice(0, 60)}" to an approved answer`);
+            } catch (err) {
+                if (err.name === 'Revoked') throw err;
+                // Not banked, but still usable for THIS application below --
+                // a hub blip here should not throw away a match already found.
+                banked.push({ question_id: null, question_text: u.questionText, answer_text: s.suggestedAnswer });
+            }
+        }
+        if (banked.length === 0) return none;
+
+        return { matched: true, approvedAnswers: [...approvedAnswers, ...banked] };
+    }
+
+    /**
      * Put unanswered questions in front of the consultant and hold the job open.
      *
      * ── WHY THIS IS NOT JUST PARKING ANY MORE ─────────────────────────
@@ -1685,6 +1854,14 @@ class CycleEngine {
             questionText: u.questionText,
             fieldType: u.fieldType,
             required: u.required !== false,
+            // The exact choices THIS form offered, for a radio, select or
+            // checkbox group — so the Questions tab can show the real options
+            // instead of a free-text box. A consultant typing "Yes" against
+            // options worded "Yes, I am authorized" / "No, I am not" answers
+            // correctly in their own mind and unanswerably as far as the
+            // filler is concerned; offering the actual labels means what gets
+            // saved is one of them, verbatim.
+            options: Array.isArray(u.options) && u.options.length > 0 ? u.options : null,
         }));
 
         // Raise them first, so they are already on the Questions tab when the
@@ -1811,13 +1988,32 @@ class CycleEngine {
                 const id = idFor.get(key);
                 if (!id) continue;
 
+                // ── A RADIO GROUP HAS NO ONE FIELD TO FIND ─────────────
+                //
+                // Every option in a radio group shares the SAME question —
+                // that is the whole point of a group — so `.find()` on a
+                // plain label match always returned the FIRST option in DOM
+                // order, whether or not it was the one the consultant
+                // actually picked. "No" typed by picking the second radio
+                // read back as "" from the first, unchecked one, so nothing
+                // was banked and the very same question came back on the
+                // next job as if it had never been answered.
+                //
+                // The fix is the one `fillForm`'s own radio branch already
+                // uses: read whichever SIBLING is checked, not whichever
+                // sibling is first.
+                const radioSiblings = fields.filter((f) => f.type === 'radio'
+                    && normaliseQuestion(f.groupLabel || f.label) === key);
+
                 // Match the field back to the question by the same normaliser
                 // the answer bank uses, so wording that differs only in
                 // punctuation or a trailing asterisk still lines up.
-                const field = fields.find((f) => {
-                    const asked = f.groupLabel || f.label;
-                    return asked && normaliseQuestion(asked) === key;
-                });
+                const field = radioSiblings.length > 0
+                    ? radioSiblings.find((s) => s.hasValue)
+                    : fields.find((f) => {
+                        const asked = f.groupLabel || f.label;
+                        return asked && normaliseQuestion(asked) === key;
+                    });
                 const text = String(field?.value ?? '').trim();
                 if (!text) continue;
 

@@ -27,7 +27,7 @@ const { Attention, WAIT_MS } = require('../src/main/attention.js');
 const { DESTINATIONS, tenantFor } = require('../src/main/browser/destinations.js');
 const { CycleEngine, nextPollMs, clearWorkDir } = require('../src/main/cycle.js');
 const {
-    buildAnswerBook, resolveAnswer, chooseOption, chooseSuggestion,
+    buildAnswerBook, resolveAnswer, chooseOption, chooseSuggestion, normaliseQuestion,
 } = require('../src/main/browser/answers.js');
 const { fillForm, describeFields } = require('../src/main/browser/filler.js');
 const {
@@ -1938,6 +1938,166 @@ BOARDS.WELLFOUND.verified = false;
 check('the test board is left as it was found', BOARDS.WELLFOUND.verified, false);
 
 
+section('AI checks for a matching answer before a person is asked');
+
+/**
+ * The same shape as `askingHub`, with `questionSuggestions` wired in too —
+ * the one thing that actually differs about this section.
+ */
+const matchingHub = (bank, { suggestions = [], onSuggest = null } = {}) => {
+    const hub = askingHub(bank);
+    // `askingHub`'s own `askQuestions` answers `{ ok: true }` with no ids,
+    // which is enough for the ORIGINAL tests -- they check the bank array
+    // directly rather than going through `answerQuestion`. This section's
+    // whole point is that path, so it needs real ids to answer against.
+    let seq = 0;
+    hub.askQuestions = (...args) => {
+        hub.calls.push({ name: 'askQuestions', args });
+        const asked = args[1]?.unknownQuestions ?? [];
+        return Promise.resolve({
+            ok: true,
+            questions: asked.map((q) => { seq += 1; return { id: `qid-${seq}`, questionText: q.questionText }; }),
+        });
+    };
+    hub.answerQuestion = (id, body) => {
+        hub.calls.push({ name: 'answerQuestion', args: [id, body] });
+        if (body.source === 'AI_MATCH') bank.push({ question_text: 'What is your notice period?', answer_text: body.answerText, question_id: id });
+        return Promise.resolve({ ok: true });
+    };
+    hub.questionSuggestions = (...args) => {
+        hub.calls.push({ name: 'questionSuggestions', args });
+        onSuggest?.();
+        return Promise.resolve({ suggestions });
+    };
+    return hub;
+};
+
+BOARDS.WELLFOUND.verified = true;
+
+// ── AI RECOGNISES IT: no countdown, no person interrupted ─────────────
+{
+    const bank = [];
+    const hub = matchingHub(bank, {
+        suggestions: [{
+            questionText: 'What is your notice period?',
+            questionId: null,
+            suggestedAnswer: '2 weeks',
+            fromQuestion: 'How much notice do you need to give your current employer?',
+            confidence: 'high',
+        }],
+    });
+    const sess = fakeSessions();
+    sess.page = async () => askingPage(bank);
+    // No Attention at all: if this reaches the human-wait path it falls back
+    // to #waitOut with the real, multi-minute WAIT_MS.UNKNOWN_QUESTIONS —
+    // so a fast finish is itself proof the countdown was never entered.
+    const engine = engineWith(hub, sess);
+
+    const startedAt = Date.now();
+    const stats = await engine.run();
+    const elapsedMs = Date.now() - startedAt;
+
+    check('AI matched it, and the answer was banked under this exact wording',
+        hub.calls.some((c) => c.name === 'answerQuestion' && c.args[1].source === 'AI_MATCH'
+            && c.args[1].answerText === '2 weeks'), true);
+    check('  the job was never parked', stats.parked, 0);
+    check('  it carried on to the review screen', stats.outcomes.map((o) => o.result), ['READY_TO_SUBMIT']);
+    // Well above R-19's own 1.5-4s pause between applications (`humanPause`
+    // in `run()`, unconditional after every item), and nowhere near the
+    // multi-minute countdown this is proving was never entered.
+    check('  and no countdown was ever entered', elapsedMs < 10_000, true);
+}
+
+// ── AI HAS NOTHING: falls straight through to the person, unchanged ───
+{
+    const bank = [];
+    const hub = matchingHub(bank, { suggestions: [] });
+    const sess = fakeSessions();
+    sess.page = async () => askingPage(bank);
+    const attn = new Attention({ pollMs: 5 });
+    const engine = engineWith(hub, sess, { attention: attn });
+    setTimeout(() => { attn.skip(); }, 30);
+
+    const stats = await engine.run();
+    check('AI was asked and found nothing', hub.calls.some((c) => c.name === 'questionSuggestions'), true);
+    check('  no AI-matched answer was ever banked',
+        hub.calls.some((c) => c.name === 'answerQuestion' && c.args[1].source === 'AI_MATCH'), false);
+    check('  the job still falls through to the person, exactly as before',
+        /skipped/.test(stats.outcomes[0].reason), true);
+}
+
+// ── AI IS SWITCHED OFF FOR THIS RUN: never consulted at all ───────────
+{
+    const bank = [];
+    const hub = matchingHub(bank, {
+        suggestions: [{
+            questionText: 'What is your notice period?', questionId: null,
+            suggestedAnswer: '2 weeks', fromQuestion: 'Notice period', confidence: 'high',
+        }],
+    });
+    const sess = fakeSessions();
+    sess.page = async () => askingPage(bank);
+    const attn = new Attention({ pollMs: 5 });
+    const engine = engineWith(hub, sess, { attention: attn });
+    engine.store.set({ agentFallback: false });
+    setTimeout(() => { attn.skip(); }, 30);
+
+    const stats = await engine.run();
+    check('a consultant who switched AI off is never asked about it here either',
+        hub.calls.some((c) => c.name === 'questionSuggestions'), false);
+    check('  the job still falls through to the person', /skipped/.test(stats.outcomes[0].reason), true);
+}
+
+// ── THE SAME WORDING IS NOT RE-SENT TO A MODEL TWICE IN ONE SESSION ────
+//
+// The bank itself is deliberately kept OUT of this one — `approvedAnswers`
+// stays empty and the field's own `hasValue` never turns true, so nothing
+// but `matchCache` on the engine can explain a second job resolving the
+// same wording without a second model call.
+{
+    let suggestCalls = 0;
+    const hub = fakeHub({
+        heartbeat: () => Promise.resolve({ paused: false, pausedBoards: [] }),
+        queue: () => Promise.resolve({
+            items: [item({ id: `aq-${Math.random()}`, company: 'Freshworks', title: 'Full Stack' })],
+            profile: { name: 'Sai Dhanush' },
+            approvedAnswers: [],
+        }),
+    });
+    hub.askQuestions = (...args) => {
+        hub.calls.push({ name: 'askQuestions', args });
+        return Promise.resolve({ ok: true, questions: [{ id: 'qid', questionText: 'What is your notice period?' }] });
+    };
+    hub.answerQuestion = (id, body) => {
+        hub.calls.push({ name: 'answerQuestion', args: [id, body] });
+        return Promise.resolve({ ok: true });
+    };
+    hub.questionSuggestions = (...args) => {
+        hub.calls.push({ name: 'questionSuggestions', args });
+        suggestCalls += 1;
+        return Promise.resolve({
+            suggestions: [{
+                questionText: 'What is your notice period?', questionId: null,
+                suggestedAnswer: '2 weeks', fromQuestion: 'Notice period', confidence: 'high',
+            }],
+        });
+    };
+    const sess = fakeSessions();
+    sess.page = async () => askingPage([]);        // hasValue always false
+    const engine = engineWith(hub, sess);
+
+    const r1 = await engine.run();
+    const r2 = await engine.run();                 // same engine, same matchCache
+    check('both jobs reached the review screen via the matched answer',
+        [r1, r2].map((r) => r.outcomes[0]?.result), ['READY_TO_SUBMIT', 'READY_TO_SUBMIT']);
+    check('one AI call answers every future job that asks it this same way',
+        suggestCalls, 1);
+}
+
+BOARDS.WELLFOUND.verified = false;
+check('the test board is left as it was found', BOARDS.WELLFOUND.verified, false);
+
+
 section('a step hiding its fields behind a button is opened, not skipped');
 
 // The wording rule, on the buttons these forms actually carry.
@@ -2143,6 +2303,46 @@ check('a password is never carried in a descriptor',
 check('  even though the box plainly has one in it',
     valuePage.find((f) => f.type === 'password')?.hasValue, true);
 check('an empty field reads as empty', valuePage.find((f) => f.label === 'Empty')?.value, '');
+
+// ── THE RADIO-GROUP READBACK BUG ────────────────────────────────────────
+//
+// Every option in a radio group shares the SAME question, so finding "the
+// field whose label matches this question" used to return whichever option
+// came FIRST in the DOM — not whichever one the consultant actually checked.
+// A consultant who picked the second option had their answer read back as
+// empty, so it was never banked, and the very same question came back
+// unanswered on the next job. This proves the fix: filter to the group's
+// radio siblings and take the one that is actually checked.
+const radioGroupPage = await (async () => {
+    const engineNow = resolveBrowser();
+    const b = await engineNow.chromium.launch({ headless: true, ...engineNow.launchOptions });
+    const pg = await b.newPage();
+    await pg.setContent(`<!doctype html><html><body><div id="f">
+      <fieldset><legend>Are you willing to relocate?</legend>
+        <label><input type="radio" name="r" value="y"> Yes</label>
+        <label><input type="radio" name="r" value="n"> No</label>
+      </fieldset>
+    </div></body></html>`);
+    // The consultant picks the SECOND option, not the first.
+    await pg.locator('input[value="n"]').check();
+    const fields = await describeFields(pg, '#f');
+    await b.close();
+    return fields;
+})();
+
+const relocateKey = normaliseQuestion('Are you willing to relocate?');
+const oldWayField = radioGroupPage.find(
+    (f) => normaliseQuestion(f.groupLabel || f.label) === relocateKey,
+);
+check('the naive "first field with this label" reading is wrong',
+    oldWayField?.value, '');
+
+const radioSiblings = radioGroupPage.filter(
+    (f) => f.type === 'radio' && normaliseQuestion(f.groupLabel || f.label) === relocateKey,
+);
+const checkedSibling = radioSiblings.find((s) => s.hasValue);
+check('reading whichever sibling is actually checked gets the real answer',
+    checkedSibling?.value, 'No');
 
 
 section('a packaged build can still find a browser');

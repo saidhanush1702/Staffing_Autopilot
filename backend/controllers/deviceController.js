@@ -50,6 +50,10 @@ export const reportSchema = Joi.object({
     unknownQuestions: Joi.array().max(50).items(Joi.object({
         questionText: Joi.string().max(2000).required(),
         fieldType: Joi.string().max(30).allow('', null),
+        // The exact choices a radio, checkbox group or select offered, so
+        // the Questions tab can show the real options instead of a free-text
+        // box. Absent or null for a plain text question.
+        options: Joi.array().max(60).items(Joi.string().max(200)).allow(null),
     })),
     // Present on `submitted` — the exact form, as filled.
     qa: Joi.array().max(200).items(Joi.object({
@@ -528,6 +532,7 @@ export const askQuestions = async (req, res, next) => {
                     askedAs: unknowns[i]?.questionText ?? question.question_text,
                     fieldType: unknowns[i]?.fieldType ?? null,
                     required: unknowns[i]?.required !== false,
+                    options: unknowns[i]?.options ?? null,
                 })),
             });
         });
@@ -574,6 +579,7 @@ export const reportParked = async (req, res, next) => {
                     askedAs: unknowns[i]?.questionText ?? question.question_text,
                     fieldType: unknowns[i]?.fieldType ?? null,
                     required: unknowns[i]?.required !== false,
+                    options: unknowns[i]?.options ?? null,
                 })),
             });
         });
@@ -950,6 +956,16 @@ export const deviceAnswers = async (req, res, next) => {
 
 export const deviceAnswerSchema = Joi.object({
     answerText: Joi.string().max(5000).required(),
+    // Who actually decided this answer. Every existing caller omits it and
+    // gets the same behaviour as before — a consultant typing into the
+    // Questions tab, or into the form itself. `AI_MATCH` is the one other
+    // case: the desktop's rule-based filler hit a question nobody had
+    // answered, asked whether it means the same thing as one already
+    // approved, and the match was confident enough to use. The audit trail
+    // says which happened; nothing here changes WHO the answer is filed
+    // under or how it is used afterwards — it is APPROVED either way, the
+    // instant it is written, same as R-07's note on this route explains.
+    source: Joi.string().valid('CONSULTANT', 'AI_MATCH').default('CONSULTANT'),
 });
 
 /**
@@ -986,6 +1002,12 @@ export const deviceAnswerQuestion = async (req, res, next) => {
         const text = req.body.answerText.trim();
         if (!text) return res.status(422).json({ error: 'An answer cannot be blank.' });
 
+        const byAI = req.body.source === 'AI_MATCH';
+        const reviewNote = byAI
+            ? 'Matched by AI to an existing approved answer, while filling an application '
+              + 'in the desktop app'
+            : 'Answered by the consultant in the desktop app';
+
         await withTransaction(async (client) => {
             // Supersede whatever was there. Answers are revisions, never edits:
             // an application already sent must keep the wording it was sent with.
@@ -1011,10 +1033,9 @@ export const deviceAnswerQuestion = async (req, res, next) => {
                      answered_by, answered_at, reviewed_by, reviewed_at, review_note)
                  VALUES ($1,$2,$3,$4,$5,true,$6,$6,
                      (SELECT id FROM lkp_answer_statuses WHERE name = 'APPROVED'),
-                     $3, now(), $3, now(),
-                     'Answered by the consultant in the desktop app')`,
+                     $3, now(), $3, now(), $7)`,
                 [uuidv4(), req.device.orgId, req.device.consultantId, req.params.id,
-                    Number(prev[0].n) + 1, text],
+                    Number(prev[0].n) + 1, text, reviewNote],
             );
         });
 
@@ -1026,8 +1047,11 @@ export const deviceAnswerQuestion = async (req, res, next) => {
             entityType: 'Question', entityId: req.params.id,
             entityName: question[0].question_text.slice(0, 200),
             performedBy: req.device.consultantId, performedByRole: 'CONSULTANT',
-            description: `Answered "${question[0].question_text.slice(0, 120)}" in the `
-                + `desktop app${released ? `, releasing ${released} application(s)` : ''}`,
+            description: (byAI
+                ? `AI matched "${question[0].question_text.slice(0, 120)}" to an existing `
+                  + 'approved answer while filling an application in the desktop app'
+                : `Answered "${question[0].question_text.slice(0, 120)}" in the desktop app`)
+                + (released ? `, releasing ${released} application(s)` : ''),
             ipAddress: req.ip,
         }).catch(() => {});
 

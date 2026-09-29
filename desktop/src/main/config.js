@@ -101,15 +101,18 @@ const CDP_PORT = Number(process.env.SMARTAPPLY_CDP_PORT ?? 9223);
 /**
  * Human-paced typing (R-19). Per character, with jitter on top.
  *
- * Trimmed from the original {minMs: 45, maxMs: 140, betweenFieldsMs: [400, 1400]}
- * — the field-to-field pace was landing well over 2s per field once a real
- * field's character count was factored in (a 40-character address alone cost
- * up to 5.6s at the old maxMs), and consultants watching the run felt it. Still
- * randomised and still per-keystroke rather than instant, which is what R-19
- * actually requires — just picking from a tighter, still-human range rather
- * than a leisurely one.
+ * The two numbers are trimmed on different schedules, deliberately.
+ * `minMs`/`maxMs` is back at its original {15, 40} — a per-character delay is
+ * the part that most looks like a person actually typing, and there was
+ * nothing wrong with its pace, only with how much of the total it was
+ * contributing next to `betweenFieldsMs`. That is the one that keeps
+ * shrinking: it was {400, 1400}, then {150, 500}, then {60, 180}, and is now
+ * cut again — the pause BETWEEN fields has no character count to justify it,
+ * so it is the cheaper place to find speed without touching the one number
+ * that reads as genuinely human. Still randomised and still never zero,
+ * which is what R-19 actually requires.
  */
-const TYPING = { minMs: 15, maxMs: 40, betweenFieldsMs: [150, 500] };
+const TYPING = { minMs: 15, maxMs: 40, betweenFieldsMs: [25, 75] };
 
 module.exports = {
     HUB_URL,

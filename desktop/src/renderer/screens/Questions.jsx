@@ -24,20 +24,43 @@ import { useCallback, useEffect, useState } from 'react';
  * chore; knowing that this particular chore sends four applications is the
  * difference between doing it now and closing the laptop.
  */
+/**
+ * ── A CHOICE IS NOT A SENTENCE ────────────────────────────────────────
+ *
+ * A radio group or a select on the real form only ever accepts one of a
+ * fixed set of answers. Asking the consultant to type one out freehand meant
+ * "Yes" typed against options worded "Yes, I am authorized to work" matched
+ * nothing when the filler tried to use it — the question looked answered in
+ * here and came back unanswered on the next job that asked it, silently,
+ * with nothing telling the consultant why.
+ *
+ * So a question that carries `options` is shown AS those options — the
+ * board's own words, picked rather than retyped — and what gets saved is one
+ * of them, verbatim. A plain checkbox with no options is really a yes/no
+ * question, shown the same way with the two answers a checkbox actually has.
+ * Anything else still gets the free-text box it always did.
+ */
+const CHOICE_TYPES = new Set(['radio', 'select']);
+
 const Row = ({ q, suggestion, onAnswered }) => {
     const [text, setText] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
 
-    const save = async () => {
-        if (!text.trim()) return;
+    const save = async (value = text) => {
+        const answer = value.trim();
+        if (!answer) return;
         setBusy(true);
         setError('');
-        const res = await window.smartapply.answerQuestion(q.question_id, text.trim());
+        const res = await window.smartapply.answerQuestion(q.question_id, answer);
         setBusy(false);
         if (res?.ok) onAnswered(res.released ?? 0);
         else setError(res?.error ?? 'That did not save.');
     };
+
+    const hasOptions = CHOICE_TYPES.has(q.field_type) && Array.isArray(q.options) && q.options.length > 0;
+    const isPlainCheckbox = q.field_type === 'checkbox' && !hasOptions;
+    const choices = hasOptions ? q.options : (isPlainCheckbox ? ['Yes', 'No'] : null);
 
     return (
         <div className="card stack">
@@ -74,33 +97,54 @@ const Row = ({ q, suggestion, onAnswered }) => {
                 </div>
             )}
 
-            <textarea
-                className="answer"
-                rows={2}
-                value={text}
-                placeholder="Your answer"
-                onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => {
-                    // Enter saves; Shift+Enter is a new line. These answers are
-                    // usually four words, and reaching for the mouse each time
-                    // is most of the effort.
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
-                }}
-            />
+            {choices ? (
+                // The board's own wording, exactly — clicking one both picks
+                // it and saves it. There is nothing to type, so there is
+                // nothing for a Save button to wait on.
+                <div className="row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                    {choices.map((choice) => (
+                        <button
+                            key={choice}
+                            type="button"
+                            className={text === choice ? 'primary' : 'secondary'}
+                            disabled={busy}
+                            onClick={() => { setText(choice); save(choice); }}
+                        >
+                            {busy && text === choice ? 'Saving…' : choice}
+                        </button>
+                    ))}
+                </div>
+            ) : (
+                <textarea
+                    className="answer"
+                    rows={2}
+                    value={text}
+                    placeholder="Your answer"
+                    onChange={(e) => setText(e.target.value)}
+                    onKeyDown={(e) => {
+                        // Enter saves; Shift+Enter is a new line. These answers
+                        // are usually four words, and reaching for the mouse
+                        // each time is most of the effort.
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+                    }}
+                />
+            )}
 
             {error && <p className="note stop">{error}</p>}
 
-            <div className="row">
-                <p className="muted">Enter to save · Shift+Enter for a new line</p>
-                <button
-                    type="button"
-                    className="primary"
-                    disabled={busy || !text.trim()}
-                    onClick={save}
-                >
-                    {busy ? 'Saving…' : 'Save answer'}
-                </button>
-            </div>
+            {!choices && (
+                <div className="row">
+                    <p className="muted">Enter to save · Shift+Enter for a new line</p>
+                    <button
+                        type="button"
+                        className="primary"
+                        disabled={busy || !text.trim()}
+                        onClick={() => save()}
+                    >
+                        {busy ? 'Saving…' : 'Save answer'}
+                    </button>
+                </div>
+            )}
         </div>
     );
 };

@@ -84,8 +84,11 @@ const Controls = ({ snap, onRefresh }) => {
                             {agentFallback
                                 ? 'When a site is new to the app, or its automation breaks, the AI '
                                   + 'agent fills the form using only your profile and approved '
-                                  + 'answers. Anything new still comes to you.'
-                                : 'Jobs the automation cannot fill come straight to you.'}
+                                  + 'answers. It also checks whether a new question means the same '
+                                  + 'as one you have already answered before stopping to ask you. '
+                                  + 'Anything genuinely new still comes to you.'
+                                : 'Jobs the automation cannot fill come straight to you, and every '
+                                  + 'new question stops for you to answer, exactly as before.'}
                         </p>
                     </span>
                 </label>
