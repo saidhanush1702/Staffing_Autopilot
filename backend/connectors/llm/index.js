@@ -36,9 +36,10 @@
  */
 import { query } from '../../db.js';
 import {
-    stageConfig, priceCall, isStageConfigured, envFallback,
+    stageConfig, priceCall, isStageConfigured, envFallback, PROVIDER_DEFAULT_BASE_URL,
 } from '../../config/llmModels.js';
 import { getOverride } from './settings.js';
+import { getProviderCredential } from './providerSettings.js';
 import * as anthropic from './anthropic.js';
 import * as openai from './openai.js';
 import * as gemini from './gemini.js';
@@ -80,8 +81,15 @@ export const knownProviders = () => Object.keys(ADAPTERS);
  *
  * Takes the pair rather than a stage so the same rules answer for a primary, a
  * fallback and a candidate an administrator is about to test.
+ *
+ * `keyAvailable`, when passed explicitly, replaces the environment-only key
+ * check with the caller's own answer — used by every org-aware caller below,
+ * which also knows whether the organisation supplied its own key. Left
+ * `undefined`, this checks the server environment only, which is what the
+ * handful of callers with no organisation in scope (`isAvailable`,
+ * `unavailableReason`) still want.
  */
-const reasonFor = (provider, model, label) => {
+const reasonFor = (provider, model, label, keyAvailable) => {
     if (!provider) {
         return `No model provider is configured. Set LLM_PROVIDER (or LLM_${String(label).toUpperCase()}_PROVIDER).`;
     }
@@ -92,10 +100,19 @@ const reasonFor = (provider, model, label) => {
     if (!model) {
         return `No model named for the ${label} stage. Set LLM_MODEL or LLM_${String(label).toUpperCase()}_MODEL.`;
     }
-    if (!adapter.isConfigured()) {
-        return `The ${provider} provider has no API key in the environment.`;
+    const available = keyAvailable === undefined ? adapter.isConfigured() : keyAvailable;
+    if (!available) {
+        return `The ${provider} provider has no API key — set one in the server environment, `
+            + 'or add the organisation\'s own key on the AI models screen.';
     }
     return null;
+};
+
+/** Whether EITHER the server environment or this organisation has a usable key for a provider. */
+const keyAvailableFor = async (orgId, provider, credential) => {
+    if (credential !== undefined) return Boolean(credential?.apiKey) || Boolean(adapterFor(provider)?.isConfigured());
+    const cred = orgId ? await getProviderCredential(orgId, provider) : null;
+    return Boolean(cred?.apiKey) || Boolean(adapterFor(provider)?.isConfigured());
 };
 
 /**
@@ -164,9 +181,11 @@ export const resolveStage = async (orgId, stage) => {
  */
 export const stageStatus = async (orgId, stage) => {
     const cfg = await resolveStage(orgId, stage);
-    const primaryReason = reasonFor(cfg.provider, cfg.model, stage);
+    const primaryKeyAvailable = await keyAvailableFor(orgId, cfg.provider);
+    const primaryReason = reasonFor(cfg.provider, cfg.model, stage, primaryKeyAvailable);
     const fbReason = cfg.fallback
-        ? reasonFor(cfg.fallback.provider, cfg.fallback.model, `${stage} fallback`)
+        ? reasonFor(cfg.fallback.provider, cfg.fallback.model, `${stage} fallback`,
+            await keyAvailableFor(orgId, cfg.fallback.provider))
         : 'No fallback model is set.';
 
     const primaryOk = primaryReason === null;
@@ -237,17 +256,30 @@ export const spendThisPeriod = async (orgId) => {
 /**
  * One attempt against one provider/model. Validates the answer and prices it.
  * Everything that can go wrong comes back as { ok: false, ... } — never a throw.
+ *
+ * @param {object}  [credential]  an explicit `{apiKey, baseUrl}` to use as-is —
+ *     the "test before saving" path, where nothing is in the database yet.
+ *     `undefined` (not passed) means "look the organisation's own credential
+ *     up"; explicitly `null` means "skip the lookup, use the server only".
  */
 const attempt = async ({
     stage, label, provider, model, system, cacheable, input, schema,
-    maxTokens, temperature, timeoutMs,
+    maxTokens, temperature, timeoutMs, orgId = null, credential,
 }) => {
-    const reason = reasonFor(provider, model, label ?? stage);
+    const cred = credential !== undefined ? credential
+        : (orgId ? await getProviderCredential(orgId, provider) : null);
+    const keyAvailable = Boolean(cred?.apiKey) || Boolean(adapterFor(provider)?.isConfigured());
+    const reason = reasonFor(provider, model, label ?? stage, keyAvailable);
     if (reason) {
         return {
             ok: false, provider, model, error: reason, retryable: false, costUsd: 0,
         };
     }
+
+    // An organisation's own key for DeepSeek or Qwen, with no base URL of its
+    // own, still needs to land on DeepSeek's or Qwen's endpoint rather than
+    // silently falling through to OpenAI's — see PROVIDER_DEFAULT_BASE_URL.
+    const baseUrl = cred?.baseUrl || (cred?.apiKey ? PROVIDER_DEFAULT_BASE_URL[provider] : undefined);
 
     const adapter = adapterFor(provider);
     const started = Date.now();
@@ -257,6 +289,7 @@ const attempt = async ({
     // being asked.
     const res = await adapter.call({
         stage, model, system, cacheable, input, schema, maxTokens, temperature, timeoutMs,
+        apiKey: cred?.apiKey, baseUrl,
     });
     const durationMs = Date.now() - started;
 
@@ -352,15 +385,18 @@ export const callModel = async ({
 
     const primary = await attempt({
         stage, provider: cfg.provider, model: cfg.model, system, cacheable, input, schema,
-        maxTokens: ceiling, temperature: cfg.temperature, timeoutMs: cfg.timeoutMs,
+        maxTokens: ceiling, temperature: cfg.temperature, timeoutMs: cfg.timeoutMs, orgId,
     });
     if (primary.ok) return primary;
 
     const fb = cfg.fallback;
+    // Resolved once, then reused for the actual attempt below, so a fallback
+    // provider with an organisation-supplied key is not queried for it twice.
+    const fbCred = fb && orgId ? await getProviderCredential(orgId, fb.provider) : null;
     const worthTrying = Boolean(cfg.provider)
         && Boolean(fb)
         && !(fb.provider === cfg.provider && fb.model === cfg.model)
-        && reasonFor(fb.provider, fb.model, `${stage} fallback`) === null;
+        && reasonFor(fb.provider, fb.model, `${stage} fallback`, await keyAvailableFor(orgId, fb.provider, fbCred)) === null;
     if (!worthTrying) return primary;
 
     // The temperature was chosen for the primary; another vendor's scale is not
@@ -368,7 +404,7 @@ export const callModel = async ({
     const second = await attempt({
         stage, label: `${stage} fallback`, provider: fb.provider, model: fb.model,
         system, cacheable, input, schema,
-        maxTokens: ceiling, temperature: null, timeoutMs: cfg.timeoutMs,
+        maxTokens: ceiling, temperature: null, timeoutMs: cfg.timeoutMs, credential: fbCred,
     });
 
     const wasted = primary.costUsd ?? 0;
@@ -399,8 +435,17 @@ export const callModel = async ({
  * Takes the candidate values as given rather than reading saved settings, so an
  * administrator can try a choice BEFORE saving it. It costs a fraction of a cent
  * and is not written to the spend ledger.
+ *
+ * `apiKey`/`baseUrl`, when given, are used exactly as provided — this is what
+ * lets the provider-credentials screen test a key the organisation has typed
+ * in but not yet saved. Without them, `orgId` is looked up the normal way, so
+ * the per-stage "Test" button keeps testing whatever the organisation (or the
+ * server) already has configured.
  */
-export const probeModel = async ({ provider, model, temperature = null, timeoutMs = null }) => {
+export const probeModel = async ({
+    provider, model, temperature = null, timeoutMs = null, apiKey = null, baseUrl = null, orgId = null,
+}) => {
+    const credential = (apiKey || baseUrl) ? { apiKey: apiKey || undefined, baseUrl: baseUrl || undefined } : undefined;
     const res = await attempt({
         stage: 'probe',
         label: 'probe',
@@ -419,6 +464,8 @@ export const probeModel = async ({ provider, model, temperature = null, timeoutM
         maxTokens: 2048,
         temperature,
         timeoutMs: timeoutMs ?? 30_000,
+        orgId,
+        credential,
     });
     return {
         ok: res.ok,

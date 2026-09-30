@@ -25,8 +25,11 @@ export const isConfigured = () => env('ANTHROPIC_API_KEY').length > 0;
 
 export const call = async ({
     model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
+    apiKey: apiKeyOverride = null, baseUrl: baseUrlOverride = null,
 }) => {
-    const apiKey = env('ANTHROPIC_API_KEY');
+    // An organisation's own key/base URL, when it has one, wins over the
+    // server environment — see connectors/llm/providerSettings.js.
+    const apiKey = apiKeyOverride || env('ANTHROPIC_API_KEY');
     if (!apiKey) {
         return { ok: false, retryable: false, error: 'ANTHROPIC_API_KEY is not set.' };
     }
@@ -63,8 +66,9 @@ export const call = async ({
         };
     }
 
+    const base = baseUrlOverride || env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com');
     const res = await postJson({
-        url: `${env('ANTHROPIC_BASE_URL', 'https://api.anthropic.com')}/v1/messages`,
+        url: `${base.replace(/\/+$/, '')}/v1/messages`,
         headers: {
             'x-api-key': apiKey,
             'anthropic-version': env('ANTHROPIC_VERSION', '2023-06-01'),

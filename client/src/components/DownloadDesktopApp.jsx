@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Clock, Download, Loader2, MonitorDown } from 'lucide-react';
+import {
+    CheckCircle2, Clock, Download, Loader2, MonitorDown, ShieldAlert,
+} from 'lucide-react';
 import {
     badge, btn, card, cardPad, codeChip, prose, proseMuted, sectionTitle, TONE,
 } from '../design/tokens.js';
@@ -43,6 +45,31 @@ const detectOS = () => {
 const assetFor = (assets, extension) => (assets ?? []).find((a) => a.name?.toLowerCase().endsWith(extension));
 
 const OS_LABEL = { windows: 'Windows', mac: 'Mac' };
+
+/**
+ * ── SHIPPING UNSIGNED IS A REAL, FREE CHOICE — AS LONG AS THIS PART EXISTS ──
+ *
+ * There is no free way to make Windows or macOS trust an unrecognised
+ * publisher outright — that trust is exactly what a paid certificate buys.
+ * What IS free is the one-time bypass every small or open-source app's users
+ * already do without a second thought; the only real risk of shipping
+ * unsigned is a consultant abandoning the install because it *looks* broken
+ * or malicious. Naming the exact click sequence, before they hit the
+ * warning rather than after, is what actually closes that gap for free.
+ */
+const FIRST_RUN_NOTE = {
+    windows: {
+        title: 'Windows will warn you the first time',
+        body: 'That is expected — SmartApply is not yet a widely-recognised publisher, which is '
+            + 'all this means. Click "More info", then "Run anyway". It only asks once.',
+    },
+    mac: {
+        title: 'Mac will block it the first time',
+        body: 'Do not double-click it the first time — right-click (or Control-click) the app and '
+            + 'choose "Open", then confirm. If nothing happens, open System Settings → Privacy & '
+            + 'Security and click "Open Anyway" near the bottom. Only needed once.',
+    },
+};
 
 const DownloadDesktopApp = () => {
     const [state, setState] = useState({ status: 'loading' });
@@ -192,6 +219,39 @@ const DownloadDesktopApp = () => {
                                     </>
                                 )}
                             </p>
+
+                            {/* ── THE ONE-TIME OS WARNING ─────────────────────────
+                                Unsigned, and that is a known, deliberate choice, not
+                                an oversight -- see PACKAGING.md. Naming the exact
+                                click sequence up front is what makes that choice
+                                survivable for a consultant who has never seen it. */}
+                            {FIRST_RUN_NOTE[os] && (
+                                <div className="mt-3 flex items-start gap-2.5 rounded-lg bg-warning-50 p-3.5
+                                                text-warning-800">
+                                    <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                                    <div className="text-xs leading-relaxed">
+                                        <p className="font-medium">{FIRST_RUN_NOTE[os].title}</p>
+                                        <p className="mt-1">{FIRST_RUN_NOTE[os].body}</p>
+                                    </div>
+                                </div>
+                            )}
+                            {os === 'other' && (
+                                <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
+                                    {['windows', 'mac'].map((key) => (
+                                        <div
+                                            key={key}
+                                            className="flex items-start gap-2 rounded-lg bg-warning-50 p-3
+                                                       text-warning-800"
+                                        >
+                                            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                            <div className="text-xs leading-relaxed">
+                                                <p className="font-medium">{FIRST_RUN_NOTE[key].title}</p>
+                                                <p className="mt-1">{FIRST_RUN_NOTE[key].body}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
 
                             {/* ── ACTIVATION ──────────────────────────────────────
                                 Downloading is only half of it: the app does nothing

@@ -29,15 +29,20 @@ import { postJson, extractJson, env, numEnv } from './transport.js';
 
 export const name = 'openai';
 
-const baseUrl = () => env('LLM_OPENAI_BASE_URL', env('OPENAI_BASE_URL', 'https://api.openai.com'));
-const apiKey = () => env('LLM_OPENAI_API_KEY', env('OPENAI_API_KEY'));
+const baseUrl = (override) => override || env('LLM_OPENAI_BASE_URL', env('OPENAI_BASE_URL', 'https://api.openai.com'));
+const apiKey = (override) => override || env('LLM_OPENAI_API_KEY', env('OPENAI_API_KEY'));
 
 export const isConfigured = () => apiKey().length > 0;
 
 export const call = async ({
     model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
+    apiKey: apiKeyOverride = null, baseUrl: baseUrlOverride = null,
 }) => {
-    const key = apiKey();
+    // An organisation's own key/base URL, when it has one, wins over the
+    // server environment — see connectors/llm/providerSettings.js. This also
+    // covers DeepSeek and Qwen, which speak this dialect through this same
+    // adapter with their own stored key and endpoint.
+    const key = apiKey(apiKeyOverride);
     if (!key) {
         return {
             ok: false,
@@ -66,7 +71,7 @@ export const call = async ({
     }
 
     const res = await postJson({
-        url: `${baseUrl().replace(/\/+$/, '')}/v1/chat/completions`,
+        url: `${baseUrl(baseUrlOverride).replace(/\/+$/, '')}/v1/chat/completions`,
         headers: { authorization: `Bearer ${key}` },
         body,
         timeoutMs: timeoutMs ?? numEnv('LLM_TIMEOUT_MS', 120_000),

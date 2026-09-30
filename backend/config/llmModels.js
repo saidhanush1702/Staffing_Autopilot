@@ -219,6 +219,23 @@ export const PROVIDER_INFO = {
     },
 };
 
+/**
+ * Where DeepSeek and Qwen actually live, for an organisation that supplies its
+ * own key and leaves the base URL blank.
+ *
+ * Both speak the OpenAI dialect through connectors/llm/openai.js, and that
+ * adapter has no idea which of the three it is being called as — without a
+ * base URL it defaults to OpenAI's own endpoint. Sent there, a DeepSeek or
+ * Qwen key fails outright (wrong account, model not found), silently, in a
+ * way "I set the key" gives no hint about. So an organisation's own key for
+ * these two is paired with the right endpoint here rather than requiring the
+ * base URL as a second mandatory field — see connectors/llm/index.js#attempt.
+ */
+export const PROVIDER_DEFAULT_BASE_URL = {
+    deepseek: 'https://api.deepseek.com',
+    qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+};
+
 /** Models the price table knows, grouped for a picker. */
 export const knownModels = () => Object.entries(PRICING)
     .filter(([key]) => !key.startsWith('mock:'))
