@@ -136,6 +136,10 @@ import {
     llmSettingsSchema, llmTestSchema,
 } from './controllers/llmSettingsController.js';
 import {
+    listLlmProviders, updateLlmProvider, resetLlmProvider, testLlmProvider,
+    llmProviderCredentialSchema, llmProviderTestSchema,
+} from './controllers/llmProviderController.js';
+import {
     linkCandidates, linkPosting, linkSchema,
 } from './controllers/postingLinkController.js';
 import {
@@ -585,6 +589,16 @@ app.put('/api/management/llm-settings/:stage',
 app.delete('/api/management/llm-settings/:stage', [verifyToken, isOrgAdmin], resetLlmSettings);
 app.post('/api/management/llm-settings/:stage/test',
     [verifyToken, isOrgAdmin, validate(llmTestSchema)], testLlmSettings);
+
+// An organisation's own API key/base URL per provider — reused across every
+// AI task set to that provider. ORG_ADMIN only. The key is write-only: GET
+// reports orgKeyConfigured, never the key. See llmProviderController.js.
+app.get('/api/management/llm-providers', [verifyToken, isOrgAdmin], listLlmProviders);
+app.put('/api/management/llm-providers/:provider',
+    [verifyToken, isOrgAdmin, validate(llmProviderCredentialSchema)], updateLlmProvider);
+app.delete('/api/management/llm-providers/:provider', [verifyToken, isOrgAdmin], resetLlmProvider);
+app.post('/api/management/llm-providers/:provider/test',
+    [verifyToken, isOrgAdmin, validate(llmProviderTestSchema)], testLlmProvider);
 
 /* ─────────────────────────── contacts ───────────────────────────── */
 //

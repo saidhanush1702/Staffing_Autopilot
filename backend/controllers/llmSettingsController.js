@@ -6,10 +6,11 @@
  *
  * ── WHAT IS DELIBERATELY NOT HERE ─────────────────────────────────────
  *
- * API keys. They stay in the server environment; this screen only learns whether
- * one is present. A key typed into a browser is a key in a request log, a proxy
- * and a database backup, and the one thing this screen must not become is the
- * easiest place in the product to leak the vendor account.
+ * API keys. This screen only learns whether one is present — for the server's
+ * own key (the environment) and, now, for an organisation's own key (see
+ * controllers/llmProviderController.js, the companion screen where an
+ * organisation may supply its own key and base URL per provider). Neither
+ * path ever returns a key to the browser once saved.
  *
  * ── HOW A SETTING TAKES EFFECT ────────────────────────────────────────
  *
@@ -28,6 +29,7 @@ import {
 import {
     getAllOverrides, saveOverride, deleteOverride,
 } from '../connectors/llm/settings.js';
+import { getAllProviderCredentials } from '../connectors/llm/providerSettings.js';
 
 const PROVIDERS = Object.keys(PROVIDER_INFO);
 
@@ -52,16 +54,26 @@ export const llmTestSchema = Joi.object({
 
 const badStage = (res) => res.status(404).json({ error: 'Unknown AI task.' });
 
-/** Is a key present for this provider? The only thing the browser is told about keys. */
+/** Is a key present for this provider, on the server? The only thing the browser is told about server keys. */
 const keyPresent = (provider) => Boolean(adapterFor(provider)?.isConfigured());
 
-const providerList = () => PROVIDERS.map((name) => ({
-    name,
-    label: PROVIDER_INFO[name].label,
-    keyEnv: PROVIDER_INFO[name].keyEnv,
-    keyConfigured: keyPresent(name),
-    maxTemperature: PROVIDER_INFO[name].maxTemperature,
-}));
+/**
+ * A provider is usable for a task if EITHER the server or this organisation
+ * has a key for it — see controllers/llmProviderController.js for where an
+ * organisation's own key is set. `keyConfigured` here answers "can a task be
+ * pointed at this provider at all", not "whose key will it use".
+ */
+const providerList = async (orgId) => {
+    const org = await getAllProviderCredentials(orgId);
+    return PROVIDERS.map((name) => ({
+        name,
+        label: PROVIDER_INFO[name].label,
+        keyEnv: PROVIDER_INFO[name].keyEnv,
+        keyConfigured: keyPresent(name) || Boolean(org[name]?.keyConfigured),
+        orgKeyConfigured: Boolean(org[name]?.keyConfigured),
+        maxTemperature: PROVIDER_INFO[name].maxTemperature,
+    }));
+};
 
 /* ── GET ───────────────────────────────────────────────────────────── */
 
@@ -110,7 +122,7 @@ export const getLlmSettings = async (req, res, next) => {
             });
         }
 
-        return res.json({ stages, providers: providerList(), models: knownModels() });
+        return res.json({ stages, providers: await providerList(orgId), models: knownModels() });
     } catch (err) {
         return next(err);
     }
@@ -215,6 +227,7 @@ export const testLlmSettings = async (req, res, next) => {
             model,
             temperature,
             timeoutMs: timeoutSeconds === null ? null : timeoutSeconds * 1000,
+            orgId: req.user.orgId,
         });
         return res.json(result);
     } catch (err) {

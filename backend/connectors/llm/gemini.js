@@ -17,7 +17,7 @@ import { postJson, extractJson, env, numEnv } from './transport.js';
 
 export const name = 'gemini';
 
-const apiKey = () => env('GEMINI_API_KEY', env('GOOGLE_API_KEY'));
+const apiKey = (override) => override || env('GEMINI_API_KEY', env('GOOGLE_API_KEY'));
 
 export const isConfigured = () => apiKey().length > 0;
 
@@ -99,8 +99,11 @@ const stripSchema = (node) => {
 
 export const call = async ({
     model, system, cacheable, input, schema, maxTokens = 8000, temperature = null, timeoutMs = null,
+    apiKey: apiKeyOverride = null, baseUrl: baseUrlOverride = null,
 }) => {
-    const key = apiKey();
+    // An organisation's own key/base URL, when it has one, wins over the
+    // server environment — see connectors/llm/providerSettings.js.
+    const key = apiKey(apiKeyOverride);
     if (!key) {
         return {
             ok: false,
@@ -128,7 +131,7 @@ export const call = async ({
         body.generationConfig.responseSchema = stripSchema(schema);
     }
 
-    const base = env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com');
+    const base = baseUrlOverride || env('GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com');
     const res = await postJson({
         // The key goes in a header, not the query string: the URL is what ends
         // up in logs and error text, and a key in a log is a leaked key.

@@ -16,6 +16,8 @@
     "test:jobspipe": "node tests/jobspipe.test.mjs",
     "discover": "node -e \"import('./jobs/discoveryScheduler.js').then(m=>m.runCycle().then(()=>process.exit(0)))\"",
     "test:llm": "node tests/llm.test.mjs",
+    "test:llm-settings": "node tests/llmSettings.test.mjs",
+    "test:llm-providers": "node tests/llmProviders.test.mjs",
     "test:worker": "node tests/worker.test.mjs",
     "test:tailoring": "node tests/tailoring.test.mjs",
     "test:contacts": "node tests/contacts.test.mjs",

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
     CheckCircle2, XCircle, AlertCircle, Loader2, Save, RotateCcw, FlaskConical, KeyRound, Info,
+    ChevronDown, ChevronRight, Trash2,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
 import PageLoader from '../../components/PageLoader.jsx';
@@ -116,6 +117,183 @@ const TestResult = ({ result }) => {
     );
 };
 
+/**
+ * One provider's own credential — API key and base URL — for this organisation.
+ *
+ * Reused across every AI task set to this provider; there is no per-task key.
+ * The key field is always blank on load: a saved key is never sent back to the
+ * browser, so "blank" here means "keep what's already saved", not "there is none".
+ */
+const ProviderCredentialsRow = ({ info, models, onSaved }) => {
+    const [open, setOpen] = useState(false);
+    const [apiKey, setApiKey] = useState('');
+    const [baseUrl, setBaseUrl] = useState(info.baseUrl ?? '');
+    const [testModel, setTestModel] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState(null);
+    const [testResult, setTestResult] = useState(null);
+
+    useEffect(() => { setBaseUrl(info.baseUrl ?? ''); }, [info.baseUrl]);
+
+    const known = models.filter((m) => m.provider === info.name);
+    const baseUrlChanged = baseUrl !== (info.baseUrl ?? '');
+
+    const save = async () => {
+        setBusy(true);
+        setMsg(null);
+        try {
+            await api.put(`/management/llm-providers/${info.name}`, {
+                apiKey: apiKey || null,
+                baseUrl: baseUrl || null,
+            });
+            setApiKey('');
+            setMsg({ tone: 'success', text: 'Saved. Tasks set to this provider use it on the next AI call.' });
+            await onSaved();
+        } catch (err) {
+            setMsg({ tone: 'danger', text: errorMessage(err, 'Could not save.') });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const clear = async () => {
+        if (!window.confirm(`Remove the organisation's ${info.label} key? Tasks set to it fall back to the server's own key, if it has one.`)) return;
+        setBusy(true);
+        setMsg(null);
+        try {
+            await api.delete(`/management/llm-providers/${info.name}`);
+            setApiKey('');
+            setBaseUrl('');
+            setTestResult(null);
+            setMsg({ tone: 'success', text: 'Removed.' });
+            await onSaved();
+        } catch (err) {
+            setMsg({ tone: 'danger', text: errorMessage(err, 'Could not remove.') });
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const test = async () => {
+        if (!apiKey || !testModel) return;
+        setTestResult({ busy: true });
+        try {
+            const { data } = await api.post(`/management/llm-providers/${info.name}/test`, {
+                apiKey, baseUrl: baseUrl || null, model: testModel,
+            });
+            setTestResult(data);
+        } catch (err) {
+            setTestResult({ ok: false, error: errorMessage(err, 'The test could not run.') });
+        }
+    };
+
+    return (
+        <div className="rounded-lg border border-line">
+            <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 p-3 text-left"
+                onClick={() => setOpen((v) => !v)}
+            >
+                <span className="flex items-center gap-2">
+                    {open ? <ChevronDown className="h-4 w-4 text-slate-400" /> : <ChevronRight className="h-4 w-4 text-slate-400" />}
+                    <span className="font-medium text-slate-800">{info.label}</span>
+                </span>
+                <span className="flex items-center gap-2">
+                    <span className={`${badge} ${info.orgKeyConfigured ? TONE.brand : TONE.neutral}`}>
+                        {info.orgKeyConfigured ? 'Organisation key' : 'Using server key'}
+                    </span>
+                    <span className={`${badge} ${info.serverKeyConfigured ? TONE.success : TONE.neutral}`}>
+                        {info.serverKeyConfigured
+                            ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+                        Server {info.serverKeyConfigured ? 'ready' : 'not set'}
+                    </span>
+                </span>
+            </button>
+
+            {open && (
+                <div className="space-y-4 border-t border-line p-3">
+                    <label className="block">
+                        <span className={fieldLabel}>API key</span>
+                        <input
+                            type="password"
+                            className={input}
+                            placeholder={info.orgKeyConfigured ? 'Saved — leave blank to keep it' : 'Not set — paste a key to enable'}
+                            value={apiKey}
+                            maxLength={500}
+                            autoComplete="off"
+                            onChange={(e) => setApiKey(e.target.value)}
+                        />
+                        <p className={fieldHint}>
+                            Stored encrypted and never shown again. Leave blank to keep the saved key and change
+                            only the base URL.
+                        </p>
+                    </label>
+
+                    <label className="block">
+                        <span className={fieldLabel}>Base URL (optional)</span>
+                        <input
+                            className={input}
+                            placeholder={info.defaultBaseUrl ?? "Provider's own API"}
+                            value={baseUrl}
+                            maxLength={300}
+                            onChange={(e) => setBaseUrl(e.target.value)}
+                        />
+                        <p className={fieldHint}>
+                            {info.defaultBaseUrl
+                                ? `For a self-hosted or compatible endpoint. Left blank, ${info.label} calls go to ${info.defaultBaseUrl}.`
+                                : "For a self-hosted or compatible endpoint. Leave blank to use the provider's own API."}
+                        </p>
+                    </label>
+
+                    {known.length > 0 && (
+                        <label className="block">
+                            <span className={fieldLabel}>Model to test with</span>
+                            <select className={input} value={testModel} onChange={(e) => setTestModel(e.target.value)}>
+                                <option value="">Choose a model…</option>
+                                {known.map((m) => <option key={m.model} value={m.model}>{m.model}</option>)}
+                            </select>
+                        </label>
+                    )}
+
+                    {msg && (
+                        <div className={`${alertShell} ${TONE_ALERT[msg.tone]}`}>
+                            {msg.tone === 'success'
+                                ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                                : <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />}
+                            {msg.text}
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button
+                            type="button"
+                            className={btn.primary}
+                            onClick={save}
+                            disabled={busy || (!apiKey && !baseUrlChanged)}
+                        >
+                            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+                        </button>
+                        <button
+                            type="button"
+                            className={btnSm.secondary}
+                            onClick={test}
+                            disabled={busy || !apiKey || !testModel}
+                        >
+                            <FlaskConical className="h-3.5 w-3.5" /> Test this key
+                        </button>
+                        {info.orgKeyConfigured && (
+                            <button type="button" className={btn.secondary} onClick={clear} disabled={busy}>
+                                <Trash2 className="h-4 w-4" /> Remove
+                            </button>
+                        )}
+                    </div>
+                    <TestResult result={testResult} />
+                </div>
+            )}
+        </div>
+    );
+};
+
 const StageCard = ({ stage, providers, models, onSaved }) => {
     const initial = toForm(stage.override);
     const [form, setForm] = useState(initial);
@@ -225,7 +403,7 @@ const StageCard = ({ stage, providers, models, onSaved }) => {
             <option value="">{defaultText}</option>
             {providers.map((p) => (
                 <option key={p.name} value={p.name}>
-                    {p.label}{p.keyConfigured ? '' : ' — no key on server'}
+                    {p.label}{p.keyConfigured ? '' : ' — no key configured'}
                 </option>
             ))}
         </>
@@ -346,8 +524,8 @@ const StageCard = ({ stage, providers, models, onSaved }) => {
                     {primaryNoKey && (
                         <p className="flex items-start gap-1.5 text-xs text-warning-700">
                             <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            {label(primaryProvider)} has no key on the server. Add {providerInfo(primaryProvider).keyEnv} to
-                            the server's environment first.
+                            {label(primaryProvider)} has no key yet — add one in Provider credentials above, or
+                            set {providerInfo(primaryProvider).keyEnv} on the server.
                         </p>
                     )}
 
@@ -411,7 +589,8 @@ const StageCard = ({ stage, providers, models, onSaved }) => {
                     {fbNoKey && (
                         <p className="flex items-start gap-1.5 text-xs text-warning-700">
                             <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                            {label(fbProvider)} has no key on the server, so this fallback cannot run yet.
+                            {label(fbProvider)} has no key yet, so this fallback cannot run until one is added in
+                            Provider credentials above or on the server.
                         </p>
                     )}
 
@@ -458,13 +637,18 @@ const StageCard = ({ stage, providers, models, onSaved }) => {
 
 const LlmSettings = () => {
     const [data, setData] = useState(null);
+    const [providersData, setProvidersData] = useState(null);
     const [error, setError] = useState('');
     const [tab, setTab] = useState('parse');
 
     const load = async () => {
         try {
-            const { data: d } = await api.get('/management/llm-settings');
+            const [{ data: d }, { data: p }] = await Promise.all([
+                api.get('/management/llm-settings'),
+                api.get('/management/llm-providers'),
+            ]);
             setData(d);
+            setProvidersData(p);
         } catch (err) {
             setError(errorMessage(err));
         }
@@ -473,7 +657,7 @@ const LlmSettings = () => {
     useEffect(() => { load(); }, []);
 
     if (error) return <p className="text-sm text-danger-600">{error}</p>;
-    if (!data) return <PageLoader />;
+    if (!data || !providersData) return <PageLoader />;
 
     return (
         <div className="max-w-5xl">
@@ -483,25 +667,19 @@ const LlmSettings = () => {
                 server's own configuration. Changes apply to the next AI call — nothing to restart.
             </p>
 
-            {/* ── which providers have keys ─────────────────────────── */}
+            {/* ── this organisation's own provider keys ─────────────── */}
             <div className={`mt-5 ${card} p-4`}>
-                <p className={eyebrow}>Provider keys on the server</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                    {data.providers.map((p) => (
-                        <span
-                            key={p.name}
-                            title={p.keyConfigured ? 'A key is set.' : `Add ${p.keyEnv} to the server's environment.`}
-                            className={`${badge} ${p.keyConfigured ? TONE.success : TONE.neutral}`}
-                        >
-                            {p.keyConfigured ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-                            {p.label}
-                        </span>
+                <p className={eyebrow}>Provider credentials</p>
+                <p className="mt-1 text-xs text-slate-500">
+                    Add your own API key for a provider and every AI task set to use it runs on that key instead
+                    of the platform's. Leave a provider alone and its tasks keep running on the server's key, if
+                    it has one — expand a provider below to see which applies.
+                </p>
+                <div className="mt-3 space-y-2">
+                    {providersData.providers.map((p) => (
+                        <ProviderCredentialsRow key={p.name} info={p} models={data.models} onSaved={load} />
                     ))}
                 </div>
-                <p className="mt-2 text-xs text-slate-500">
-                    Keys are never shown or entered here. To add a provider, set its key in the server's
-                    environment once, then choose it below.
-                </p>
             </div>
 
             {/* ── one tab per AI task ───────────────────────────────── */}
