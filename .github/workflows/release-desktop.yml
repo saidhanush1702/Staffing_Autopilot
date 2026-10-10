@@ -92,8 +92,7 @@ jobs:
       - name: Bake the hub URL into the app
         shell: bash
         run: |
-          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.hubUrl=process.env.SMARTAPPLY_HUB;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'
-')"
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.hubUrl=process.env.SMARTAPPLY_HUB;fs.writeFileSync('package.json',JSON.stringify(p,null,2))"
           grep hubUrl package.json
         env:
           SMARTAPPLY_HUB: ${{ vars.SMARTAPPLY_HUB }}
