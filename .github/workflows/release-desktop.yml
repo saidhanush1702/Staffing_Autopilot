@@ -112,4 +112,4 @@ jobs:
 
       - name: Build only, no publish (manual dry run)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
-        run: npx electron-builder --win
+        run: npx electron-builder --win --publish never
