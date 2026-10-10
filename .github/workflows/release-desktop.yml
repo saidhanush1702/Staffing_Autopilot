@@ -13,6 +13,12 @@ name: Release desktop app
 # uploads its own artifact, and the release ends up holding both. Nothing here
 # merges them itself.
 #
+# ── WINDOWS ONLY, FOR NOW ───────────────────────────────────────────────────
+#
+# The Mac job was removed on purpose: Mac auto-update needs a signed app and a
+# zip artifact, neither of which exists yet. Re-add a macos-latest job (see
+# git history) when that is decided.
+#
 # ── WHAT THE DOWNLOAD PAGE DEPENDS ON ────────────────────────────────────────
 #
 # The portal's download page (client/src/components/DownloadDesktopApp.jsx)
@@ -68,12 +74,24 @@ jobs:
       - run: npm ci
       - run: npm run build:renderer
 
+      # An installer that points at localhost is worse than no installer, so
+      # a build with no production hub URL is refused outright.
+      - name: Require the production hub URL
+        shell: bash
+        run: |
+          if [ -z "$SMARTAPPLY_HUB" ]; then
+            echo "::error::Set the SMARTAPPLY_HUB repository variable (Settings > Secrets and variables > Actions > Variables) to the production API URL, e.g. https://api.example.com/api"
+            exit 1
+          fi
+        env:
+          SMARTAPPLY_HUB: ${{ vars.SMARTAPPLY_HUB }}
+
       # Publishes only on a real tag push, or a manual run that named one.
       # A manual run with no tag builds locally so the workflow itself can be
       # tested without creating or touching a release.
       - name: Build and publish (Windows)
         if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.tag != ''
-        run: npx electron-builder --win --publish always
+        run: npx electron-builder --win --publish always -c.extraMetadata.hubUrl="${{ vars.SMARTAPPLY_HUB }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Windows code signing -- absent means an unsigned build, not a
@@ -83,42 +101,4 @@ jobs:
 
       - name: Build only, no publish (manual dry run)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
-        run: npx electron-builder --win
-
-  build-mac:
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: desktop
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
-
-      - run: npm ci
-      - run: npm run build:renderer
-
-      - name: Build and publish (macOS)
-        if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.tag != ''
-        run: npx electron-builder --mac --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Mac code signing and notarisation -- absent means an unsigned
-          # build that Gatekeeper will refuse to open, not a failed build.
-          # All five are needed together for a signed, notarised DMG; see
-          # PACKAGING.md.
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-      - name: Build only, no publish (manual dry run)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
-        run: npx electron-builder --mac
+        run: npx electron-builder --win -c.extraMetadata.hubUrl="${{ vars.SMARTAPPLY_HUB }}"

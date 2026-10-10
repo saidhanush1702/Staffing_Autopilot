@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
     CheckCircle2, Clock, Download, Loader2, MonitorDown, ShieldAlert,
 } from 'lucide-react';
+import api from '../api/axios.js';
 import {
     badge, btn, card, cardPad, codeChip, prose, proseMuted, sectionTitle, TONE,
 } from '../design/tokens.js';
@@ -27,8 +28,8 @@ import {
  * needs no token and cannot leak one. See release-desktop.yml for how a
  * version actually gets here.
  */
-const GITHUB_REPO = 'saidhanush1702/Staffing_Autopilot';
-const RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+// Resolved by our own backend (cached, so an office behind one IP cannot hit
+// GitHub's 60-requests-an-hour limit). It reads the repo's latest release.
 
 /** Windows vs Mac vs "something else", from the browser itself. */
 const detectOS = () => {
@@ -40,9 +41,6 @@ const detectOS = () => {
     if (/Macintosh|Mac OS X/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) return 'mac';
     return 'other';
 };
-
-/** Pick this platform's asset out of a GitHub release's asset list. */
-const assetFor = (assets, extension) => (assets ?? []).find((a) => a.name?.toLowerCase().endsWith(extension));
 
 const OS_LABEL = { windows: 'Windows', mac: 'Mac' };
 
@@ -78,24 +76,17 @@ const DownloadDesktopApp = () => {
     useEffect(() => {
         let cancelled = false;
 
-        fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } })
-            .then(async (res) => {
-                // A repo with no published release yet answers 404 — the
-                // real, current state of this project, not an error to hide.
-                if (res.status === 404) return { status: 'unreleased' };
-                if (!res.ok) return { status: 'error' };
-                const release = await res.json();
-                const windows = assetFor(release.assets, '.exe');
-                const mac = assetFor(release.assets, '.dmg');
-                if (!windows && !mac) return { status: 'unreleased' };
-                return {
+        api.get('/desktop/latest')
+            .then(({ data }) => (data.status === 'ready'
+                ? {
                     status: 'ready',
-                    version: release.tag_name?.replace(/^desktop-v/, '') ?? release.tag_name,
-                    publishedAt: release.published_at,
-                    windows,
-                    mac,
-                };
-            })
+                    version: data.version,
+                    publishedAt: data.publishedAt,
+                    // Same shape the buttons below already read.
+                    windows: data.windows && { browser_download_url: data.windows.url },
+                    mac: data.mac && { browser_download_url: data.mac.url },
+                }
+                : { status: 'unreleased' }))
             .catch(() => ({ status: 'error' }))
             .then((next) => { if (!cancelled) setState(next); });
 
@@ -182,6 +173,9 @@ const DownloadDesktopApp = () => {
                                         </a>
                                         {' '}instead.
                                     </>
+                                )}
+                                {os === 'mac' && !state.mac && (
+                                    <>The Mac version is not available yet. </>
                                 )}
                                 {os === 'mac' && state.windows && (
                                     <>

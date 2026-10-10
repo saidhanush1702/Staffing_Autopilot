@@ -70,6 +70,7 @@ import {
     listApplications, getApplication,
 } from './controllers/queueController.js';
 import { verifyDevice } from './middleware/verifyDevice.js';
+import { latestDesktopRelease } from './controllers/desktopReleaseController.js';
 import {
     activate, activateSchema, heartbeat, deviceQueue,
     leaseItem, reportFilled, reportParked, reportSkipped, reclassify, askQuestions,
@@ -639,6 +640,9 @@ app.post('/api/management/queue/:id/find-contact',
 // MACHINE and yields exactly one consultant, so nothing here can reach another
 // person's data or any management route. Activation is the only open route,
 // and it trades a one-time code issued by the owner for a bound device token.
+
+// Public: the latest published installer, cached, for the portal download page.
+app.get('/api/desktop/latest', latestDesktopRelease);
 
 app.post('/api/device/activate', [validate(activateSchema)], activate);
 

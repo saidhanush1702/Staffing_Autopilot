@@ -11,6 +11,7 @@ import AuditLogPanel from '../../components/layout/AuditLogPanel.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { card, cardPad, badge, btn, btnSm, sectionTitle, input, fieldLabel, TONE, TONE_ALERT, pageTitle, pageSubtitle, tableHead, tableHeadCell, tableBody, tableRow, tableCell, tableEmpty, alertShellSm, alertShell } from '../../design/tokens.js';
 import { formatDateTime } from '../../utils/datetime.js';
+import { isOlder } from '../../utils/version.js';
 
 /** What each device state means, and how urgently it reads. */
 const STATE = {
@@ -72,6 +73,15 @@ const Devices = () => {
     }, []);
 
     useEffect(() => { load(); }, [load]);
+
+    // Newest published desktop version, to flag devices that are behind. Best
+    // effort: with no release (or GitHub unreachable) nothing is flagged.
+    const [latestVersion, setLatestVersion] = useState(null);
+    useEffect(() => {
+        api.get('/desktop/latest')
+            .then(({ data }) => setLatestVersion(data.status === 'ready' ? data.version : null))
+            .catch(() => {});
+    }, []);
 
     if (error && !devices) return <p className="text-sm text-danger-700">{error}</p>;
     if (!devices) return <PageLoader />;
@@ -187,6 +197,11 @@ const Devices = () => {
                                     {d.app_version && (
                                         <span className="ml-1 text-xs text-slate-400">
                                             v{d.app_version}
+                                        </span>
+                                    )}
+                                    {d.app_version && isOlder(d.app_version, latestVersion) && (
+                                        <span className={`${badge} ${TONE.warning} ml-1.5`}>
+                                            Needs update
                                         </span>
                                     )}
                                 </td>

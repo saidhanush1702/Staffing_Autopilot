@@ -115,6 +115,47 @@ const App = () => {
         );
     }
 
+    // Too old for the hub. Not terminal like revocation: the update is
+    // already being fetched, and the app carries on the moment it installs.
+    if (snap.state === 'UPDATE_REQUIRED') {
+        const u = snap.update ?? {};
+        return (
+            <div className="centred">
+                <div className="centred-inner">
+                    <div className="card stack">
+                        <div className="row">
+                            <h1>Update required</h1>
+                            <span className="pill stop">v{snap.appVersion}</span>
+                        </div>
+                        <p className="sub" style={{ marginTop: 0 }}>
+                            This version of SmartApply is too old to keep working.
+                            {snap.detail ? ` Version ${snap.detail} or newer is needed.` : ''}
+                        </p>
+                        {u.phase === 'ready' ? (
+                            <button type="button" className="primary"
+                                onClick={() => window.smartapply.installUpdate()}>
+                                Restart to update{u.version ? ` to v${u.version}` : ''}
+                            </button>
+                        ) : (
+                            <div className="note warn">
+                                {u.phase === 'downloading'
+                                    ? `Downloading the update… ${u.percent ?? 0}%`
+                                    : 'Looking for the update…'}
+                                {' '}Your work and sign-ins are untouched.
+                            </div>
+                        )}
+                        {u.phase === 'error' && (
+                            <p className="sub">
+                                Could not fetch it just now. Check your internet connection, or
+                                download the latest installer from the consultant portal.
+                            </p>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     if (!snap.activated) return <Activation onActivated={refresh} />;
 
     const waiting = snap.awaitingReview?.length ?? 0;
@@ -140,6 +181,16 @@ const App = () => {
                     <div className="brand-sub">{snap.consultant?.name ?? 'Consultant'}</div>
                 </div>
                 <div className="topbar-spacer" />
+                {snap.update?.phase === 'ready' && (
+                    <button type="button" className="primary"
+                        onClick={() => window.smartapply.installUpdate()}>
+                        Restart to update{snap.update.version ? ` (v${snap.update.version})` : ''}
+                    </button>
+                )}
+                {snap.update?.phase === 'downloading' && (
+                    <span className="brand-sub">Updating… {snap.update.percent ?? 0}%</span>
+                )}
+                <span className="brand-sub">v{snap.appVersion}</span>
                 <StatusPill snap={snap} />
                 <ThemeButton />
             </header>

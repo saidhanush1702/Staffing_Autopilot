@@ -8,7 +8,12 @@
 const path = require('node:path');
 const os = require('node:os');
 
-const HUB_URL = process.env.SMARTAPPLY_HUB ?? 'http://localhost:5001/api';
+const pkg = require('../../package.json');
+
+// Order: an explicit env override (dev, staging), then the URL baked into
+// package.json at build time by release-desktop.yml (production installers),
+// then localhost for running from source.
+const HUB_URL = process.env.SMARTAPPLY_HUB ?? pkg.hubUrl ?? 'http://localhost:5001/api';
 
 /** How often we prove the device is still allowed to exist. */
 const HEARTBEAT_MS = 60_000;
@@ -126,7 +131,7 @@ module.exports = {
     EMBED_BROWSER,
     CDP_PORT,
     TYPING,
-    APP_VERSION: require('../../package.json').version,
+    APP_VERSION: pkg.version,
     // Resolved lazily: app.getPath('userData') is unavailable until Electron is
     // ready, and the pure modules are unit-tested without Electron at all.
     paths(userDataDir) {
