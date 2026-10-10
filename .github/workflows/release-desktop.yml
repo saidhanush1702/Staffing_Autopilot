@@ -113,3 +113,13 @@ jobs:
       - name: Build only, no publish (manual dry run)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
         run: npx electron-builder --win --publish never
+
+      # Lets a dry run be INSTALLED and tried before anything is published:
+      # the .exe appears under the run's "Artifacts" for 7 days.
+      - name: Keep the installer from the dry run
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartApply-windows-test
+          path: desktop/dist/*-setup.exe
+          retention-days: 7
