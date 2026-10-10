@@ -86,12 +86,24 @@ jobs:
         env:
           SMARTAPPLY_HUB: ${{ vars.SMARTAPPLY_HUB }}
 
+      # Written into package.json (which ships inside the installer) rather
+      # than passed as an electron-builder flag: PowerShell mangles
+      # `-c.extraMetadata...` into a config-file path and the build fails.
+      - name: Bake the hub URL into the app
+        shell: bash
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));p.hubUrl=process.env.SMARTAPPLY_HUB;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'
+')"
+          grep hubUrl package.json
+        env:
+          SMARTAPPLY_HUB: ${{ vars.SMARTAPPLY_HUB }}
+
       # Publishes only on a real tag push, or a manual run that named one.
       # A manual run with no tag builds locally so the workflow itself can be
       # tested without creating or touching a release.
       - name: Build and publish (Windows)
         if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.tag != ''
-        run: npx electron-builder --win --publish always -c.extraMetadata.hubUrl="${{ vars.SMARTAPPLY_HUB }}"
+        run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Windows code signing -- absent means an unsigned build, not a
@@ -101,4 +113,4 @@ jobs:
 
       - name: Build only, no publish (manual dry run)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.tag == ''
-        run: npx electron-builder --win -c.extraMetadata.hubUrl="${{ vars.SMARTAPPLY_HUB }}"
+        run: npx electron-builder --win
