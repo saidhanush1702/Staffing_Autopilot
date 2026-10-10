@@ -20,4 +20,5 @@ assert.equal(r.status, 'ready');
 assert.equal(r.version, '0.1.0');
 assert.equal(r.windows.url, 'u');
 assert.equal(r.mac, null);
+assert.equal(shapeRelease({ tag_name: 'v0.1.0', assets: [{ name: 'a.exe', browser_download_url: 'u' }] }).version, '0.1.0');
 console.log('desktopRelease: ok');

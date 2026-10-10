@@ -12,6 +12,9 @@ import { parseVersion } from '../utils/semver.js';
 
 const REPO = process.env.DESKTOP_RELEASE_REPO || 'saidhanush1702/Staffing_Autopilot';
 const TTL_MS = 10 * 60_000;
+// "Nothing published yet" is re-checked quickly, so the first release shows up
+// within a minute instead of waiting out the full window.
+const UNRELEASED_TTL_MS = 60_000;
 
 let cache = { at: 0, body: null };
 
@@ -25,7 +28,7 @@ export const shapeRelease = (release) => {
     const windows = pick(release.assets, '.exe');
     const mac = pick(release.assets, '.dmg');
     if (!windows && !mac) return { status: 'unreleased' };
-    const version = String(release.tag_name ?? '').replace(/^desktop-v/, '');
+    const version = String(release.tag_name ?? '').replace(/^(desktop-)?v/, '');
     return {
         status: 'ready',
         version: parseVersion(version) ? version : release.tag_name,
@@ -36,7 +39,8 @@ export const shapeRelease = (release) => {
 };
 
 export const latestDesktopRelease = async (_req, res) => {
-    if (cache.body && Date.now() - cache.at < TTL_MS) return res.json(cache.body);
+    const ttl = cache.body?.status === 'ready' ? TTL_MS : UNRELEASED_TTL_MS;
+    if (cache.body && Date.now() - cache.at < ttl) return res.json(cache.body);
 
     try {
         const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
