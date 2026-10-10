@@ -22,6 +22,7 @@
  */
 import crypto from 'node:crypto';
 import { query } from '../db.js';
+import { compareVersions } from '../utils/semver.js';
 
 /**
  * Tokens are compared by hash, never by value.
@@ -56,6 +57,20 @@ export const newActivationCode = () => {
 };
 
 const unauthorised = (res, reason) => res.status(401).json({ error: reason, device: true });
+
+/**
+ * ── RETIRING OLD BUILDS ───────────────────────────────────────────────
+ *
+ * MIN_DESKTOP_VERSION is read per request so it can be raised with a restart
+ * and no deploy of the app. Below it the hub answers 426; the app shows an
+ * "Update required" screen and the auto-updater does the rest. A missing or
+ * unparseable X-App-Version is let through — blocking on a malformed header
+ * would lock out a consultant for our bookkeeping, not their fault.
+ */
+const upgradeRequired = (presented) => {
+    const min = process.env.MIN_DESKTOP_VERSION;
+    return Boolean(min && presented && compareVersions(presented, min) === -1);
+};
 
 export const verifyDevice = async (req, res, next) => {
     try {
@@ -101,6 +116,15 @@ export const verifyDevice = async (req, res, next) => {
         const presented = req.get('X-Machine-Fingerprint');
         if (device.machine_fingerprint && presented !== device.machine_fingerprint) {
             return unauthorised(res, 'This token was issued to a different machine.');
+        }
+
+        const presentedVersion = req.get('X-App-Version');
+        if (upgradeRequired(presentedVersion)) {
+            return res.status(426).json({
+                error: `This version of SmartApply is out of date. Update to ${process.env.MIN_DESKTOP_VERSION} or newer to continue.`,
+                upgradeRequired: true,
+                minVersion: process.env.MIN_DESKTOP_VERSION,
+            });
         }
 
         req.device = {

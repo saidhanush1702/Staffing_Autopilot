@@ -61,7 +61,8 @@ let hub = null;
 let sessions = null;
 let engine = null;
 let diagnostics = null;
-let stopUpdater = null;
+let updater = null;
+let updateState = { phase: 'unavailable' };
 let heartbeatTimer = null;
 let cycleTimer = null;
 let status = { state: 'STARTING', detail: '' };
@@ -80,6 +81,7 @@ const TRAY_TEXT = {
     PAUSED: 'Paused',
     REVOKED: 'Access revoked',
     OFFLINE: 'Cannot reach the hub',
+    UPDATE_REQUIRED: 'Update required',
 };
 
 /**
@@ -211,6 +213,8 @@ const snapshot = () => ({
     // What the bot is waiting for, or null. Carries a deadline rather than a
     // countdown so the renderer can tick on its own clock -- see attention.js.
     attention: attention?.snapshot() ?? null,
+    appVersion: config.APP_VERSION,
+    update: updateState,
 });
 
 const buildTrayMenu = () => {
@@ -299,6 +303,20 @@ const handleRevoked = async (reason) => {
     showWindow();
 };
 
+/**
+ * The hub has said this build is too old (426). Nothing is wiped - unlike a
+ * revocation the consultant is still authorised - but work stops, and the
+ * updater is asked to fetch the newer build straight away rather than wait
+ * for its six-hour check.
+ */
+const handleUpgradeRequired = (body) => {
+    if (status.state === 'UPDATE_REQUIRED') return;
+    setStatus('UPDATE_REQUIRED', body?.minVersion ?? '');
+    clearTimeout(cycleTimer);
+    updater?.checkNow();
+    showWindow();
+};
+
 /* ── the loops ────────────────────────────────────────────────────────── */
 
 const heartbeat = async () => {
@@ -318,7 +336,7 @@ const heartbeat = async () => {
             setStatus(status.state);
         }
     } catch (err) {
-        if (err.name === 'Revoked') return;          // handled by onRevoked
+        if (err.name === 'Revoked' || err.name === 'UpgradeRequired') return;   // handled by their callbacks
         setStatus('OFFLINE', err.message);
     }
 };
@@ -358,7 +376,7 @@ const runCycle = async (trigger) => {
             || (result.handedToHuman ?? 0) > 0;
         setStatus(result.paused ? 'PAUSED' : (needsYou ? 'NEEDS_YOU' : 'IDLE'));
     } catch (err) {
-        if (err.name !== 'Revoked') setStatus('OFFLINE', err.message);
+        if (err.name !== 'Revoked' && err.name !== 'UpgradeRequired') setStatus('OFFLINE', err.message);
     } finally {
         scheduleCycle(hadWork);
     }
@@ -367,6 +385,9 @@ const runCycle = async (trigger) => {
 /* ── IPC: the renderer's entire vocabulary ────────────────────────────── */
 
 const registerIpc = () => {
+    ipcMain.handle('installUpdate', () => { updater?.installNow(); return { ok: Boolean(updater) }; });
+    ipcMain.handle('checkForUpdate', () => { updater?.checkNow(); return { ok: Boolean(updater) }; });
+
     ipcMain.handle('snapshot', () => ({ ...status, ...snapshot() }));
 
     ipcMain.handle('activate', async (_e, activationCode) => {
@@ -457,7 +478,7 @@ const registerIpc = () => {
             setStatus(status.state);
             return res;
         } catch (err) {
-            if (err.name !== 'Revoked') setStatus('OFFLINE', err.message);
+            if (err.name !== 'Revoked' && err.name !== 'UpgradeRequired') setStatus('OFFLINE', err.message);
             return { ok: false, error: err.message };
         }
     });
@@ -702,7 +723,7 @@ app.on('second-instance', showWindow);
 let cleaningUp = false;
 app.on('before-quit', (e) => {
     app.isQuitting = true;
-    stopUpdater?.();
+    updater?.stop();
 
     if (cleaningUp || !sessions) return;
     cleaningUp = true;
@@ -738,6 +759,7 @@ app.whenReady().then(() => {
         getToken: () => secrets.read(),
         fingerprint: store.get('machineFingerprint') ?? fingerprint(),
         onRevoked: handleRevoked,
+        onUpgradeRequired: handleUpgradeRequired,
     });
 
     // Resolved here rather than at module load so the pure modules stay
@@ -817,9 +839,13 @@ app.whenReady().then(() => {
 
     heartbeatTimer = setInterval(heartbeat, config.HEARTBEAT_MS);
 
-    stopUpdater = startUpdater({
+    updater = startUpdater({
         app,
         log: (m) => { toRenderer('log', m); },
         record: diagnostics.record,
+        onState: (next) => {
+            updateState = { ...updateState, ...next };
+            toRenderer('status', { ...status, ...snapshot() });
+        },
     });
 });

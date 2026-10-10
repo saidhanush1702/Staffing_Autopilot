@@ -127,6 +127,20 @@ are not optional decoration: Chromium is a child process that JIT-compiles, and
 without them the hardened runtime kills it on launch — which looks, from the
 outside, exactly like an app that cannot open a browser.
 
+## Production hub URL, minimum version, Windows-only
+
+- **Hub URL.** Installers get the production API URL from the `SMARTAPPLY_HUB`
+  GitHub Actions *variable*; the workflow injects it into the packaged
+  `package.json` (`hubUrl`) and refuses to build without it. `SMARTAPPLY_HUB` as
+  an environment variable still overrides it for dev and staging.
+- **Forcing an update.** Set `MIN_DESKTOP_VERSION` on the backend (publish the
+  newer release first). Older apps get 426, stop working, and show "Update
+  required" while the updater fetches the new build.
+- **Windows only for now.** The Mac job was removed from the workflow; Mac
+  auto-update needs signing and a zip target first.
+- **Release helper:** `npm run release -- 0.1.1` bumps, commits and tags; you
+  then push the tag.
+
 ## Releasing a new version
 
 1. Bump `"version"` in `desktop/package.json` — plain semver.

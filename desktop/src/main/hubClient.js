@@ -30,15 +30,23 @@ class Revoked extends Error {
     }
 }
 
+class UpgradeRequired extends Error {
+    constructor(message) {
+        super(message ?? 'This version of SmartApply is out of date.');
+        this.name = 'UpgradeRequired';
+    }
+}
+
 class HubClient {
     /**
      * @param onRevoked called once when the hub refuses this device. The caller
      *   wipes local state; doing it in here would put policy in a transport.
      */
-    constructor({ getToken, fingerprint, onRevoked, baseURL = HUB_URL }) {
+    constructor({ getToken, fingerprint, onRevoked, onUpgradeRequired, baseURL = HUB_URL }) {
         this.getToken = getToken;
         this.fingerprint = fingerprint;
         this.onRevoked = onRevoked;
+        this.onUpgradeRequired = onUpgradeRequired;
         this.http = axios.create({ baseURL, timeout: 20_000 });
     }
 
@@ -66,6 +74,12 @@ class HubClient {
                 const reason = err.response?.data?.error;
                 this.onRevoked?.(reason);
                 throw new Revoked(reason);
+            }
+            // 426: this build is older than the hub accepts. Not a revocation —
+            // nothing is wiped; the app just stops and asks to be updated.
+            if (status === 426) {
+                this.onUpgradeRequired?.(err.response?.data);
+                throw new UpgradeRequired(err.response?.data?.error);
             }
             // Everything else is surfaced with the hub's own words where it gave
             // any: a 409 from the state machine is actionable, "Request failed
@@ -168,4 +182,4 @@ class HubClient {
     post(path, body) { return this.#call('post', path, body); }
 }
 
-module.exports = { HubClient, Revoked };
+module.exports = { HubClient, Revoked, UpgradeRequired };

@@ -26,9 +26,15 @@ const SIX_HOURS = 6 * 3_600_000;
 /**
  * Start checking for updates, if this build is in a position to receive any.
  *
- * @returns a stop() function, or null when updates do not apply here
+ * `onState` receives { phase, version?, percent? } as things change, so the
+ * window can say "Downloading 1.2.0" and offer "Restart to update" instead of
+ * the consultant never knowing. Phases: checking, downloading, ready, current,
+ * error. The install itself stays the consultant's click (`installNow`) or
+ * their next quit - never a restart under them.
+ *
+ * @returns { stop, checkNow, installNow }, or null when updates do not apply
  */
-const startUpdater = ({ app, log = () => {}, record = () => {} }) => {
+const startUpdater = ({ app, log = () => {}, record = () => {}, onState = () => {} }) => {
     if (!app.isPackaged) {
         log('updates: not a packaged build — skipping');
         return null;
@@ -48,25 +54,42 @@ const startUpdater = ({ app, log = () => {}, record = () => {} }) => {
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.logger = null;
 
-    autoUpdater.on('update-available', (info) => log(`update ${info.version} downloading`));
+    let ready = false;
+
+    autoUpdater.on('checking-for-update', () => { if (!ready) onState({ phase: 'checking' }); });
+    autoUpdater.on('update-not-available', () => { if (!ready) onState({ phase: 'current' }); });
+    autoUpdater.on('update-available', (info) => {
+        log(`update ${info.version} downloading`);
+        onState({ phase: 'downloading', version: info.version, percent: 0 });
+    });
+    autoUpdater.on('download-progress', (p) => {
+        onState({ phase: 'downloading', percent: Math.round(p.percent ?? 0) });
+    });
     autoUpdater.on('update-downloaded', (info) => {
+        ready = true;
         log(`update ${info.version} ready — it installs when you quit`);
+        onState({ phase: 'ready', version: info.version });
     });
     autoUpdater.on('error', (err) => {
         // An unreachable update feed is an ordinary offline condition, not a
         // fault worth putting in front of a consultant.
         record('updateCheckFailed', err?.message ?? String(err));
+        if (!ready) onState({ phase: 'error' });
     });
 
-    const check = () => {
+    const checkNow = () => {
         autoUpdater.checkForUpdates().catch((err) => {
             record('updateCheckFailed', err?.message ?? String(err));
         });
     };
 
-    check();
-    const timer = setInterval(check, SIX_HOURS);
-    return () => clearInterval(timer);
+    checkNow();
+    const timer = setInterval(checkNow, SIX_HOURS);
+    return {
+        stop: () => clearInterval(timer),
+        checkNow,
+        installNow: () => { if (ready) autoUpdater.quitAndInstall(); },
+    };
 };
 
 module.exports = { startUpdater, SIX_HOURS };

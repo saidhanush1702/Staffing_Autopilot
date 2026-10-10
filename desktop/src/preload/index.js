@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('smartapply', {
     /** Current status plus everything the screens need to render. */
     snapshot: () => ipcRenderer.invoke('snapshot'),
 
+    /** Restart into a downloaded update. Does nothing until one is ready. */
+    installUpdate: () => ipcRenderer.invoke('installUpdate'),
+    checkForUpdate: () => ipcRenderer.invoke('checkForUpdate'),
+
     /** Trade the one-time code from the administrator for a bound device. */
     activate: (activationCode) => ipcRenderer.invoke('activate', activationCode),
 
