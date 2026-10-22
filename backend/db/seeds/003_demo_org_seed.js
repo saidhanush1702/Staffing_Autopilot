@@ -42,7 +42,10 @@ const upsertUser = async (connection, { orgId, name, email, role, password }) =>
         'SELECT id FROM users WHERE email = $1',
         [email],
     );
-    if (existing.rows.length > 0) return existing.rows[0].id;
+    if (existing.rows.length > 0) {
+        await ensureProfile(connection, { orgId, userId: existing.rows[0].id, role });
+        return existing.rows[0].id;
+    }
 
     const { enc, iv, tag } = encryptPassword(password);
     const id = uuidv4();
@@ -56,7 +59,24 @@ const upsertUser = async (connection, { orgId, name, email, role, password }) =>
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [id, orgId, name, email, role, enc, iv, tag],
     );
+    await ensureProfile(connection, { orgId, userId: id, role });
     return id;
+};
+
+/**
+ * Every consultant must have a consultant_profiles row — createUser() makes one
+ * in the same transaction, and the portal's consultant lists INNER JOIN it, so
+ * a seeded consultant without one is invisible (e.g. in the Desktop Access
+ * dropdown). Idempotent, so re-running the seed also repairs older databases.
+ */
+const ensureProfile = async (connection, { orgId, userId, role }) => {
+    if (role !== 'CONSULTANT') return;
+    await connection.query(
+        `INSERT INTO consultant_profiles (user_id, organization_id, daily_cap)
+         VALUES ($1, $2, 5)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId, orgId],
+    );
 };
 
 const assign = async (connection, { orgId, consultantId, recruiterId }) => {
