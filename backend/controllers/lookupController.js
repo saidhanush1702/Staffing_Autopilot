@@ -16,7 +16,7 @@ export const getLookups = async (req, res, next) => {
     try {
         const [
             genders, userStatuses, workAuth, roles, workTypes,
-            answerStatuses, questionCategories,
+            answerStatuses, questionCategories, atsFamilies,
         ] = await Promise.all([
             query('SELECT id, name FROM lkp_genders ORDER BY id'),
             query('SELECT id, name, label FROM lkp_user_statuses ORDER BY id'),
@@ -26,6 +26,9 @@ export const getLookups = async (req, res, next) => {
             query('SELECT id, name, label FROM lkp_answer_statuses ORDER BY id'),
             query(`SELECT id, name, label, requires_owner_approval, description
                      FROM lkp_question_categories ORDER BY id`),
+            // Career-system families the ATS live mirror can read. Labels for
+            // the registry screen come from here, not from the JSX.
+            query('SELECT id, name, label FROM lkp_ats_families ORDER BY sort_order'),
         ]);
 
         return res.json({
@@ -36,6 +39,7 @@ export const getLookups = async (req, res, next) => {
             workTypes: workTypes.rows,
             answerStatuses: answerStatuses.rows,
             questionCategories: questionCategories.rows,
+            atsFamilies: atsFamilies.rows,
             timezone: schedulerTimezone(),
             timezoneLabel: schedulerTimezoneLabel(),
         });

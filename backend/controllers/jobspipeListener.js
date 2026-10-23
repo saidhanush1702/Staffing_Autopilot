@@ -238,6 +238,12 @@ export const ingestAdapted = async (orgId, adapted, {
     // says "pushed" when it was polled sends whoever reads it looking for a
     // webhook delivery that never happened.
     via = 'Pushed by JobsPipe',
+    // The name written into job_matches.reason. Defaulted to what this function
+    // has always written, so the JobsPipe doors are unchanged; the ATS mirror
+    // passes its own, because a match reason claiming "via JobsPipe" on a job
+    // read straight from an employer's board would send someone looking for a
+    // JobsPipe delivery that never happened.
+    viaLabel = 'JobsPipe',
 } = {}) => {
     const { posting, portalType, originBoard } = adapted;
     const look = lookups ?? await loadLookups();
@@ -313,7 +319,7 @@ export const ingestAdapted = async (orgId, adapted, {
              VALUES ($1,$2,$3,$4,$5,$6,$7,'PENDING',NULL)
              ON CONFLICT (consultant_id, posting_id) DO NOTHING`,
             [matchId, orgId, consultant.id, stored.id, consultant.versionId,
-                verdict.score, `${verdict.reason} [via JobsPipe]`],
+                verdict.score, `${verdict.reason} [via ${viaLabel}]`],
         );
         if (rowCount === 0) continue;   // already matched on an earlier delivery
         result.matches += 1;

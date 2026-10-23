@@ -498,3 +498,13 @@ export const emptyBody = 'mt-1 max-w-sm text-sm text-slate-500';
 /** A shimmering placeholder block. `.skeleton` is defined in index.css. */
 export const skeletonLine = 'skeleton h-3 w-full';
 export const skeletonBlock = 'skeleton h-20 w-full rounded-lg';
+
+/* ── progress meter ──────────────────────────────────────────────────── */
+
+/**
+ * A thin determinate progress bar: `meterTrack` is the groove, `meterFill` the
+ * bar inside it, sized with an inline `width` (a runtime percentage cannot be a
+ * Tailwind class — the same reason TableShell's minWidth is a style).
+ */
+export const meterTrack = 'h-1.5 w-full overflow-hidden rounded-full bg-slate-100';
+export const meterFill = 'h-full rounded-full bg-brand-600 transition-[width] duration-300';

@@ -36,6 +36,7 @@ const SECTION = {
     '/management/postings': ['Sourcing', 'Job postings'],
     '/management/discovery': ['Sourcing', 'Job discovery'],
     '/management/jobspipe': ['Sourcing', 'JobsPipe feed'],
+    '/management/ats': ['Sourcing', 'Live mirror'],
     '/management/devices': ['System', 'Desktop access'],
     '/management/ai-models': ['System', 'AI models'],
 

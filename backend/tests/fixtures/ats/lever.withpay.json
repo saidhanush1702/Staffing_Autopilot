@@ -1,0 +1,33 @@
+{
+  "additionalPlain": "Equal Employment Opportunity Information\nThe company is an Equal Opportunity Employer. As an employer subject to affirmative action regulations, we invite you to voluntarily provide the following demographic information. This information is used solely for compliance with government recordkeeping, reporting, and other legal requirements. Providing this information is voluntary and refusal to do so will not affect your application status. This data will be kept separate from your application and  …[truncated for fixture]",
+  "additional": "<div style=\"text-align: justify;\"><strong>Equal Employment Opportunity Information<br><br></strong>The company is an Equal Opportunity Employer. As an employer subject to affirmative action regulations, we invite you to voluntarily provide the following demographic information. This information is used solely for compliance with government recordkeeping, reporting, and other legal requirements. Providing this information is voluntary and refusal to do so will not affect your application status.  …[truncated for fixture]",
+  "categories": {
+    "commitment": "EE Full-Time",
+    "department": "Product",
+    "location": "United States",
+    "team": "Product Design",
+    "allLocations": [
+      "United States"
+    ]
+  },
+  "createdAt": 1791816328070,
+  "descriptionPlain": "About us\nHighLevel is an AI-powered business operating system that gives agencies, entrepreneurs and SMBs the infrastructure to build, automate and scale. Today, HighLevel supports SMBs across 150+ countries, fueling community-driven growth rooted in real customer outcomes.To date, businesses operating on HighLevel have generated over $7 billion in ecosystem value, demonstrating the impact of shared infrastructure at scale. By centralizing conversations, automation and intelligence into one syst …[truncated for fixture]",
+  "description": "<div>\n<p style=\"text-align: justify;\"><strong>About us</strong></p>\n<p style=\"text-align: justify;\">HighLevel is an AI-powered business operating system that gives agencies, entrepreneurs and SMBs the infrastructure to build, automate and scale. Today, HighLevel supports SMBs across 150+ countries, fueling community-driven growth rooted in real customer outcomes.To date, businesses operating on HighLevel have generated over $7 billion in ecosystem value, demonstrating the impact of shared infras …[truncated for fixture]",
+  "id": "4c8aff95-d7d6-4dee-9a1f-7073c0edf164",
+  "lists": [],
+  "salaryRange": {
+    "min": 200000,
+    "max": 250000,
+    "currency": "USD",
+    "interval": "per-year-salary"
+  },
+  "text": "Director, UX Research",
+  "country": "US",
+  "workplaceType": "remote",
+  "opening": "",
+  "openingPlain": "",
+  "descriptionBody": "<div>\n<p style=\"text-align: justify;\"><strong>About us</strong></p>\n<p style=\"text-align: justify;\">HighLevel is an AI-powered business operating system that gives agencies, entrepreneurs and SMBs the infrastructure to build, automate and scale. Today, HighLevel supports SMBs across 150+ countries, fueling community-driven growth rooted in real customer outcomes.To date, businesses operating on HighLevel have generated over $7 billion in ecosystem value, demonstrating the impact of shared infras …[truncated for fixture]",
+  "descriptionBodyPlain": "About us\nHighLevel is an AI-powered business operating system that gives agencies, entrepreneurs and SMBs the infrastructure to build, automate and scale. Today, HighLevel supports SMBs across 150+ countries, fueling community-driven growth rooted in real customer outcomes.To date, businesses operating on HighLevel have generated over $7 billion in ecosystem value, demonstrating the impact of shared infrastructure at scale. By centralizing conversations, automation and intelligence into one syst …[truncated for fixture]",
+  "hostedUrl": "https://jobs.lever.co/gohighlevel/4c8aff95-d7d6-4dee-9a1f-7073c0edf164",
+  "applyUrl": "https://jobs.lever.co/gohighlevel/4c8aff95-d7d6-4dee-9a1f-7073c0edf164/apply"
+}

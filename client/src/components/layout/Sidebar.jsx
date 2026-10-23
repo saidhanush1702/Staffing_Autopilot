@@ -4,7 +4,7 @@ import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
     PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks, Webhook,
-    FileCog, Cpu,
+    FileCog, Cpu, RadioTower,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -96,6 +96,10 @@ const NAV_GROUPS = [
             // health and separate costs, and one screen showing both would
             // hide which of them a quiet queue is the fault of.
             { to: '/management/jobspipe', label: 'JobsPipe Feed', icon: Webhook, roles: ['ORG_ADMIN', 'RECRUITER'] },
+            // Employers' own career systems, read directly. A fourth door, with
+            // its own screen for the same reason as the one above: separate
+            // switch, separate health, and no credits to meter.
+            { to: '/management/ats', label: 'Live Mirror', icon: RadioTower, roles: ['ORG_ADMIN', 'RECRUITER'] },
             { to: '/management/contacts', label: 'Contacts', icon: UserSearch, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },

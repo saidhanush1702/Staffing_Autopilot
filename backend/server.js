@@ -101,6 +101,22 @@ import { startWorker } from './jobs/worker.js';
 // a paid plan, so the search API is the only JobsPipe surface that can be
 // trialled. Off unless JOBSPIPE_POLL_ENABLED=true — see jobs/jobspipePoller.js.
 import { startJobsPipePoller } from './jobs/jobspipePoller.js';
+// The ATS LIVE MIRROR (Phase 5d). A fourth ingestion door that reads employers'
+// own career systems directly. Off unless ATS_MIRROR_ENABLED=true, and even
+// then each agency starts switched off and in OBSERVE mode — see
+// jobs/atsMirror.js and controllers/atsController.js.
+import { startAtsMirror } from './jobs/atsMirror.js';
+import {
+    getOverview as getAtsOverview, updateSettings as updateAtsSettings, settingsSchema as atsSettingsSchema,
+    listBoards as listAtsBoards, getBoard as getAtsBoard, probe as probeAtsBoard, probeSchema as atsProbeSchema,
+    addBoard as addAtsBoard, addBoardSchema as atsAddBoardSchema,
+    addBoardsBulk as addAtsBoardsBulk, bulkSchema as atsBulkSchema,
+    patchBoard as patchAtsBoard, patchBoardSchema as atsPatchBoardSchema,
+    deleteBoard as deleteAtsBoard, pollNow as pollAtsBoardNow,
+    listDetected as listAtsDetected, listRuns as listAtsRuns,
+    discoverFromPostings as discoverAtsFromPostings, discoverFromCompanies as discoverAtsFromCompanies,
+    guessSchema as atsGuessSchema,
+} from './controllers/atsController.js';
 // Importing the handler modules is what registers them with the worker.
 // Without this line the worker starts, claims a tailoring job, finds no
 // handler for its kind, and dead-letters it — which looks exactly like a
@@ -442,6 +458,40 @@ app.post('/api/management/jobspipe/poll',
     [verifyToken, isOrgAdmin, validate(pollSchema)], runPollNow);
 app.patch('/api/management/jobspipe/pull',
     [verifyToken, isOrgAdmin, validate(pullEnabledSchema)], setPullEnabled);
+
+/* ────── ATS live mirror (Phase 5d — employers' own career systems) ────── */
+//
+// The fourth ingestion door, and the only one that spends no credits: the
+// Greenhouse / Lever / Ashby / Workday / SmartRecruiters endpoints are public.
+// It keeps a registry of employer boards and diffs each against what it saw
+// last time, so a job is detected minutes after it is published rather than
+// whenever an aggregator indexes it. Jobs enter through the SAME ingestAdapted
+// path as JobsPipe, so R-15 still collapses a job any two doors both find.
+//
+// Reading is management; every change is ORG_ADMIN and audited. The static
+// paths (/boards/bulk, /discover/*, /probe, /settings) are declared BEFORE
+// /boards/:id so they are never captured as an id.
+app.get('/api/management/ats', [verifyToken, isManagement], getAtsOverview);
+app.patch('/api/management/ats/settings',
+    [verifyToken, isOrgAdmin, validate(atsSettingsSchema)], updateAtsSettings);
+app.post('/api/management/ats/probe',
+    [verifyToken, isOrgAdmin, validate(atsProbeSchema)], probeAtsBoard);
+app.get('/api/management/ats/jobs', [verifyToken, isManagement], listAtsDetected);
+app.get('/api/management/ats/runs', [verifyToken, isManagement], listAtsRuns);
+app.get('/api/management/ats/discover/postings',
+    [verifyToken, isOrgAdmin], discoverAtsFromPostings);
+app.post('/api/management/ats/discover/companies',
+    [verifyToken, isOrgAdmin, validate(atsGuessSchema)], discoverAtsFromCompanies);
+app.get('/api/management/ats/boards', [verifyToken, isManagement], listAtsBoards);
+app.post('/api/management/ats/boards',
+    [verifyToken, isOrgAdmin, validate(atsAddBoardSchema)], addAtsBoard);
+app.post('/api/management/ats/boards/bulk',
+    [verifyToken, isOrgAdmin, validate(atsBulkSchema)], addAtsBoardsBulk);
+app.get('/api/management/ats/boards/:id', [verifyToken, isManagement], getAtsBoard);
+app.patch('/api/management/ats/boards/:id',
+    [verifyToken, isOrgAdmin, validate(atsPatchBoardSchema)], patchAtsBoard);
+app.delete('/api/management/ats/boards/:id', [verifyToken, isOrgAdmin], deleteAtsBoard);
+app.post('/api/management/ats/boards/:id/poll', [verifyToken, isOrgAdmin], pollAtsBoardNow);
 
 app.get('/api/management/postings', [verifyToken, isManagement], listPostings);
 app.get('/api/management/postings/:id', [verifyToken, isManagement], getPosting);
@@ -789,6 +839,9 @@ const start = async () => {
     // same reason: 1 credit = 1 request on a 100-a-month plan, so a server
     // that polls the moment it boots has spent somebody's allowance by lunch.
     startJobsPipePoller();
+    // The ATS live mirror. Off unless ATS_MIRROR_ENABLED=true: a server that
+    // boots must not start reaching out to other people's servers by itself.
+    startAtsMirror();
 
     app.listen(PORT, () => {
         console.log(`✅ API listening on http://localhost:${PORT}`);
