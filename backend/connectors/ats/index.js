@@ -26,6 +26,11 @@ import lever from './lever.js';
 import ashby from './ashby.js';
 import workday from './workday.js';
 import smartrecruiters from './smartrecruiters.js';
+import recruitee from './recruitee.js';
+import workable from './workable.js';
+import breezy from './breezy.js';
+import personio from './personio.js';
+import bamboohr from './bamboohr.js';
 import { workdayConfigFromKey } from './detect.js';
 
 export const ADAPTERS = {
@@ -34,6 +39,11 @@ export const ADAPTERS = {
     ASHBY: ashby,
     WORKDAY: workday,
     SMARTRECRUITERS: smartrecruiters,
+    RECRUITEE: recruitee,
+    WORKABLE: workable,
+    BREEZY: breezy,
+    PERSONIO: personio,
+    BAMBOOHR: bamboohr,
 };
 
 export const FAMILY_NAMES = Object.keys(ADAPTERS);

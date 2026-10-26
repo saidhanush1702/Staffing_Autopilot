@@ -163,6 +163,105 @@ const DESTINATIONS = {
         verified: true,
     },
 
+    // ── GREENHOUSE, LEVER, ASHBY: READ OFF LIVE PUBLIC FORMS ──────────────
+    //
+    // These three need no account, which is why they could be measured: a job
+    // page was opened and its markup READ, with nothing typed and nothing sent.
+    // What each recipe says below was seen on a real posting, not recalled.
+    //
+    // They stay \`verified: false\` until \`npm run dry-run:form\` has filled one
+    // end to end and a person has looked at the result. Measured markup says
+    // where things are; it does not say the filler copes with all of it.
+    GREENHOUSE: {
+        name: 'GREENHOUSE',
+        label: 'Greenhouse',
+        match: /(^|\.)greenhouse\.io$/i,
+        signedIn: { present: [], absent: [] },
+        botCheck: [],
+        // MEASURED (job-boards.greenhouse.io): the application is a single
+        // \`form#application-form\` on the posting itself. The "Apply" button at
+        // the top only scrolls to it, so the form counts as already open. Fields
+        // are labelled \`<label for>\` with a trailing asterisk; the country
+        // field is an \`input[role=combobox]\`; the submit control is
+        // \`button[type=submit]\` reading "Submit application". There is no
+        // second step.
+        apply: {
+            open: 'button:text-is("Apply")',
+            inPlace: true,
+            dialog: 'form#application-form',
+            next: 'button:text-is("Next")',
+            submit: 'button[type="submit"]:has-text("Submit application")',
+            maxSteps: 3,
+        },
+        neverAutoSubmit: true,
+        // Filled end to end by `npm run dry-run:form` against a live posting:
+        // the right four fields from the profile, the country and the required
+        // consent question reported as unanswered, nothing submitted. Resume
+        // attachment was left out of that run on purpose (see the tool), so
+        // watch the first real one.
+        verified: true,
+    },
+
+    LEVER: {
+        name: 'LEVER',
+        label: 'Lever',
+        match: /(^|\.)lever\.co$/i,
+        signedIn: { present: [], absent: [] },
+        botCheck: [],
+        // MEASURED (jobs.lever.co): the posting has an "APPLY" link
+        // (\`a.postings-btn\`) to the same address plus \`/apply\`, where
+        // \`form#application-form\` holds everything on one page. Submit is
+        // \`#btn-submit\` ("SUBMIT APPLICATION"). An hCaptcha frame sits on the
+        // form from load, so it is NOT listed as a bot check — it would read
+        // as one on every page — and it is the consultant's to clear at the
+        // moment they submit, which the app never does.
+        //
+        // Lever also draws a cookie banner (Accept / Deny). Choosing for the
+        // consultant is not the app's job; it does not touch it.
+        apply: {
+            open: 'a.postings-btn:has-text("Apply")',
+            inPlace: true,
+            dialog: 'form#application-form',
+            next: 'button:text-is("Next")',
+            submit: '#btn-submit',
+            maxSteps: 3,
+        },
+        neverAutoSubmit: true,
+        // Dry-run against a live Palantir posting: eight profile fields filled,
+        // twelve real questions left to a person, nothing submitted.
+        verified: true,
+    },
+
+    ASHBY: {
+        name: 'ASHBY',
+        label: 'Ashby',
+        match: /(^|\.)ashbyhq\.com$/i,
+        signedIn: { present: [], absent: [] },
+        botCheck: [],
+        // MEASURED (jobs.ashbyhq.com): the form lives at \`…/application\`, and
+        // has NO <form> element. Its stable hooks are the semantic classes
+        // prefixed \`ashby-application-form-\` (the hashed \`_x_123\` ones change
+        // per build), so the container is
+        // \`.ashby-application-form-container\`. Yes/No questions are pairs of
+        // \`button[aria-pressed]\`, not radios (see TOGGLE_SELECTOR in filler.js),
+        // and an "Autofill from resume" box sits ABOVE the real resume field —
+        // see findResumeInput, which must not feed it the CV.
+        apply: {
+            open: 'a[href$="/application"], [role="tab"]:has-text("Application")',
+            inPlace: true,
+            dialog: '.ashby-application-form-container',
+            next: 'button:text-is("Next")',
+            submit: 'button:has-text("Submit Application")',
+            maxSteps: 3,
+        },
+        neverAutoSubmit: true,
+        // Dry-run against a live Ramp application page: four profile fields
+        // filled, the Yes/No buttons read as questions, nothing submitted. The
+        // posting-page `open` selector is the least proven part; when it
+        // misses, the job simply falls to the AI agent.
+        verified: true,
+    },
+
     SMARTRECRUITERS: {
         name: 'SMARTRECRUITERS',
         label: 'SmartRecruiters',

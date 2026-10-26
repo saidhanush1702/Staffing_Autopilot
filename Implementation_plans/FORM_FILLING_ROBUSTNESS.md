@@ -210,3 +210,75 @@ per application, **wrong-value rate (target 0)**, submit-confirmed rate, median 
 3. Free-text/essay answers: suggestion-only (recommended) or auto-filled after approval?
 4. Keep the isolated Chrome profile (current, safer) or attach to the consultant's everyday Chrome
    (better trust signals, but touches their personal profile)?
+
+---
+
+## 7. Final target architecture (consolidated)
+
+**Hub (cloud):** Run store (queue, caps, leases), LLM gateway (page-level planning and semantic
+matching; model never writes facts), Data vault (structured resume facts, preferences, approved answer
+bank), Telemetry (failure fixtures, per-ATS stats, kill switch).
+
+**Desktop engine:** Run manager (durable state) → Page reader (fields + page kind) → Answer resolver
+(cascade) → Fill and verify (act, read back, retry ladder) → Gate manager (typed human handoffs).
+
+**Run lifecycle:** `QUEUED → OPENING → READING → FILLING → (WAITING_USER ⇄ READING) → READY →
+SUBMITTED | SUBMITTED_UNCONFIRMED | FAILED | SKIPPED`. WAITING_USER keeps the tab open, persists
+`{url, step, answered fields}`, reminds at 5 min / 30 min / 2 h, expires after a configurable TTL, and
+always resumes by re-reading the page.
+
+**Decisions taken from the pasted proposal:** adopt the structured vault and page-level LLM planning;
+reject raw `.value` injection (use real typing/clicks), reject unreviewed generated essays (suggest +
+approve), reject the direct ATS API fast-track (needs employer keys; no human review).
+
+**Build order:** Phase 0 run manager + long gates + lanes; Phase 1 vault/profile schema + resolver
+cascade; Phase 2 verify + strict submit confirmation + screenshots; Phase 3 page-level agent planning +
+Greenhouse/Lever/Ashby/SmartRecruiters packs; Phase 4 playbook cache + telemetry/fixtures.
+
+## 8. Phase 0 — built
+
+- `desktop/src/main/runs.js` — `RunLedger`: persisted record of applications waiting on a person
+  (status, gate kind, lane, `since`, attempts, reminders). 24 h TTL, retry every 10 min, reminders at
+  5 min / 30 min / 2 h then every 2 h, crash recovery.
+- `cycle.js` — a gate whose short window runs out is **deferred, not abandoned** (board sign-in, Workday
+  tenant sign-in, wizard account wall, terms, agent account wall). The lane is held so the next job on
+  that board/tenant does not reopen the same window; **other boards keep running**. Held jobs resume
+  when sign-in is seen, when the person presses "I've done it", or on the retry timer, and are handed
+  over only after the TTL. Resume re-opens and re-reads the page; nothing is replayed.
+- UI: "On hold" panel with an "I've done it" button (`WaitingRuns.jsx`, IPC `runResume`).
+- Not changed: the short blocking windows themselves, unknown-question parking (the hub already
+  re-queues those on answer), and the rule that only one application is actively driven at a time.
+- Tests: `tests/runs.mjs` (44 checks). `npm test` now runs it.
+
+## 9. Phases 1–4 — built
+
+**Phase 1 — profile and resolver.** `backend/config/applicationProfile.js` builds one profile for both the
+device queue and the agent catalogue from data the consultant already enters (education, work history,
+per-skill years, GitHub/portfolio). New answerable facts: GitHub, portfolio, headline, current
+company/title, school, degree, field, education level, graduation year, total years, and *years of a named
+skill* (answered only when the question names skills that all carry the same recorded figure). Bare
+"Job title"/"Company" are deliberately not answered (they are rows of a history). Voluntary
+gender/race/veteran/disability questions get the form's "prefer not to say" option only if the
+consultant switches that on at Start; the default leaves them to a person.
+
+**Phase 2 — verification.** Read-back after every typed value / chosen option (empty, wrong-box and
+unselected are caught); "submit pressed" is no longer "sent" without evidence (message, marker or
+confirmation URL) — unconfirmed ones stay on the review list and are never reported to the hub as sent;
+a screenshot of each filled form is kept for review and swept afterwards; the resume goes only to a
+file box that is the resume (never an "autofill from resume" box).
+
+**Phase 3 — breadth.** Deterministic page-kind classifier (challenge, email-verification, closed, login,
+confirmation, error, job page, form step, review); verification-code pages are a typed human gate; closed
+postings cost no model call. `fill_many` lets the agent fill a page's fields in one reply (each entry
+validated like a single fill). Greenhouse, Lever and Ashby recipes were measured on live public postings;
+the filler now also reads button-style Yes/No (Ashby), same-named radios/checkboxes without a fieldset and
+label-less selects (Lever), and treats a row of checkboxes as one question. Jobs whose address is on a
+known system skip the agent and go straight to the recipe.
+
+**Phase 4 — feedback.** Failed runs save the page *shape* (labels/button text, no values) under
+`fixtures/`; per-system outcome tallies are kept in the store (`siteStats`). `npm run dry-run:form -- <url>`
+fills a public posting with a fake applicant and stops short of sending.
+
+Not built: caching of resolved agent actions per site. The hub already banks an AI-matched wording as an
+answer, and `fill_many` removes most of the per-click cost, so the remaining benefit did not justify the
+added staleness risk yet; `siteStats` will say whether it is needed.

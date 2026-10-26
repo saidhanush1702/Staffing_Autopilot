@@ -43,15 +43,19 @@
  * cannot type into a real employer's form.
  */
 const fs = require('node:fs');
+const nodePath = require('node:path');
 const { BOARDS, boardForPortal } = require('./browser/boards.js');
 const { fillForm, describeFields } = require('./browser/filler.js');
 const { runApplyFlow, pressSubmit, CLOSED_SELECTOR } = require('./browser/applyFlow.js');
 const { tenantFor, profileKey } = require('./browser/destinations.js');
 const { runAgent: runAgentDefault } = require('./agent/runAgent.js');
 const { pressAgentSubmit } = require('./agent/actions.js');
-const { stillAsksForPassword, stillChallenged } = require('./agent/observe.js');
+const { stillAsksForPassword, stillChallenged, observe: observePage } = require('./agent/observe.js');
+const { classifyPage } = require('./agent/pageKind.js');
 const { normaliseQuestion } = require('./browser/answers.js');
 const { WAIT_MS } = require('./attention.js');
+const { RunLedger } = require('./runs.js');
+const { captureFixture, tally } = require('./fixtures.js');
 const {
     POLL_MS, POLL_JITTER_MS, IDLE_POLL_MS, SIGNIN_WAIT_MS, SIGNIN_POLL_MS,
 } = require('./config.js');
@@ -158,7 +162,13 @@ class CycleEngine {
         // the engine's decisions about WHEN to hand a job to the agent can be
         // proven without a model or a page.
         runAgent = runAgentDefault,
+        // The record of applications waiting on a person. Injectable so the
+        // suite can move its clock; otherwise it lives in the store.
+        ledger = null,
     }) {
+        this.ledger = ledger ?? new RunLedger({ store });
+        // A run left mid-retry by a crash is waiting again, not lost.
+        this.ledger.recover();
         this.hub = hub;
         this.sessions = sessions;
         this.store = store;
@@ -271,6 +281,7 @@ class CycleEngine {
             // cleanly. Clearing on the way IN as well as out means a crash
             // cannot leave a resume on disk indefinitely (R-20).
             clearWorkDir(this.paths.work);
+            this.#sweepEvidence();
 
             const beat = await this.hub.heartbeat();
             this.store.set({
@@ -291,9 +302,17 @@ class CycleEngine {
                 (beat.pausedBoards ?? []).map((b) => [b.board, b.until]),
             );
 
-            const { items, approvedAnswers, profile } = await this.hub.queue();
+            const queued = await this.hub.queue();
+            const { items, approvedAnswers } = queued;
+            // The consultant's own choice about voluntary demographic questions
+            // travels with the profile so every filler sees the same setting.
+            const profile = queued.profile
+                ? { ...queued.profile, eeo_policy: this.store.get('eeoPolicy') ?? 'ASK' }
+                : queued.profile;
             stats.pulled = items.length;
             this.store.set({ queue: items });
+
+            const handedOver = await this.#tendWaiting(items, stats, record);
 
             let worked = 0;
 
@@ -305,8 +324,14 @@ class CycleEngine {
                     return { ...stats, stopped: true };
                 }
 
+                if (handedOver.has(item.id)) continue;
+
+                // A reminder can fall due while a long job is being worked.
+                this.#remind();
+
                 const board = boardForPortal(item.portal);
                 if (!board) {
+                    if (await this.#holdCheck(item, AGENT_BOARD) === 'skip') continue;
                     // ── NO RECIPE: THE AGENT'S LANE ───────────────────────
                     //
                     // An AGENT-lane job, or one the hub thought was ours that
@@ -315,20 +340,38 @@ class CycleEngine {
                     // consultant exactly as it always did.
                     let took = null;
                     try {
-                        took = await this.#workWithAgentOnly(item, stats, {
-                            approvedAnswers, profile, record,
-                        });
+                        // ── A SITE THE APP HAS A RECIPE FOR, REACHED DIRECTLY ──
+                        //
+                        // A posting on Greenhouse, Lever, Ashby or Workday needs
+                        // no board in front of it: the address alone says which
+                        // recipe applies. Going through the recipe is faster,
+                        // cheaper and more predictable than asking a model to
+                        // read the same page, so it goes first; the agent is
+                        // still behind it for anything the recipe cannot finish.
+                        const site = tenantFor(item.source_url);
+                        if (site?.apply) {
+                            took = await this.#workKnownSite(item, site, stats, {
+                                approvedAnswers, profile, record,
+                            });
+                        } else {
+                            took = await this.#workWithAgentOnly(item, stats, {
+                                approvedAnswers, profile, record,
+                            });
+                        }
                     } catch (err) {
                         if (err.name === 'Revoked') throw err;
                         stats.errors.push(`${item.company} — ${err.message}`);
                         this.activity(AGENT_BOARD.name, 'ERROR', `${item.company}: ${firstLine(err.message)}`);
                         took = { reason: `the AI agent hit a problem: ${firstLine(err.message)}` };
                     }
+                    this.#settleRun(item);
                     if (took === 'counted') {
                         worked += 1;
                         await humanPause(1500, 4000);
                         continue;
                     }
+                    // On hold for a person (see #defer): not handed over.
+                    if (took === 'stopped') continue;
 
                     const why = took?.reason ? ` — ${took.reason}` : '';
                     await this.#reportReclassify(item.id, {
@@ -343,6 +386,11 @@ class CycleEngine {
                     this.log(`${board.label} is paused until ${pausedUntil.get(board.name)}`);
                     continue;
                 }
+
+                // ── A PERSON IS ALREADY WORKING IN THIS LANE ──────────────
+                //
+                // Skipped, not waited on: every other board carries on.
+                if (await this.#holdCheck(item, board) === 'skip') continue;
 
                 try {
                     const outcome = await this.#workOne(
@@ -361,6 +409,8 @@ class CycleEngine {
                     });
                     stats.skipped += 1;
                     record(item, board, 'ERROR', firstLine(err.message));
+                } finally {
+                    this.#settleRun(item);
                 }
             }
 
@@ -400,6 +450,148 @@ class CycleEngine {
         const { items } = await this.hub.queue();
         this.store.set({ queue: items, lastCheckedAt: new Date().toISOString() });
         return { ok: true, waiting: items.length, paused: Boolean(beat.paused) };
+    }
+
+    /*
+     * ════════════════════════════════════════════════════════════════════
+     *  HELD RUNS — a gate is a state, not a countdown
+     * ════════════════════════════════════════════════════════════════════
+     *
+     * The short windows in `#askHuman` are how long the app holds still and
+     * watches. When one runs out the job is no longer given up on: it is
+     * written to the ledger (runs.js) and the queue moves on. It is tried
+     * again when the person says they are done, when sign-in is seen to
+     * have happened, or on a slow timer — and abandoned only after the TTL.
+     */
+
+    /** Count how a run on one system ended. See fixtures.js. */
+    #tally(system, result) {
+        try {
+            this.store.set({ siteStats: tally(this.store.get('siteStats') ?? {}, system, result) });
+        } catch { /* a counter must never cost a job */ }
+    }
+
+    /**
+     * A run ended without a finished form: keep the page's SHAPE (labels and
+     * button text, never values) so the recipe can be corrected, and count it.
+     */
+    async #learnFromFailure(page, { system, outcome, detail }) {
+        this.#tally(system, outcome === 'HANDED_OVER' ? 'handedOver' : 'failed');
+        if (!page || typeof page.url !== 'function') return;
+        try {
+            const { observation } = await observePage(page);
+            captureFixture({
+                dir: this.paths.fixtures, system, url: page.url(), outcome, detail, observation,
+            });
+        } catch { /* a page that cannot be read leaves no fixture; nothing else */ }
+    }
+
+    /** Put this job on hold for a person and keep the lane's other work moving. */
+    #defer(item, {
+        lane, board = null, gate, holdsLane = true, record = null,
+    }) {
+        this.ledger.defer({
+            itemId: item.id,
+            lane,
+            board: board?.name ?? lane,
+            boardLabel: board?.label ?? null,
+            company: item.company,
+            title: item.title,
+            url: item.source_url,
+            gate,
+            holdsLane,
+        });
+        record?.(item, board, 'ON_HOLD', gate.message);
+        this.#tally(lane, 'onHold');
+        this.log(`${item.company}: on hold — ${gate.message}`);
+        this.activity(board?.name ?? lane, 'SIGNED_OUT',
+            `${item.company}: on hold, waiting for you — ${gate.message}`);
+    }
+
+    /**
+     * Should this job be left alone for now?
+     *
+     * @returns 'skip' when a person is still needed, 'go' otherwise. A job
+     *          that comes back as 'go' with a ledger row is a RETRY: the row
+     *          stays (so its clock keeps running) until the attempt ends.
+     */
+    async #holdCheck(item, board) {
+        const own = this.ledger.get(item.id);
+
+        if (own) {
+            if (own.status === 'RUNNING') return 'go';
+
+            // Sign-in on a board we can look at: ask the board, not the clock.
+            // Retrying on a timer would reopen the sign-in window every ten
+            // minutes for someone who has not come back yet.
+            const watchable = own.gate.kind === 'SIGN_IN' && own.lane === board.name;
+            let ready = own.resumeRequested;
+            if (!ready && watchable) {
+                ready = await this.sessions.isSignedIn(board).catch(() => false);
+            } else if (!ready) {
+                ready = this.ledger.due(own);
+            }
+            if (!ready) return 'skip';
+
+            this.ledger.resume(item.id);
+            this.log(`${item.company}: trying again after waiting for ${own.gate.kind}`);
+            return 'go';
+        }
+
+        if (this.ledger.holdsLane(board.name)) {
+            this.log(`${board.label} is waiting on you — ${item.company} will follow`);
+            return 'skip';
+        }
+        return 'go';
+    }
+
+    /** An attempt is over. A run still marked RUNNING simply finished. */
+    #settleRun(item) {
+        const run = this.ledger.get(item.id);
+        if (run && run.status === 'RUNNING') this.ledger.resolve(item.id);
+    }
+
+    /**
+     * Start-of-pass housekeeping for held runs.
+     *
+     * Forgets runs whose job has left the queue (applied by hand, withdrawn) so
+     * a stale row cannot hold a lane. Gives up on runs past the TTL — the only
+     * way a held job is ever handed over for good — and sends due reminders.
+     */
+    async #tendWaiting(items, stats, record) {
+        const live = new Set(items.map((i) => i.id));
+        for (const run of this.ledger.all()) {
+            if (!live.has(run.itemId)) this.ledger.resolve(run.itemId);
+        }
+
+        const handedOver = new Set();
+        for (const run of this.ledger.takeExpired()) {
+            const reason = `Waited more than a day for you: ${run.gate.message}`;
+            await this.#reportReclassify(run.itemId, { reason }).catch(() => {});
+            stats.handedToHuman += 1;
+            record({ company: run.company, title: run.title }, { label: run.boardLabel }, 'HANDED_OVER', reason);
+            handedOver.add(run.itemId);
+        }
+        this.#remind();
+        // The caller still holds the queue it read before this ran; these jobs
+        // are the consultant's now and must not be started again this pass.
+        return handedOver;
+    }
+
+    /** Nudge the consultant about runs that have waited a while. */
+    #remind() {
+        for (const run of this.ledger.takeReminders()) {
+            const message = `${run.company ?? 'An application'} is still waiting for you: ${run.gate.message}`;
+            this.log(message);
+            this.activity(run.board ?? run.lane, 'SIGNED_OUT', message);
+            try {
+                this.attention?.notify({
+                    headline: 'Still waiting for you',
+                    company: run.company,
+                    message: run.gate.message,
+                });
+            } catch { /* a notification nobody can show is not worth a crash */ }
+        }
     }
 
     /**
@@ -583,6 +775,14 @@ class CycleEngine {
             this.activity(board.name, 'SIGNED_OUT', 'Signed out — waiting for you to sign in');
             if (!(await this.#waitForSignIn(board))) {
                 record(item, board, 'NEEDS_SIGN_IN', 'nobody signed in while this job waited');
+                // On hold rather than forgotten: the lane is marked so the
+                // next job here does not open the same sign-in window again,
+                // and the run is picked up the moment sign-in is seen.
+                this.#defer(item, {
+                    lane: board.name,
+                    board,
+                    gate: { kind: 'SIGN_IN', message: `Sign in to ${board.label}` },
+                });
                 return 'stopped';
             }
         }
@@ -914,7 +1114,9 @@ class CycleEngine {
         // navigates this form away; this is the only moment it is still on
         // screen. That is also the bug the review screen kept hitting.
         await this.#reportFilled(item.id);
-        this.#rememberForReview(item, board, result, { profile, approvedAnswers, resumePath });
+        this.#rememberForReview(item, board, result, {
+            profile, approvedAnswers, resumePath, evidence: await this.#captureEvidence(page, item),
+        });
         stats.filled += 1;
 
         // A board can refuse auto-submission outright, and that refusal beats
@@ -931,12 +1133,12 @@ class CycleEngine {
 
             const pressed = await pressSubmit(page, board);
             if (pressed.ok) {
-                await this.reportSubmitted(item.id, {
+                const sent = await this.reportSubmitted(item.id, {
                     confirmed: pressed.confirmed,
                     detail: pressed.detail,
                 });
-                stats.submitted += 1;
-                record(item, board, 'SUBMITTED', pressed.detail);
+                if (!sent.unconfirmed) stats.submitted += 1;
+                record(item, board, sent.unconfirmed ? 'SUBMITTED_UNCONFIRMED' : 'SUBMITTED', pressed.detail);
                 this.activity(board.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
                 this.log(`submitted ${item.company} — ${item.title}`);
                 return 'counted';
@@ -981,7 +1183,11 @@ class CycleEngine {
      * is whether they are told why before they do.
      */
     async #workDestination(item, board, tenant, flow, stats, { approvedAnswers, profile, record }) {
+        let seenPage = null;
         const handOver = async (reason) => {
+            await this.#learnFromFailure(seenPage, {
+                system: tenant.system, outcome: 'HANDED_OVER', detail: reason,
+            });
             await this.#reportReclassify(item.id, { reason });
             stats.handedToHuman += 1;
             record(item, board, 'HANDED_OVER', reason);
@@ -989,12 +1195,24 @@ class CycleEngine {
             return 'counted';
         };
 
+        // Somebody is already being asked to get past this employer's wall. A
+        // second job here would open the same window and ask the same thing,
+        // so it joins the queue behind the first one instead.
+        const holder = this.ledger.waiting().find(
+            (r) => r.lane === tenant.name && r.holdsLane && r.itemId !== item.id,
+        );
+        if (holder && !this.ledger.get(item.id)) {
+            this.#defer(item, { lane: tenant.name, board, gate: holder.gate, record });
+            return 'stopped';
+        }
+
         this.activity(board.name, 'CONNECTING',
             `${item.company}: following through to ${tenant.label}`);
         this.log(`${item.company}: ${board.label} hands off to ${tenant.label}`);
 
         await this.sessions.openJob(tenant.name, flow.externalUrl);
         const page = await this.sessions.page(tenant.name);
+        seenPage = page;
 
         // R-22 first, exactly as for a board. SmartRecruiters answers automated
         // requests with a DataDome challenge.
@@ -1062,9 +1280,16 @@ class CycleEngine {
                 check: () => page.locator(tenant.legalGate).count().then((n) => n === 0),
             });
             if (said !== 'done') {
-                return handOver(
-                    `${tenant.label} asks you to accept its terms first, which is yours to decide`,
-                );
+                this.#defer(item, {
+                    record,
+                    lane: tenant.name,
+                    board,
+                    gate: {
+                        kind: 'LEGAL_GATE',
+                        message: `${tenant.label} wants you to accept its terms`,
+                    },
+                });
+                return 'stopped';
             }
         }
 
@@ -1074,7 +1299,13 @@ class CycleEngine {
                 `${item.company}: waiting for you to sign in to ${tenant.label}`);
             if (!(await this.#waitForSignIn(tenant))) {
                 stats.signInNeeded.push(tenant.name);
-                return handOver(`${tenant.label} needs you to sign in before anything can be filled`);
+                this.#defer(item, {
+                    record,
+                    lane: tenant.name,
+                    board,
+                    gate: { kind: 'SIGN_IN', message: `Sign in to ${tenant.label}` },
+                });
+                return 'stopped';
             }
         }
 
@@ -1125,6 +1356,21 @@ class CycleEngine {
             stats.closed += 1;
             record(item, board, 'CLOSED', `${tenant.label}: ${inner.detail}`);
             return 'counted';
+        }
+
+        // The wizard's own sign-in / create-account page, and nobody cleared it
+        // in the short window. A person's to do, so the job waits for them.
+        if (inner.outcome === 'ACCOUNT_WALL') {
+            this.#defer(item, {
+                record,
+                lane: tenant.name,
+                board,
+                gate: {
+                    kind: 'ACCOUNT_WALL',
+                    message: `${tenant.label} needs you to sign in or create an account`,
+                },
+            });
+            return 'stopped';
         }
 
         let agentTried = false;
@@ -1242,8 +1488,11 @@ class CycleEngine {
             ...filled,
             refusals: [],
             readyToSubmit: filled.outcome === 'READY_TO_SUBMIT',
-        }, { profile, approvedAnswers, resumePath });
+        }, {
+            profile, approvedAnswers, resumePath, evidence: await this.#captureEvidence(page, item),
+        });
         stats.filled += 1;
+        this.#tally(tenant.system, 'ready');
         record(item, board, 'READY_TO_SUBMIT',
             `${tenant.label} — filled ${filled.qa.length} field(s), waiting for you to submit`);
         this.activity(board.name, 'READY_TO_SUBMIT',
@@ -1425,6 +1674,23 @@ class CycleEngine {
     }
 
     /**
+     * A posting that is already on a system the app has a recipe for.
+     *
+     * The same machinery a board hand-off uses (#workDestination) with nothing
+     * in front of it: lease the job, then work the destination as if a board
+     * had just linked to it.
+     */
+    async #workKnownSite(item, tenant, stats, { approvedAnswers, profile, record }) {
+        await this.hub.lease(item.id);
+        stats.leased += 1;
+        stats.opened += 1;
+        return this.#workDestination(
+            item, AGENT_BOARD, tenant, { externalUrl: item.source_url }, stats,
+            { approvedAnswers, profile, record },
+        );
+    }
+
+    /**
      * A job no board owns: open it in its own session and let the agent work.
      *
      * The hub is asked BEFORE anything is leased or opened, so a switched-off
@@ -1520,6 +1786,29 @@ class CycleEngine {
             return said === 'done';
         };
 
+        // A page that needs something only the person has -- today, the code in
+        // their inbox. Cleared when the page stops looking like that.
+        const waitForGate = async (p, { kind, message }) => {
+            await p.bringToFront?.().catch(() => {});
+            say('SIGNED_OUT', message);
+            const said = await this.#askHuman({
+                kind,
+                board: where,
+                company: item.company,
+                title: item.title,
+                message,
+                check: async () => {
+                    try {
+                        const { observation } = await observePage(p);
+                        return classifyPage(observation) !== kind;
+                    } catch {
+                        return false;
+                    }
+                },
+            });
+            return said === 'done';
+        };
+
         let answers = approvedAnswers;
         let carried = prior;
         let result;
@@ -1542,6 +1831,7 @@ class CycleEngine {
                 activity: (m) => say('AGENT', m),
                 waitForHuman,
                 waitForBotCheck,
+                waitForGate,
                 shadow,
                 prior: carried,
                 maxActions: started.limits?.maxActions,
@@ -1599,12 +1889,31 @@ class CycleEngine {
             record(item, where, 'ALREADY_APPLIED', `AI agent: ${result.detail}`, { filledBy: 'AGENT' });
             return 'counted';
 
+        case 'ACCOUNT_WALL':
+            // The site wants a sign-in or an account and the short window ran
+            // out. Held for the person instead of being handed over for good.
+            this.#defer(item, {
+                record,
+                lane: board?.name ?? where.name,
+                board: where,
+                gate: {
+                    kind: result.gateKind ?? 'ACCOUNT_WALL',
+                    message: result.gateKind === 'EMAIL_VERIFY'
+                        ? `${board?.label ?? where.label} is waiting for the verification code sent to your email`
+                        : `${board?.label ?? where.label} needs you to sign in or create an account`,
+                },
+            });
+            return 'counted';
+
         case 'SHADOW':
             // Watched, not acted on. The job is handed over as if the agent
             // did not exist, and the run's proposals are on the hub to review.
             return { reason: null, shadow: true };
 
         default:
+            await this.#learnFromFailure(page, {
+                system: 'AGENT', outcome: result.outcome, detail: result.detail,
+            });
             say('HANDED_OVER', `the AI agent could not finish: ${result.detail}`);
             return { reason: `the AI agent could not finish it: ${result.detail}` };
         }
@@ -1630,9 +1939,11 @@ class CycleEngine {
             session: board?.name ?? where.name,
             pageUrl: page.url(),
             submit: result.submit,
+            evidence: await this.#captureEvidence(page, item),
         });
         stats.filled += 1;
         stats.agentFilled += 1;
+        this.#tally('AGENT', 'ready');
 
         const neverAuto = Boolean(board?.neverAutoSubmit || where?.neverAutoSubmit);
         if (neverAuto && this.store.get('autoSubmit')) {
@@ -1644,12 +1955,13 @@ class CycleEngine {
                 `${item.company}: submitting what the AI agent filled`);
             const pressed = await pressAgentSubmit(page, result.submit, this.log);
             if (pressed.ok) {
-                await this.reportSubmitted(item.id, {
+                const sent = await this.reportSubmitted(item.id, {
                     confirmed: pressed.confirmed,
                     detail: pressed.detail,
                 });
-                stats.submitted += 1;
-                record(item, where, 'SUBMITTED', `AI agent: ${pressed.detail}`, { filledBy: 'AGENT' });
+                if (!sent.unconfirmed) stats.submitted += 1;
+                record(item, where, sent.unconfirmed ? 'SUBMITTED_UNCONFIRMED' : 'SUBMITTED',
+                    `AI agent: ${pressed.detail}`, { filledBy: 'AGENT' });
                 this.activity(where.name, 'SUBMITTED', `${item.company}: ${pressed.detail}`);
                 return 'counted';
             }
@@ -2061,6 +2373,8 @@ class CycleEngine {
             session: context.session ?? board.name,
             pageUrl: context.pageUrl ?? null,
             submit: context.submit ?? null,
+            // A picture of the form as it was left, or null.
+            evidence: context.evidence ?? null,
         });
 
         this.store.set({ awaitingReview: waiting });
@@ -2109,6 +2423,25 @@ class CycleEngine {
         const entry = waiting.find((w) => w.itemId === itemId);
         if (!entry) return { ok: false, error: 'That application is no longer waiting.' };
 
+        // ── PRESSED IS NOT SENT ───────────────────────────────────────────
+        //
+        // The button was pressed and the site showed nothing to say it landed.
+        // That could be a slow page, an expired session, or a validation error
+        // the page did not make obvious. Writing a permanent hub record of an
+        // application that may never have been sent is the worse mistake, so it
+        // stays on the review list, marked, until a person has looked.
+        // `context.confirmed` is only ever set by a press the app itself made;
+        // the consultant's "I sent it myself" passes none, and that is them
+        // vouching for it.
+        if (context.confirmed === false) {
+            this.store.set({
+                awaitingReview: waiting.map((w) => (w.itemId === itemId
+                    ? { ...w, unconfirmed: { at: new Date().toISOString(), detail: context.detail ?? null } }
+                    : w)),
+            });
+            return { ok: true, unconfirmed: true, hubConfirmed: false };
+        }
+
         const body = {
             // DESKTOP_BOT is "filled by the app, submitted by the consultant" —
             // true whether they pressed the button here or in the browser.
@@ -2126,6 +2459,7 @@ class CycleEngine {
         // already sent, so a form nobody can press Submit on twice is the
         // safe state to be in while the report is still in flight or retrying.
         this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
+        this.#dropEvidence(entry);
 
         const reported = await this.#report(() => this.hub.submitted(itemId, body),
             { path: `/device/queue/${itemId}/submitted`, body });
@@ -2247,7 +2581,66 @@ class CycleEngine {
             reason: reason || 'The consultant chose not to submit this one.',
         });
         this.store.set({ awaitingReview: waiting.filter((w) => w.itemId !== itemId) });
+        this.#dropEvidence(waiting.find((w) => w.itemId === itemId));
         return { ok: true };
+    }
+
+    /*
+     * ── A PICTURE OF WHAT WAS LEFT ────────────────────────────────────
+     *
+     * The review list says what was typed; it cannot show what the page looked
+     * like — a field that did not take, a banner the form raised, the wrong
+     * step. A screenshot taken at the moment the form was left is the fastest
+     * check a person can make.
+     *
+     * It is a picture of someone's application, so it is kept only while that
+     * application is waiting: removed when it is sent, discarded, or found
+     * orphaned at the start of a pass.
+     */
+
+    /** Save a screenshot of the form as left. Best effort: never fails a job. */
+    async #captureEvidence(page, item) {
+        const dir = this.paths.evidence;
+        if (!dir || typeof page?.screenshot !== 'function') return null;
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+            const file = nodePath.join(dir, `${String(item.id).replace(/[^w-]/g, '_')}.jpg`);
+            await page.screenshot({ path: file, type: 'jpeg', quality: 60, timeout: 8_000 });
+            return file;
+        } catch {
+            return null;
+        }
+    }
+
+    #dropEvidence(entry) {
+        if (!entry?.evidence) return;
+        try { fs.rmSync(entry.evidence, { force: true }); } catch { /* already gone */ }
+    }
+
+    /** Pictures whose application is no longer waiting. */
+    #sweepEvidence() {
+        const dir = this.paths.evidence;
+        if (!dir) return;
+        try {
+            const keep = new Set((this.store.get('awaitingReview') ?? [])
+                .map((w) => w.evidence).filter(Boolean));
+            for (const name of fs.readdirSync(dir)) {
+                const full = nodePath.join(dir, name);
+                if (!keep.has(full)) fs.rmSync(full, { force: true });
+            }
+        } catch { /* nothing there yet */ }
+    }
+
+    /** The saved picture of a waiting application, as a data URL. */
+    reviewEvidence(itemId) {
+        const entry = (this.store.get('awaitingReview') ?? []).find((w) => w.itemId === itemId);
+        if (!entry?.evidence) return { ok: false };
+        try {
+            const data = fs.readFileSync(entry.evidence).toString('base64');
+            return { ok: true, dataUrl: `data:image/jpeg;base64,${data}` };
+        } catch {
+            return { ok: false };
+        }
     }
 
     /** Bring a filled form back in front of the consultant. */

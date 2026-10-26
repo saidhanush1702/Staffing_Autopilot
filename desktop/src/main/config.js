@@ -49,6 +49,23 @@ const SIGNIN_WAIT_MS = 5 * 60_000;
 const SIGNIN_POLL_MS = 3_000;
 
 /**
+ * ── HOW LONG A RUN MAY WAIT FOR A PERSON ──────────────────────────────
+ *
+ * The short windows above are how long the app holds still and watches. Once
+ * they run out the job is no longer abandoned: it is put on hold (see runs.js)
+ * and the rest of the queue carries on.
+ *
+ * A day, because Workday and LinkedIn both keep a draft that long, and because
+ * the person who has to act may be away from the machine.
+ */
+const GATE_TTL_MS = 24 * 60 * 60_000;
+/** How often a held run is tried again when nothing says it is ready. */
+const GATE_RETRY_MS = 10 * 60_000;
+/** Nudges after the wait begins; the last interval then repeats. */
+const GATE_REMINDER_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
+const GATE_REMINDER_REPEAT_MS = 2 * 60 * 60_000;
+
+/**
  * ── SUBMITTING WITHOUT A HUMAN ────────────────────────────────────────
  *
  * The system was built so the machine fills and a person presses submit. The
@@ -127,6 +144,10 @@ module.exports = {
     IDLE_POLL_MS,
     SIGNIN_WAIT_MS,
     SIGNIN_POLL_MS,
+    GATE_TTL_MS,
+    GATE_RETRY_MS,
+    GATE_REMINDER_MS,
+    GATE_REMINDER_REPEAT_MS,
     AUTO_SUBMIT,
     EMBED_BROWSER,
     CDP_PORT,
@@ -146,6 +167,12 @@ module.exports = {
             // those belong to Chromium, which is entitled to tidy them.
             sessions: path.join(userDataDir, 'sessions'),
             work: path.join(userDataDir, 'work'),
+            // A picture of each filled form, for the review screen. Personal
+            // data, so it lives only as long as the application is waiting and
+            // is swept at the start of every pass (see cycle.js).
+            evidence: path.join(userDataDir, 'evidence'),
+            // The shape of pages a run could not finish -- labels, never values.
+            fixtures: path.join(userDataDir, 'fixtures'),
             logs: path.join(userDataDir, 'logs'),
         };
     },

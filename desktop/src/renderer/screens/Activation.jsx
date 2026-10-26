@@ -23,7 +23,7 @@ import ThemeButton from './ThemeButton.jsx';
  * run. So it is stated here, before anything is entered — not in a settings
  * page nobody opens.
  */
-const Activation = ({ onActivated }) => {
+const Activation = ({ onActivated, revokedReason = null }) => {
     const [code, setCode] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -49,12 +49,20 @@ const Activation = ({ onActivated }) => {
                     <span className="mark" style={{ margin: '0 auto 14px', width: 44, height: 44, borderRadius: 13 }}>
                         <Mark />
                     </span>
-                    <h1>Activate SmartApply</h1>
+                    <h1>{revokedReason ? 'Access removed' : 'Activate SmartApply'}</h1>
                     <p className="sub">
-                        Enter the activation code your administrator gave you.
-                        You only do this once.
+                        {revokedReason
+                            ? 'Enter a new activation code from your administrator to use SmartApply again.'
+                            : 'Enter the activation code your administrator gave you. You only do this once.'}
                     </p>
                 </div>
+
+                {revokedReason && (
+                    <div className="note stop" style={{ marginBottom: 14 }}>
+                        {revokedReason} Everything this app held on this machine, including saved
+                        sign-ins, has been deleted.
+                    </div>
+                )}
 
                 <form className="card stack" onSubmit={submit}>
                     <div>

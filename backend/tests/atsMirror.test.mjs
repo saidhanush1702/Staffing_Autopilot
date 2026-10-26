@@ -34,6 +34,9 @@ import {
 import { payFromRange } from '../connectors/ats/lever.js';
 import { payFromCompensation } from '../connectors/ats/ashby.js';
 import { postedOnToDay } from '../connectors/ats/workday.js';
+import { recruiteeTime, payFromSalary } from '../connectors/ats/recruitee.js';
+import { descriptionFromPage } from '../connectors/ats/breezy.js';
+import { parseFeed } from '../connectors/ats/personio.js';
 import {
     httpRequest, httpJson, AtsHttpError, createLimiter,
 } from '../connectors/ats/http.js';
@@ -665,6 +668,264 @@ const fakeFetch = (status, { body = '{"ok":true}', headers = {} } = {}) => async
     await Promise.all(Array.from({ length: 3 }, () => limiter.run('g.test', async () => { starts.push(Date.now()); })));
     check('request STARTS to one host are spaced by the gap',
         starts.slice(1).every((t, i) => t - starts[i] >= 35), true);
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('five more systems: detection');
+
+check('recruitee', D('https://bunq.recruitee.com/o/head-of-product'), ['RECRUITEE', 'bunq']);
+check('recruitee marketing hosts are not boards', detectBoard('https://www.recruitee.com/pricing'), null);
+check('workable apply.', D('https://apply.workable.com/huggingface/j/DB4D7C0EC8/'), ['WORKABLE', 'huggingface']);
+check('workable api url', D('https://apply.workable.com/api/v3/accounts/huggingface/jobs'), ['WORKABLE', 'huggingface']);
+check('breezy', D('https://breezy.breezy.hr/p/98323abf2296-employee-12'), ['BREEZY', 'breezy']);
+check('personio .de', D('https://personio.jobs.personio.de/job/1834171'), ['PERSONIO', 'personio']);
+check('personio .com remembers its host', detectBoard('https://acme.jobs.personio.com/').config, { host: 'acme.jobs.personio.com' });
+check('bamboohr', D('https://brightfin.bamboohr.com/careers/127'), ['BAMBOOHR', 'brightfin']);
+check('bamboohr marketing host is not a board', detectBoard('https://www.bamboohr.com/hr-software/'), null);
+check('subdomain systems are lower-cased', D('recruitee:BunQ'), ['RECRUITEE', 'bunq']);
+check('every new shorthand is understood', ['workable:a', 'breezy:b', 'personio:c', 'bamboohr:d']
+    .map((s) => detectBoard(s)?.family), ['WORKABLE', 'BREEZY', 'PERSONIO', 'BAMBOOHR']);
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('Recruitee (real bunq capture)');
+
+const rcBoard = board('RECRUITEE', 'bunq');
+const rc = adapterFor('RECRUITEE');
+{
+    const { http, calls } = stubHttp([['recruitee.com', { json: fx('recruitee.list.json') }]]);
+    const out = await rc.fetchList(rcBoard, { http, now: NOW });
+    check('endpoint', calls[0].url, 'https://bunq.recruitee.com/api/offers/');
+    check('every published offer', out.items.length, 3);
+    const j = out.items[0];
+    check('"2026-10-15 09:31:36 UTC" becomes an exact ISO instant', j.publishedAt, '2026-10-15T09:31:36.000Z');
+    check('the employer\'s own page and apply form', [j.sourceUrl, j.applyUrl],
+        ['https://careers.bunq.com/o/head-of-product-6', 'https://careers.bunq.com/o/head-of-product-6/c/new']);
+    check('the company name is stated', j.companyName, 'bunq');
+    check('fulltime_permanent → FULL_TIME', j.workType, 'FULL_TIME');
+    truthy('description and requirements come with the list', j.description && j.description.length > 100);
+    check('so no detail request is needed', j.needsDetail, false);
+    check('no ETag is offered, so the hash decides', out.etag, null);
+
+    const again = await rc.fetchList(rcBoard, { http, now: NOW, prevHash: out.listHash });
+    check('an unchanged list is "not modified" by hash', again.notModified, true);
+    const changed = await rc.fetchList(rcBoard, { http, now: NOW, prevHash: 'something-else' });
+    check('a changed hash reads the list', changed.items.length, 3);
+}
+check('recruitee time with a T and Z', recruiteeTime('2026-10-15T09:31:36Z', NOW), '2026-10-15T09:31:36.000Z');
+check('recruitee time that is not a time', recruiteeTime('yesterday', NOW), null);
+check('hourly salary → HOURLY', payFromSalary({ min: 40, max: 60, period: 'hour', currency: 'USD' }),
+    { min: 40, max: 60, unit: 'HOURLY', currency: 'USD' });
+check('a monthly salary is dropped, not multiplied', payFromSalary({ min: 5000, max: 6000, period: 'month', currency: 'EUR' }), null);
+check('an empty salary block is no pay', payFromSalary({ max: null, min: null, period: null, currency: null }), null);
+{
+    const unpublished = { offers: [{ id: 1, title: 'Draft', status: 'draft' }, { id: 2, title: 'Live', status: 'published', careers_url: 'https://x.test/2' }] };
+    const { http } = stubHttp([['recruitee.com', { json: unpublished }]]);
+    const out = await rc.fetchList(rcBoard, { http, now: NOW });
+    check('a draft offer is never read as open', out.items.map((i) => i.extId), ['2']);
+}
+{
+    const { http } = stubHttp([['recruitee.com', { json: { nope: true } }]]);
+    let msg = null;
+    try { await rc.fetchList(rcBoard, { http, now: NOW }); } catch (e) { msg = e.message; }
+    check('a response with no offers array is an error, not an empty board', msg, 'Recruitee response has no offers array.');
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('Workable (real Hugging Face capture)');
+
+const wkBoard = board('WORKABLE', 'huggingface');
+const wk = adapterFor('WORKABLE');
+{
+    const { http, calls } = stubHttp([['/api/v3/accounts/', { json: fx('workable.list.json') }]]);
+    const out = await wk.fetchList(wkBoard, { http, now: NOW });
+    check('list endpoint is a POST', [calls[0].url, calls[0].method],
+        ['https://apply.workable.com/api/v3/accounts/huggingface/jobs', 'POST']);
+    check('every published job', out.items.length, 6);
+    const j = out.items[0];
+    check('shortcode is the id', j.extId, 'DB4D7C0EC8');
+    check('the date is a DAY, never an instant', [j.publishedAt, j.publishedDay], [null, '2026-09-21']);
+    check('so no latency can be claimed', latencySeconds(j, NOW), null);
+    check('employer page and apply form', [j.sourceUrl, j.applyUrl],
+        ['https://apply.workable.com/huggingface/j/DB4D7C0EC8/', 'https://apply.workable.com/huggingface/j/DB4D7C0EC8/apply/']);
+    check('remote workplace → remote', j.remote, true);
+    check('type "full" → FULL_TIME', j.workType, 'FULL_TIME');
+    check('the list has no description, so a detail request is needed', j.needsDetail, true);
+    check('the company is not stated by the system', j.companyName, undefined);
+}
+{
+    const { http, calls } = stubHttp([['/api/v2/accounts/', { json: fx('workable.detail.json') }]]);
+    const extra = await wk.fetchDetail(wkBoard, { extId: 'DB4D7C0EC8', publishedDay: '2026-09-21' }, { http });
+    check('detail endpoint', calls[0].url, 'https://apply.workable.com/api/v2/accounts/huggingface/jobs/DB4D7C0EC8');
+    truthy('description + requirements + benefits', extra.description && extra.description.length > 100);
+}
+{
+    // Paging: follow the token, and never trust it blindly.
+    const page = (ids, next) => ({ json: { results: ids.map((s) => ({ shortcode: s, title: s, state: 'published' })), total: 3, ...(next ? { nextPage: next } : {}) } });
+    let n = 0;
+    const { http, calls } = stubHttp([['/jobs', () => { n += 1; return n === 1 ? page(['A', 'B'], 'T1') : page(['C']); }]]);
+    const out = await wk.fetchList(wkBoard, { http, now: NOW });
+    check('a second page is requested with the token', calls[1].body.token, 'T1');
+    check('both pages are read', out.items.map((i) => i.extId), ['A', 'B', 'C']);
+    check('and the read is complete', out.complete, true);
+
+    const stuck = stubHttp([['/jobs', () => page(['A', 'B'], 'SAME')]]);
+    const s = await wk.fetchList(wkBoard, { http: stuck.http, now: NOW });
+    check('a token that does not advance stops the read', stuck.calls.length, 2);
+    check('…and the result is marked incomplete, so nothing is closed on it', s.complete, false);
+}
+{
+    const { http } = stubHttp([['/jobs', { json: { results: [
+        { shortcode: 'X', title: 'Internal', state: 'published', isInternal: true },
+        { shortcode: 'Y', title: 'Public', state: 'published' },
+        { shortcode: 'Z', title: 'Draft', state: 'draft' },
+    ], total: 3 } }]]);
+    const out = await wk.fetchList(wkBoard, { http, now: NOW });
+    check('internal and unpublished jobs are not listed', out.items.map((i) => i.extId), ['Y']);
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('Breezy HR (real capture)');
+
+const bzBoard = board('BREEZY', 'breezy');
+const bz = adapterFor('BREEZY');
+{
+    const { http, calls } = stubHttp([['breezy.hr/json', { json: fx('breezy.list.json'), etag: 'W/"b"' }]]);
+    const out = await bz.fetchList(bzBoard, { http, etag: null, now: NOW });
+    check('endpoint', calls[0].url, 'https://breezy.breezy.hr/json');
+    check('every job', out.items.length, 3);
+    const j = out.items[0];
+    check('published_date is an exact instant', j.publishedAt, '2024-02-15T14:37:22.684Z');
+    check('company name is stated', j.companyName, 'MS Breezy Trial');
+    check('place is built from city, state, country', j.locationText, 'Chaos, Florida, United States');
+    check('ETag is kept', out.etag, 'W/"b"');
+    check('the list has no description, so a page request is needed', j.needsDetail, true);
+
+    const cond = stubHttp([['breezy.hr/json', { notModified: true }]]);
+    const nm = await bz.fetchList(bzBoard, { http: cond.http, etag: 'W/"b"', now: NOW });
+    check('If-None-Match is sent and a 304 is respected', [cond.calls[0].etag, nm.notModified], ['W/"b"', true]);
+}
+{
+    const page = fs.readFileSync(path.join(here, 'fixtures', 'ats', 'breezy.page.html'), 'utf8');
+    const { http, calls } = stubHttp([['/p/', { text: page, json: null }]]);
+    const extra = await bz.fetchDetail(bzBoard, { extId: 'x', sourceUrl: 'https://breezy.breezy.hr/p/98323abf2296-employee-12' }, { http });
+    check('the job page is fetched as text', calls[0].as, 'text');
+    check('the description block becomes the description', extra.description, 'Roses and Rainbows until 30 days in.');
+    check('a page with no description block gives none', descriptionFromPage('<html></html>'), null);
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('Personio (real capture)');
+
+const peBoard = board('PERSONIO', 'personio');
+const pe = adapterFor('PERSONIO');
+const peXml = fs.readFileSync(path.join(here, 'fixtures', 'ats', 'personio.feed.xml'), 'utf8');
+{
+    const { http, calls } = stubHttp([['personio', { text: peXml, etag: '"p1"' }]]);
+    const out = await pe.fetchList(peBoard, { http, etag: null, now: NOW });
+    check('endpoint is the XML feed, read as text', [calls[0].url, calls[0].as], ['https://personio.jobs.personio.de/xml', 'text']);
+    check('one position', out.items.length, 1);
+    const j = out.items[0];
+    check('id and title', [j.extId, j.title], ['1834171', 'Staff Software Engineer, Data Platform']);
+    check('offices are joined, duplicates removed', j.locationText, 'Munich; Berlin');
+    check('createdAt is an exact instant', j.publishedAt, '2024-11-13T14:10:41.000Z');
+    check('subcompany is the company name', j.companyName, 'Personio SE & Co. KG');
+    check('schedule + type → FULL_TIME', j.workType, 'FULL_TIME');
+    check('page and apply URLs', [j.sourceUrl, j.applyUrl],
+        ['https://personio.jobs.personio.de/job/1834171', 'https://personio.jobs.personio.de/job/1834171?display=en#apply']);
+    check('ETag is kept', out.etag, '"p1"');
+}
+{
+    const cond = stubHttp([['personio', { notModified: true }]]);
+    const nm = await pe.fetchList(peBoard, { http: cond.http, etag: '"p1"', now: NOW });
+    check('a 304 is respected', nm.notModified, true);
+}
+{
+    const xml = `<workzag-jobs><position><id>7</id><subcompany>Acme &amp; Co</subcompany><office>Berlin</office>
+        <name>Dev &amp; Ops</name><schedule>part-time</schedule><createdAt>2026-10-20T08:00:00+00:00</createdAt>
+        <jobDescriptions><jobDescription><name>Tasks</name><value><![CDATA[<p>Build &amp; run things</p>]]></value></jobDescription>
+        <jobDescription><name>Profile</name><value><![CDATA[<ul><li>Go</li></ul>]]></value></jobDescription></jobDescriptions>
+        </position></workzag-jobs>`;
+    const [p] = parseFeed(xml);
+    check('entities in plain fields are decoded', [p.name, p.subcompany], ['Dev & Ops', 'Acme & Co']);
+    truthy('CDATA descriptions are read, with their headings', /Tasks[\s\S]*Build & run things[\s\S]*Profile[\s\S]*Go/.test(p.description));
+    const { http } = stubHttp([['personio', { text: xml }]]);
+    const out = await pe.fetchList(peBoard, { http, now: NOW });
+    check('part-time is read from the schedule', out.items[0].workType, 'PART_TIME');
+}
+{
+    const com = board('PERSONIO', 'acme', { config: { host: 'acme.jobs.personio.com' } });
+    const { http, calls } = stubHttp([['personio', { text: '<workzag-jobs></workzag-jobs>' }]]);
+    await pe.fetchList(com, { http, now: NOW });
+    check('a .com account uses its own host', calls[0].url, 'https://acme.jobs.personio.com/xml');
+}
+{
+    const { http } = stubHttp([['personio', { text: '<html>not a feed</html>' }]]);
+    let msg = null;
+    try { await pe.fetchList(peBoard, { http, now: NOW }); } catch (e) { msg = e.message; }
+    check('something that is not a feed is an error, not an empty board', msg, 'Personio response is not a job feed.');
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('BambooHR (real Brightfin capture)');
+
+const bbBoard = board('BAMBOOHR', 'brightfin');
+const bb = adapterFor('BAMBOOHR');
+{
+    const { http, calls } = stubHttp([['/careers/list', { json: fx('bamboohr.list.json') }]]);
+    const out = await bb.fetchList(bbBoard, { http, now: NOW });
+    check('endpoint', calls[0].url, 'https://brightfin.bamboohr.com/careers/list');
+    check('one job', out.items.length, 1);
+    const j = out.items[0];
+    check('id and title', [j.extId, j.title], ['127', 'L1 Technical Support Specialist (UA Private Entrepreneur Only)']);
+    check('place comes from atsLocation', j.locationText, 'Ukraine');
+    check('the list has no date', [j.publishedAt, j.publishedDay], [null, undefined]);
+    check('so a detail request is needed', j.needsDetail, true);
+
+    const again = await bb.fetchList(bbBoard, { http, now: NOW, prevHash: out.listHash });
+    check('an unchanged list is "not modified" by hash', again.notModified, true);
+}
+{
+    const { http, calls } = stubHttp([['/detail', { json: fx('bamboohr.detail.json') }]]);
+    const extra = await bb.fetchDetail(bbBoard, { extId: '127', sourceUrl: 'x' }, { http });
+    check('detail endpoint', calls[0].url, 'https://brightfin.bamboohr.com/careers/127/detail');
+    check('datePosted is a DAY', extra.publishedDay, '2026-10-06');
+    truthy('description is read', extra.description && extra.description.includes('Brightfin'));
+    check('the share URL is the employer\'s page', extra.sourceUrl, 'https://brightfin.bamboohr.com/careers/127');
+}
+{
+    const { http } = stubHttp([['/careers/list', { json: { meta: { totalCount: 0 }, result: [] } }]]);
+    const out = await bb.fetchList(bbBoard, { http, now: NOW });
+    check('a board with no openings is an empty list, not an error', [out.items.length, out.complete], [0, true]);
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('the new systems reach the pipeline in the same shape');
+
+for (const [family, adapter, key, payload] of [
+    ['RECRUITEE', rc, 'bunq', fx('recruitee.list.json')],
+    ['WORKABLE', wk, 'huggingface', fx('workable.list.json')],
+    ['BREEZY', bz, 'breezy', fx('breezy.list.json')],
+]) {
+    const route = family === 'RECRUITEE' ? 'recruitee.com' : (family === 'WORKABLE' ? '/jobs' : 'breezy.hr/json');
+    const { http } = stubHttp([[route, { json: payload }]]);
+    const b = board(family, key, { company_name: 'Acme Corp' });
+    const out = await adapter.fetchList(b, { http, now: NOW });
+    const a = toAdapted(b, out.items[0], adapter, NOW);
+    check(`${family}: source, portal and origin board`, [a.source, a.portalType, a.originBoard],
+        [SOURCE_NAME, family, family.toLowerCase()]);
+    check(`${family}: the registry's company name wins`, a.posting.company, 'Acme Corp');
+}
+
+/* ═════════════════════════════════════════════════════════════════════ */
+section('http client: text mode');
+{
+    const html = '<html><body>not json</body></html>';
+    const fetchImpl = async () => new Response(html, { status: 200, headers: { 'content-type': 'text/html' } });
+    const res = await httpJson('https://x.test/p', { as: 'text', fetchImpl });
+    check('as:"text" returns the body and does not parse it', [res.json, res.text], [null, html]);
+    let kind = null;
+    try { await httpJson('https://x.test/p', { fetchImpl }); } catch (e) { kind = e.kind; }
+    check('the default still treats non-JSON as an error', kind, 'ERROR');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

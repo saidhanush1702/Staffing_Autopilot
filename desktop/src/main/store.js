@@ -56,6 +56,11 @@ const EMPTY = {
     // because the ORGANISATION decides whether the agent runs at all — a
     // consultant only ever narrows that, never widens it.
     agentFallback: true,
+    // What to do with voluntary demographic questions (gender, race, veteran,
+    // disability). ASK leaves them to the consultant; DECLINE picks the form's
+    // "prefer not to say" option. Never anything else -- the app does not
+    // state a protected characteristic on anyone's behalf.
+    eeoPolicy: 'ASK',
     // Last known settings from the hub.
     paused: false,
     pausedBoards: [],
@@ -74,6 +79,11 @@ const EMPTY = {
     // submit themselves. Held locally because the Q&A list has to survive a
     // restart — it is what gets reported to the hub after they submit.
     awaitingReview: [],
+    // Applications waiting on a person -- sign-in, account wall, terms. See
+    // runs.js. Kept on disk so a restart does not forget who was asked what.
+    runs: [],
+    // How each system's runs have ended, for deciding what to build next.
+    siteStats: {},
 };
 
 class Store {

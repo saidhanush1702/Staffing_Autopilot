@@ -126,10 +126,16 @@ export const httpRequest = async (url, {
     return { status, notModified: false, etag: outHeaders.etag, bytes, text, headers: outHeaders };
 };
 
-/** `httpRequest` + JSON.parse, with the parse failure classified like any other. */
+/**
+ * `httpRequest` + JSON.parse, with the parse failure classified like any other.
+ *
+ * `as: 'text'` skips the parse and hands back `res.text` — for the two families
+ * that do not speak JSON everywhere (Personio's XML feed, Breezy's job page).
+ */
 export const httpJson = async (url, opts = {}) => {
-    const res = await httpRequest(url, opts);
-    if (res.notModified) return { ...res, json: null };
+    const { as = 'json', ...rest } = opts;
+    const res = await httpRequest(url, rest);
+    if (res.notModified || as === 'text') return { ...res, json: null };
     try {
         return { ...res, json: JSON.parse(res.text) };
     } catch {

@@ -26,6 +26,7 @@ const LABEL = {
     SIGN_IN: 'Sign-in',
     ACCOUNT_WALL: 'Sign-in',
     LEGAL_GATE: 'Terms',
+    EMAIL_VERIFY: 'Verification code',
 };
 
 /** Seconds, as a person says them. */

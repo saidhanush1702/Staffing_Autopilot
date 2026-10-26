@@ -23,6 +23,7 @@ const Controls = ({ snap, onRefresh }) => {
     // On unless the consultant turned it off. The organisation decides whether
     // the agent may run at all; this can only narrow that.
     const [agentFallback, setAgentFallback] = useState(snap.agentFallback !== false);
+    const [eeoDecline, setEeoDecline] = useState(snap.eeoPolicy === 'DECLINE');
     const [busy, setBusy] = useState(false);
 
     const running = Boolean(snap.automationOn);
@@ -57,7 +58,9 @@ const Controls = ({ snap, onRefresh }) => {
                     disabled={busy}
                     onClick={() => act(running
                         ? window.smartapply.stopAutomation
-                        : () => window.smartapply.startAutomation({ autoSubmit, agentFallback }))}
+                        : () => window.smartapply.startAutomation({
+                            autoSubmit, agentFallback, eeoPolicy: eeoDecline ? 'DECLINE' : 'ASK',
+                        }))}
                 >
                     {busy ? 'Working…' : (running ? 'Stop' : 'Start applying')}
                 </button>
@@ -89,6 +92,23 @@ const Controls = ({ snap, onRefresh }) => {
                                   + 'Anything genuinely new still comes to you.'
                                 : 'Jobs the automation cannot fill come straight to you, and every '
                                   + 'new question stops for you to answer, exactly as before.'}
+                        </p>
+                    </span>
+                </label>
+                <label className="switch">
+                    <input
+                        type="checkbox"
+                        checked={eeoDecline}
+                        onChange={(e) => setEeoDecline(e.target.checked)}
+                    />
+                    <span>
+                        <strong>Choose “prefer not to say” on voluntary questions</strong>
+                        <p className="muted" style={{ marginTop: 2 }}>
+                            {eeoDecline
+                                ? 'Gender, race, veteran and disability questions get the form’s '
+                                  + '“decline to answer” option. The app never states any of these '
+                                  + 'about you.'
+                                : 'Those questions stop and wait for you to answer them.'}
                         </p>
                     </span>
                 </label>

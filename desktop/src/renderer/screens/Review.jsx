@@ -107,6 +107,17 @@ const Application = ({ entry, onRefresh }) => {
 
             {error && <p className="note stop">{error}</p>}
 
+            {entry.evidence && <Picture itemId={entry.itemId} />}
+
+            {entry.unconfirmed && (
+                <p className="note stop">
+                    Submit was pressed, but the site did not show that the application landed.
+                    Open it in the browser and check. If it went through, press “I sent it
+                    myself”; if not, use “Do not send” and apply again by hand. Submit is hidden
+                    so it cannot be sent twice.
+                </p>
+            )}
+
             <div className="row">
                 <button
                     type="button"
@@ -136,16 +147,43 @@ const Application = ({ entry, onRefresh }) => {
                     >
                         {busy === 'recorded' ? 'Recording…' : 'I sent it myself'}
                     </button>
-                    <button
-                        type="button"
-                        className="primary"
-                        disabled={busy !== ''}
-                        onClick={() => act('submitting', () => window.smartapply.submitApplication(entry.itemId))}
-                    >
-                        {busy === 'submitting' ? 'Submitting…' : 'Submit'}
-                    </button>
+                    {!entry.unconfirmed && (
+                        <button
+                            type="button"
+                            className="primary"
+                            disabled={busy !== ''}
+                            onClick={() => act('submitting', () => window.smartapply.submitApplication(entry.itemId))}
+                        >
+                            {busy === 'submitting' ? 'Submitting…' : 'Submit'}
+                        </button>
+                    )}
                 </span>
             </div>
+        </div>
+    );
+};
+
+/** How the form looked when it was left. Loaded only when asked for. */
+const Picture = ({ itemId }) => {
+    const [shot, setShot] = useState(null);
+    const [shown, setShown] = useState(false);
+
+    const toggle = async () => {
+        if (!shown && !shot) {
+            const res = await window.smartapply.reviewEvidence(itemId);
+            if (res?.ok) setShot(res.dataUrl);
+        }
+        setShown(!shown);
+    };
+
+    return (
+        <div>
+            <button type="button" className="quiet" onClick={toggle}>
+                {shown ? 'Hide picture' : 'Show how the form looked'}
+            </button>
+            {shown && shot && (
+                <img src={shot} alt="The application as it was left" style={{ width: '100%', marginTop: 8, borderRadius: 8 }} />
+            )}
         </div>
     );
 };

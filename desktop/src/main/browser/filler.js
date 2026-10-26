@@ -25,8 +25,19 @@
  * its old shape and half in its new one.
  */
 const {
-    buildAnswerBook, resolveAnswer, isAffirmative, chooseOption, chooseSuggestion,
+    buildAnswerBook, resolveAnswer, resolveEeo, isAffirmative, chooseOption, chooseSuggestion,
 } = require('./answers.js');
+
+/**
+ * The answer for a field: the bank and profile first, then — only when the
+ * consultant has switched it on — "decline to answer" for a sensitive question.
+ */
+const answerFor = (question, book, optionLabels = null) => {
+    const found = resolveAnswer(question, book);
+    if (found) return found;
+    const eeo = resolveEeo(question, book, optionLabels);
+    return eeo ? { value: eeo, source: 'POLICY', questionId: null } : null;
+};
 const { TYPING } = require('../config.js');
 
 /**
@@ -51,7 +62,24 @@ const { TYPING } = require('../config.js');
  * something else does not carry it.
  */
 const DROPDOWN_SELECTOR = 'button[aria-haspopup="listbox"], [role="combobox"][aria-haspopup="listbox"]';
-const FIELD_SELECTOR = `input, textarea, select, ${DROPDOWN_SELECTOR}`;
+
+/**
+ * ── YES / NO THAT ARE BUTTONS ─────────────────────────────────────────
+ *
+ * Measured on Ashby: a screening question is a pair of <button> elements in a
+ * container, each carrying aria-pressed, with no radio input anywhere:
+ *
+ *     <div>Are you based in the Bay Area?
+ *       <div><button aria-pressed="false">Yes</button>
+ *            <button aria-pressed="false">No</button></div></div>
+ *
+ * The filler read no fields there at all, so every such question was invisible
+ * rather than merely unanswered. `aria-pressed` is the page declaring "I am a
+ * toggle", which makes it safe to widen the selector; whether a given button
+ * really belongs to a choice group is decided in describeFields.
+ */
+const TOGGLE_SELECTOR = 'button[aria-pressed]';
+const FIELD_SELECTOR = `input, textarea, select, ${DROPDOWN_SELECTOR}, ${TOGGLE_SELECTOR}`;
 
 const rand = (min, max) => min + Math.random() * (max - min);
 
@@ -136,6 +164,9 @@ const describeFields = (page, root = null) => page.$$eval(
      * by role rather than by class because LinkedIn's classes are build-hashed
      * and change between page loads.
      */
+    /** A native control is on when checked; a toggle button when pressed. */
+    const isOn = (el) => Boolean(el.checked) || el.getAttribute('aria-pressed') === 'true';
+
     const proxyFor = (el) => {
         let n = el.parentElement;
         for (let i = 0; i < 6 && n; i += 1, n = n.parentElement) {
@@ -169,6 +200,23 @@ const describeFields = (page, root = null) => page.$$eval(
 
         const placeholder = el.getAttribute('placeholder');
         if (placeholder && placeholder.trim()) return placeholder.trim();
+
+        // ── A QUESTION THAT IS ONLY NEAR ITS FIELD ────────────────────────
+        //
+        // Measured on Lever: a screening select has no <label for>, no wrapper
+        // label and no aria-label -- the question is a sibling element in the
+        // same list item, and the only name left is a generated one such as
+        // "cards[3da5…][field0]". Reading that as the question made it
+        // impossible to answer, or to ask a person about. So before settling
+        // for the machine's name, look for something label-like in the field's
+        // own container, a few levels up and no further.
+        let box = el.parentElement;
+        for (let i = 0; i < 3 && box; i += 1, box = box.parentElement) {
+            const cand = [...box.querySelectorAll('label, legend, [class*="label" i], p')]
+                .find((c) => !c.contains(el) && !el.contains(c)
+                    && text(c) && text(c).length <= 300);
+            if (cand) return text(cand);
+        }
 
         return el.getAttribute('name') || '';
     };
@@ -248,7 +296,39 @@ const describeFields = (page, root = null) => page.$$eval(
         return isTheQuestion(name) ? '' : name;
     };
 
-    const groupBoxFor = (el) => el.closest('fieldset, [role="radiogroup"], [role="group"]');
+    /**
+     * A toggle button is a choice only as one of a small set: two to six
+     * sibling buttons that all carry aria-pressed and all say something short.
+     * A lone "Save job" star, or a toolbar of formatting toggles, is neither.
+     */
+    const isChoiceToggle = (el) => {
+        if (el.tagName !== 'BUTTON' || !el.hasAttribute('aria-pressed')) return false;
+        const set = [...(el.parentElement?.children ?? [])]
+            .filter((c) => c.tagName === 'BUTTON' && c.hasAttribute('aria-pressed'));
+        return set.length >= 2 && set.length <= 6
+            && set.every((b) => text(b).length > 0 && text(b).length <= 30);
+    };
+
+    /**
+     * Radios and checkboxes that share a `name` are one question even when the
+     * page wraps them in no fieldset (Lever does not). The group is their
+     * nearest common ancestor -- unless that is the whole form, in which case
+     * the names were reused and nothing can be said about where one question
+     * ends.
+     */
+    const sharedBox = (el) => {
+        const name = el.getAttribute('name');
+        if (!name || (el.type !== 'radio' && el.type !== 'checkbox')) return null;
+        const mates = [...document.querySelectorAll('input[type="' + el.type + '"]')]
+            .filter((m) => m.getAttribute('name') === name);
+        if (mates.length < 2) return null;
+        let n = el.parentElement;
+        while (n && !mates.every((m) => n.contains(m))) n = n.parentElement;
+        return n && !['FORM', 'BODY', 'HTML'].includes(n.tagName) ? n : null;
+    };
+
+    const groupBoxFor = (el) => el.closest('fieldset, [role="radiogroup"], [role="group"]')
+        ?? (isChoiceToggle(el) ? el.parentElement : sharedBox(el));
 
     /**
      * ── THE QUESTION A GROUP IS ASKING ────────────────────────────────
@@ -299,8 +379,10 @@ const describeFields = (page, root = null) => page.$$eval(
         }
 
         // Or the container's own text with the options' text cut out of it.
-        const parent = box.parentElement;
-        if (parent) {
+        // A few levels, not one: the question is often a sibling of the list the
+        // options sit in, which is itself inside another wrapper.
+        let parent = box.parentElement;
+        for (let i = 0; i < 3 && parent; i += 1, parent = parent.parentElement) {
             const whole = text(parent);
             const inner = text(box);
             const at = inner ? whole.indexOf(inner) : -1;
@@ -374,8 +456,10 @@ const describeFields = (page, root = null) => page.$$eval(
         const isPrompt = Boolean(promptBox)
             || el.getAttribute('data-uxi-widget-type') === 'selectinput';
         const isDropdown = el.getAttribute('aria-haspopup') === 'listbox' || isPrompt;
-        const type = isDropdown ? 'dropdown'
-            : (el.getAttribute('type') || (tag === 'select' ? 'select' : 'text')).toLowerCase();
+        const isToggle = isChoiceToggle(el);
+        const type = isToggle ? 'radio' : isDropdown ? 'dropdown'
+            : (tag === 'button' ? 'button'
+                : (el.getAttribute('type') || (tag === 'select' ? 'select' : 'text')).toLowerCase());
         const isOption = type === 'radio' || type === 'checkbox';
         // A prompt widget already has a proper <label for>, so the question
         // needs no unpicking — only the CHOSEN VALUE has to be found, and it
@@ -390,7 +474,7 @@ const describeFields = (page, root = null) => page.$$eval(
             : null;
         const style = window.getComputedStyle(el);
         const label = isDropdown ? drop.question
-            : (isOption ? optionLabelFor(el) : labelFor(el));
+            : (isToggle ? text(el) : (isOption ? optionLabelFor(el) : labelFor(el)));
         const groupLabel = isOption ? groupLabelFor(el) : '';
         const box = isOption ? groupBoxFor(el) : null;
         const proxy = isOption ? proxyFor(el) : null;
@@ -416,12 +500,13 @@ const describeFields = (page, root = null) => page.$$eval(
                 // Workday says so in the accessible name rather than with an
                 // attribute: "Country India Required".
                 || (isDropdown && /\brequired\b/i.test(el.getAttribute('aria-label') || ''))
-                || /\*/.test(label) || /\*/.test(groupLabel),
+                || /[*✱]/.test(label) || /[*✱]/.test(groupLabel),
             ),
             disabled: el.disabled || el.readOnly,
             // Can Playwright actually click this thing? A transparent 0×0 input
             // is not visible by its rules, so `check()` waits for it until it
             // times out; the styled proxy has to be clicked instead.
+            toggle: isToggle,
             hittable: rect.width > 0 && rect.height > 0 && style.opacity !== '0',
             // Already answered by the portal itself. LinkedIn pre-fills name,
             // phone and email from the signed-in account, and those values are
@@ -444,7 +529,7 @@ const describeFields = (page, root = null) => page.$$eval(
             // to remember.
             value: type === 'password' || type === 'file' ? ''
                 : (isDropdown ? (PLACEHOLDER.test(drop.current) ? '' : drop.current)
-                    : (isOption ? (el.checked ? (label || 'Yes') : '') : String(el.value ?? ''))),
+                    : (isOption ? (isOn(el) ? (label || 'Yes') : '') : String(el.value ?? ''))),
             hasValue: Boolean(
                 isDropdown
                     // "Select One" is Workday's word for empty. Treating it as
@@ -452,7 +537,7 @@ const describeFields = (page, root = null) => page.$$eval(
                     // answered — the same mistake `value: "on"` made for radios.
                     ? (drop.current && !PLACEHOLDER.test(drop.current))
                     : isOption
-                    ? (el.checked || (proxy && proxy.getAttribute('aria-checked') === 'true'))
+                    ? (isOn(el) || (proxy && proxy.getAttribute('aria-checked') === 'true'))
                     : (tag === 'select'
                         ? (el.value && el.value !== '' && el.selectedIndex > -1
                            && (el.options[el.selectedIndex]?.textContent || '').trim())
@@ -487,6 +572,13 @@ const describeFields = (page, root = null) => page.$$eval(
  * and the first that applies wins.
  */
 const checkControl = async (locator, field = {}) => {
+    // A toggle button is not a checkbox: Playwright's check() refuses it, and
+    // a click is exactly what a person would do.
+    if (field.toggle) {
+        await locator.click({ timeout: 5_000 });
+        return 'toggle';
+    }
+
     if (field.hittable !== false) {
         try {
             await locator.check({ timeout: 5_000 });
@@ -565,7 +657,11 @@ const chooseFromDropdown = async (page, locator, answer, log = () => {}) => {
     //
     // A one-level dropdown ignores the separator entirely, because it only
     // ever reaches the first part.
-    const steps = String(answer).split(/\s*(?:>|\u2192|\/)\s*/).filter(Boolean);
+    // A pattern is one step by definition: it names the option by what it says,
+    // not by a path to it.
+    const steps = answer instanceof RegExp
+        ? [answer]
+        : String(answer).split(/\s*(?:>|\u2192|\/)\s*/).filter(Boolean);
     let chosen = null;
 
     for (const [depth, want] of steps.entries()) {
@@ -652,7 +748,9 @@ const pickFromOpenList = async (page, want, log = () => {}) => {
     // The same strict matcher used everywhere else: exact, then a unique
     // prefix, then nothing. 250 countries and 37 states are exactly where a
     // loose match would quietly put the wrong thing on an application.
-    const match = chooseOption(texts, want);
+    // A pattern (the "prefer not to say" option) must pick exactly one entry.
+    const hits = want instanceof RegExp ? texts.filter((t) => want.test(t)) : null;
+    const match = hits ? (hits.length === 1 ? hits[0] : null) : chooseOption(texts, want);
     if (!match) return null;
 
     await options.nth(texts.indexOf(match)).click({ timeout: 5_000 }).catch(() => {});
@@ -722,6 +820,60 @@ const pickSuggestion = async (page, el, typed, hint = null) => {
     return match;
 };
 
+/**
+ * ── DID IT TAKE? ──────────────────────────────────────────────────────
+ *
+ * Typing into a box and the form holding the value are different events. A
+ * masked input rewrites what it is given, a controlled component can throw a
+ * keystroke away, and a re-render can empty a field a moment after it was
+ * filled. Every one of those used to be recorded as "answered" while the
+ * field was empty, and the review screen then showed a value the employer
+ * would never receive.
+ *
+ * So after the write the field is READ, and what it says decides:
+ *
+ *   empty                    did not take
+ *   says something unrelated it landed in the wrong box
+ *   contains / is contained  taken (masks add brackets, URLs gain "https://")
+ *
+ * A control that cannot be read (a test stand-in, a custom widget) is given
+ * the benefit of the doubt: this guards against a known failure, and is not a
+ * reason to stop on a page it cannot see into.
+ *
+ * @returns {{ ok: true } | { ok: false, reason }}
+ */
+const alnum = (v) => String(v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const readBack = async (locator, kind, expected, picked = null, field = null) => {
+    try {
+        if (kind === 'text' && typeof locator.inputValue === 'function') {
+            const actual = alnum(await locator.inputValue());
+            if (!actual) return { ok: false, reason: 'the form did not keep what was typed' };
+            const want = alnum(picked ?? expected);
+            const typed = alnum(expected);
+            const related = [want, typed].some((w) => w && (actual.includes(w) || w.includes(actual)));
+            return related
+                ? { ok: true }
+                : { ok: false, reason: 'the box shows something other than what was typed' };
+        }
+        if (kind === 'choice' && field?.toggle && typeof locator.getAttribute === 'function') {
+            return (await locator.getAttribute('aria-pressed')) === 'true'
+                ? { ok: true }
+                : { ok: false, reason: 'the option did not stay selected' };
+        }
+        if (kind === 'choice' && typeof locator.isChecked === 'function') {
+            return (await locator.isChecked())
+                ? { ok: true }
+                : { ok: false, reason: 'the option did not stay selected' };
+        }
+    } catch { /* unreadable: do not block on it */ }
+    return { ok: true };
+};
+
+/** What a file box calls itself. See the file branch of fillForm. */
+const FILE_RESUME = /(resume|résumé|cv|curriculum)/i;
+const FILE_AUTOFILL = /autofill|auto-fill|import|parse/i;
+
 /** Controls that carry no question and must never be touched. */
 const IGNORED_TYPES = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
 
@@ -737,7 +889,10 @@ const groupOf = (f) => f.groupKey || f.name || `solo-${f.index}`;
  * normaliser drops asterisks anyway, so an answer banked either way still
  * matches; this is about what a person reads.
  */
-const asAsked = (label) => String(label ?? '').replace(/[\s*]+$/, '').trim();
+// Lever marks required with "✱" and then runs straight into whatever status
+// text the field's wrapper holds ("Current location ✱No location found…"), so
+// everything from the mark on is not part of the question.
+const asAsked = (label) => String(label ?? '').split('✱')[0].replace(/[\s*]+$/, '').trim();
 
 /**
  * Fill everything answerable on the current page.
@@ -779,7 +934,15 @@ const fillForm = async (page, {
         }
 
         if (f.type === 'file') {
-            if (resumePath && !attachedResume) {
+            // Only the box that is the resume. A form with an "autofill from
+            // resume" box that parses the file and fills fields from it, or a
+            // cover-letter box beside the CV, must not get the CV by default.
+            const files = fields.filter((x) => x.type === 'file' && x.visible);
+            const says = `${f.id} ${f.name} ${f.label}`;
+            const isResume = files.length === 1
+                ? !FILE_AUTOFILL.test(says)
+                : (FILE_RESUME.test(says) && !FILE_AUTOFILL.test(says));
+            if (resumePath && !attachedResume && isResume) {
                 await el(locators, f).setInputFiles(resumePath);
                 attachedResume = true;
                 qa.push({
@@ -829,7 +992,7 @@ const fillForm = async (page, {
                 continue;
             }
 
-            const found = resolveAnswer(question, book);
+            const found = answerFor(question, book, siblings.map((s) => s.label));
             const match = found
                 ? chooseOption(siblings.map((s) => s.label), found.value)
                 : null;
@@ -850,6 +1013,17 @@ const fillForm = async (page, {
             }
 
             await checkControl(el(locators, target), target);
+            const stuck = await readBack(el(locators, target), 'choice', null, null, target);
+            if (!stuck.ok) {
+                unknown.push({
+                    questionText: question,
+                    fieldType: 'radio',
+                    required,
+                    options: siblings.map((s) => s.label).filter(Boolean),
+                    reason: stuck.reason,
+                });
+                continue;
+            }
             qa.push({
                 questionText: question,
                 answerText: target.label,
@@ -859,6 +1033,71 @@ const fillForm = async (page, {
             });
             await pause(typing.betweenFieldsMs[0], typing.betweenFieldsMs[1]);
             continue;
+        }
+
+        // ── A ROW OF CHECKBOXES IS ONE QUESTION ─────────────────────────────
+        //
+        // "Which languages do you speak?" with forty boxes used to be forty
+        // unanswered questions, each one named after a language, each marked
+        // required because the page puts `required` on every box (Lever does,
+        // and checks it with its own script). Asking a person forty times is
+        // worse than asking once, and blocking on all forty is worse than not
+        // blocking at all.
+        //
+        // So three or more boxes sharing a group are decided together: answered
+        // from the bank when the answer names options that exist, left to a
+        // person once otherwise -- and only blocking when the question itself is
+        // marked required. A group with no readable question is left alone.
+        if (f.type === 'checkbox') {
+            const key = groupOf(f);
+            const boxes = fields.filter((x) => x.type === 'checkbox' && groupOf(x) === key);
+            if (boxes.length >= 3) {
+                if (answeredGroups.has(key)) continue;
+                answeredGroups.add(key);
+
+                const asked = asAsked(f.groupLabel);
+                if (!asked) continue;
+                const labels = boxes.map((b) => b.label);
+
+                if (boxes.some((b) => b.hasValue)) {
+                    qa.push({
+                        questionText: asked,
+                        answerText: boxes.filter((b) => b.hasValue).map((b) => b.label).join(', '),
+                        fieldType: 'checkbox',
+                        source: 'PORTAL',
+                        questionId: null,
+                    });
+                    continue;
+                }
+
+                const found = answerFor(asked, book, labels);
+                const wanted = found
+                    ? String(found.value).split(/\s*[,;|]\s*/).filter(Boolean)
+                    : [];
+                const picks = wanted.map((w) => chooseOption(labels, w));
+                if (!found || picks.length === 0 || picks.some((p) => !p)) {
+                    unknown.push({
+                        questionText: asked,
+                        fieldType: 'checkbox',
+                        required: /[*✱]/.test(f.groupLabel),
+                        options: labels.filter(Boolean),
+                    });
+                    continue;
+                }
+                for (const pick of picks) {
+                    const target = boxes.find((b) => b.label === pick);
+                    await checkControl(el(locators, target), target);
+                }
+                qa.push({
+                    questionText: asked,
+                    answerText: picks.join(', '),
+                    fieldType: 'checkbox',
+                    source: found.source,
+                    questionId: found.questionId,
+                });
+                await pause(typing.betweenFieldsMs[0], typing.betweenFieldsMs[1]);
+                continue;
+            }
         }
 
         const question = asAsked(f.label);
@@ -882,7 +1121,7 @@ const fillForm = async (page, {
                 continue;
             }
 
-            const found = resolveAnswer(question, book);
+            const found = answerFor(question, book);
             if (!found) {
                 unknown.push({
                     questionText: question, fieldType: 'dropdown', required: f.required,
@@ -890,7 +1129,10 @@ const fillForm = async (page, {
                 continue;
             }
 
-            const chosen = await chooseFromDropdown(page, el(locators, f), String(found.value));
+            const chosen = await chooseFromDropdown(
+                page, el(locators, f),
+                found.value instanceof RegExp ? found.value : String(found.value),
+            );
             if (!chosen) {
                 // Opened, read, and nothing matched. That is a question we
                 // cannot answer, not a field to leave silently blank.
@@ -943,8 +1185,8 @@ const fillForm = async (page, {
             continue;
         }
 
-        const found = resolveAnswer(question, book);
-        if (!found) {
+        const found = answerFor(question, book, f.tag === 'select' ? f.options : null);
+        if (!found || found.value instanceof RegExp) {
             unknown.push({
                 questionText: question,
                 fieldType: f.type,
@@ -998,6 +1240,19 @@ const fillForm = async (page, {
             const chosen = await pickSuggestion(
                 page, control, String(found.value), book.values.state,
             );
+
+            const landed = await readBack(control, 'text', String(found.value), chosen);
+            if (!landed.ok) {
+                unknown.push({
+                    questionText: question,
+                    fieldType: f.type,
+                    required: f.required,
+                    options: f.options,
+                    reason: landed.reason,
+                });
+                await pause(typing.betweenFieldsMs[0], typing.betweenFieldsMs[1]);
+                continue;
+            }
 
             qa.push({
                 questionText: question,
@@ -1067,6 +1322,8 @@ const fillValue = async (pageLike, target, value, { typing = TYPING, stateHint =
         }
         const chosen = target.members.find((m) => m.field.label === match);
         await checkControl(chosen.locator, chosen.field);
+        const stuck = await readBack(chosen.locator, 'choice', null, null, chosen.field);
+        if (!stuck.ok) return { ok: false, error: stuck.reason };
         return { ok: true, answerText: match };
     }
 
@@ -1112,10 +1369,12 @@ const fillValue = async (pageLike, target, value, { typing = TYPING, stateHint =
         delay: Math.round(rand(typing.minMs, typing.maxMs)),
     });
     const suggested = await pickSuggestion(pageLike, locator, text, stateHint);
+    const landed = await readBack(locator, 'text', text, suggested);
+    if (!landed.ok) return { ok: false, error: landed.reason };
     return { ok: true, answerText: suggested ?? text };
 };
 
 module.exports = {
-    fillForm, fillValue, describeFields, checkControl, chooseFromDropdown, groupOf, asAsked,
+    readBack, fillForm, fillValue, describeFields, checkControl, chooseFromDropdown, groupOf, asAsked,
     FIELD_SELECTOR, DROPDOWN_SELECTOR, IGNORED_TYPES,
 };

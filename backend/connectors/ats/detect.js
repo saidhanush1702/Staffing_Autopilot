@@ -38,7 +38,7 @@ export const detectBoard = (input) => {
     if (!raw) return null;
 
     // family:key shorthand
-    const short = /^(greenhouse|lever|ashby|smartrecruiters|workday)\s*:\s*(.+)$/i.exec(raw);
+    const short = /^(greenhouse|lever|ashby|smartrecruiters|workday|recruitee|workable|breezy|personio|bamboohr)\s*:\s*(.+)$/i.exec(raw);
     if (short) {
         const family = short[1].toUpperCase();
         const key = short[2].trim();
@@ -91,6 +91,29 @@ export const detectBoard = (input) => {
         return seg[0] ? mk('SMARTRECRUITERS', seg[0]) : null;
     }
 
+    /* Recruitee: {slug}.recruitee.com */
+    const rec = /^([a-z0-9-]+)\.recruitee\.com$/.exec(host);
+    if (rec && !['www', 'api', 'app', 'careers'].includes(rec[1])) return mk('RECRUITEE', rec[1]);
+
+    /* Workable: apply.workable.com/{slug}[/j/…]  or  …/api/v3/accounts/{slug}/jobs */
+    if (host === 'apply.workable.com') {
+        const i = seg.indexOf('accounts');
+        const slug = i >= 0 ? seg[i + 1] : seg[0];
+        return slug && slug !== 'api' ? mk('WORKABLE', slug) : null;
+    }
+
+    /* Breezy HR: {slug}.breezy.hr */
+    const bz = /^([a-z0-9-]+)\.breezy\.hr$/.exec(host);
+    if (bz && !['www', 'app', 'api'].includes(bz[1])) return mk('BREEZY', bz[1]);
+
+    /* Personio: {slug}.jobs.personio.de | .com */
+    const pe = /^([a-z0-9-]+)\.jobs\.personio\.(de|com)$/.exec(host);
+    if (pe) return mk('PERSONIO', pe[1], pe[2] === 'com' ? { host: `${pe[1]}.jobs.personio.com` } : {});
+
+    /* BambooHR: {slug}.bamboohr.com/careers[/…] */
+    const bb = /^([a-z0-9-]+)\.bamboohr\.com$/.exec(host);
+    if (bb && !['www', 'app', 'api', 'documentation'].includes(bb[1])) return mk('BAMBOOHR', bb[1]);
+
     /* Workday: {tenant}.wd{N}.myworkdayjobs.com/[locale/]{site} */
     const wd = /^([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com$/.exec(host);
     if (wd) {
@@ -109,7 +132,13 @@ export const detectBoard = (input) => {
     return null;
 };
 
-const canonical = (family, key) => (family === 'GREENHOUSE' || family === 'LEVER' ? key.toLowerCase() : key);
+// Greenhouse, Lever and every subdomain-addressed family are case-insensitive, so
+// they are lower-cased (a mixed-case duplicate would defeat the unique key).
+// Ashby and SmartRecruiters identifiers are kept as written.
+const LOWER_CASE_FAMILIES = new Set([
+    'GREENHOUSE', 'LEVER', 'RECRUITEE', 'WORKABLE', 'BREEZY', 'PERSONIO', 'BAMBOOHR',
+]);
+const canonical = (family, key) => (LOWER_CASE_FAMILIES.has(family) ? key.toLowerCase() : key);
 
 const mk = (family, key, config = {}) => ({
     family, key: canonical(family, clean(key)), config, companyHint: clean(key),

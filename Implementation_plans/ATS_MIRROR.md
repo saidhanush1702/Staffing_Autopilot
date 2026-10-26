@@ -37,6 +37,17 @@ before any page is fetched. Matching against consultants then happens locally th
 | Ashby | `api.ashbyhq.com/posting-api/job-board/{name}` | `publishedAt` | ETag → 304 | CDN-cached 60 s (so 60 s is the floor); 13 MB for OpenAI; `isRemote` is true for 140/153 *Hybrid* jobs → `workplaceType` wins |
 | Workday | `POST {tenant}.wdN.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs` | a **day** only ("Posted Today") | none (`no-store`) | newest-first, 20/page, total caps at 2000; held to a 5-min floor; change detected by hashing ids |
 | SmartRecruiters | `api.smartrecruiters.com/v1/companies/{id}/postings` | `releasedDate` (exact) | ETag → 304 | newest-first; id is **case-sensitive** and not guessable |
+| Recruitee *(059)* | `{slug}.recruitee.com/api/offers/` | `published_at` (exact, `"… UTC"`) | none → id-hash | list carries description, pay (hour/year only) and the employer's own page |
+| Workable *(059)* | `POST apply.workable.com/api/v3/accounts/{slug}/jobs` | `published` — a **day** (midnight) | none → id-hash | detail call for new jobs; **company name not stated**; `nextPage` token paging not seen live (guarded) |
+| Breezy HR *(059)* | `{slug}.breezy.hr/json` | `published_date` (exact) | ETag → 304 | no description in the list — read from the job page's `description` block |
+| Personio *(059)* | `{slug}.jobs.personio.de/xml` (`.com` via `config.host`) | `createdAt` (exact) | ETag → 304 | XML, read with a small tag scanner; description as CDATA when the employer wrote one |
+| BambooHR *(059)* | `{slug}.bamboohr.com/careers/list` + `/careers/{id}/detail` | `datePosted` — a **day**, detail only | none → id-hash | **company name not stated**; a wrong slug 302s to a marketing page (surfaces as an ERROR, not NOT_FOUND) |
+
+The five *(059)* systems were added after the first version. Each was probed live before any code was
+written (Hugging Face, bunq, the vendors' own demo boards, Brightfin) and has a trimmed real capture in
+`tests/fixtures/ats/`. They ride on **migration 059** (`lkp_ats_families` rows + the `PERSONIO` portal type);
+`connectors/http.js` gained `as: 'text'` for the XML and HTML reads. Not added: iCIMS and SuccessFactors
+(no public JSON list as far as was found), Oracle Recruiting Cloud (not yet researched).
 
 ## 3. The decisions that matter (and what each one prevents)
 

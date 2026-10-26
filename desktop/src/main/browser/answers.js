@@ -56,6 +56,31 @@ const PROFILE_KEYS = {
     workAuth: ['work authorization', 'work authorisation', 'work status',
         'employment authorization', 'employment authorisation',
         'authorization status', 'visa status'],
+    github: ['github', 'github url', 'github profile', 'github link'],
+    portfolio: ['portfolio', 'portfolio url', 'portfolio link', 'website', 'personal website',
+        'personal site', 'personal website url'],
+    headline: ['headline', 'professional headline'],
+    // Exact phrases only. A bare "job title" or "company" on a form is very
+    // often one entry of a work-history list, and the current job is the wrong
+    // answer for the entry before it.
+    currentCompany: ['current company', 'current employer', 'most recent employer',
+        'most recent company', 'current organization', 'current organisation',
+        'present employer'],
+    currentTitle: ['current title', 'current job title', 'current position',
+        'most recent job title', 'most recent title', 'present title'],
+    school: ['school', 'school name', 'university', 'university name', 'college',
+        'college name', 'institution', 'institution name', 'name of institution',
+        'school or university'],
+    degree: ['degree', 'degree obtained', 'degree name', 'qualification'],
+    fieldOfStudy: ['field of study', 'major', 'area of study', 'discipline'],
+    educationLevel: ['highest level of education', 'highest education level',
+        'highest education', 'education level', 'level of education',
+        'highest degree', 'highest qualification'],
+    graduationYear: ['graduation year', 'year of graduation', 'year graduated'],
+    yearsExperience: ['total years of experience', 'years of experience',
+        'total experience', 'years of professional experience',
+        'total work experience', 'total years of work experience',
+        'years of work experience', 'how many years of experience do you have'],
 };
 
 /** Split a full name once, so "Mary Jane Watson" keeps its middle name. */
@@ -86,7 +111,25 @@ const buildAnswerBook = ({ profile, approvedAnswers = [] } = {}) => {
         state: p.state ?? null,
         linkedin: p.linkedin_url ?? null,
         workAuth: p.work_auth ?? null,
+        github: p.github_url ?? null,
+        portfolio: p.portfolio_url ?? null,
+        headline: p.headline ?? null,
+        currentCompany: p.current_company ?? null,
+        currentTitle: p.current_title ?? null,
+        school: p.school ?? null,
+        degree: p.degree ?? null,
+        fieldOfStudy: p.field_of_study ?? null,
+        educationLevel: p.education_level ?? null,
+        graduationYear: p.graduation_year ?? null,
+        yearsExperience: p.total_years ?? null,
     };
+
+    // Per-skill years, for "How many years of X do you have?". The consultant's
+    // own figure; a skill with no figure is left unanswered rather than guessed.
+    const skills = (Array.isArray(p.skills) ? p.skills : [])
+        .filter((s) => s?.name && s.years !== null && s.years !== undefined)
+        .map((s) => ({ key: normaliseQuestion(s.name), years: s.years }))
+        .filter((s) => s.key);
 
     const profileByKey = new Map();
     for (const [field, phrases] of Object.entries(PROFILE_KEYS)) {
@@ -102,7 +145,11 @@ const buildAnswerBook = ({ profile, approvedAnswers = [] } = {}) => {
         }
     }
 
-    return { profileByKey, answersByKey, values };
+    // Switched on by the consultant in the app; anything else leaves the
+    // sensitive questions to them. See `resolveEeo`.
+    const eeoPolicy = p.eeo_policy === 'DECLINE' ? 'DECLINE' : 'ASK';
+
+    return { profileByKey, answersByKey, values, skills, eeoPolicy };
 };
 
 /**
@@ -149,6 +196,8 @@ const PROFILE_RULES = [
     },
     { field: 'state', any: ['state', 'province', 'region'], none: ['city', 'united states'] },
     { field: 'linkedin', any: ['linkedin'], none: [] },
+    { field: 'github', any: ['github'], none: [] },
+    { field: 'portfolio', any: ['portfolio'], none: ['company', 'employer'] },
     {
         field: 'workAuth',
         any: ['work authorization', 'work authorisation', 'work status', 'visa status'],
@@ -190,6 +239,64 @@ const ruleMatch = (key, values) => {
 };
 
 /**
+ * ── "HOW MANY YEARS OF REACT?" ────────────────────────────────────────
+ *
+ * Answered from the consultant's own per-skill years, and only when the
+ * question names exactly ONE skill they have a figure for. "Years of experience
+ * with React and Node" names two and is left for a person: one number cannot
+ * be right for both.
+ *
+ * The skill is found as whole words after the question's own "with / in /
+ * using / of", so "react" matches "React.js experience" but never a skill that
+ * merely appears inside another word.
+ */
+const SKILL_QUESTION = /\byears?\b.*\b(?:with|in|of|using|on)\b\s+(.+)$|\bexperience\b.*\b(?:with|in|using)\b\s+(.+?)(?:\s+in\s+years)?$/;
+
+const skillYears = (key, skills = []) => {
+    if (!skills.length || !/\byears?\b|\bexperience\b/.test(key)) return null;
+    const m = key.match(SKILL_QUESTION);
+    const tail = (m && (m[1] || m[2])) ? ` ${(m[1] || m[2])} ` : null;
+    if (!tail) return null;
+
+    // A one-letter skill ("C", "R" — what "C++" and "C#" normalise to) is only
+    // believed when it is the WHOLE thing being asked about.
+    const hits = skills.filter((s) => tail.includes(` ${s.key} `)
+        && (s.key.length > 1 || tail.trim() === s.key));
+    // One skill named, or several that all carry the same figure.
+    if (hits.length === 0) return null;
+    const figures = new Set(hits.map((h) => h.years));
+    return figures.size === 1 ? hits[0].years : null;
+};
+
+/** Questions about protected characteristics. Never answered from the profile. */
+const EEO_QUESTION = /\b(gender|sex|race|ethnic\w*|hispanic|latino|veteran|disabilit\w*|sexual orientation|transgender|pronouns?)\b/i;
+
+/** The option a form words as "I would rather not say". */
+const DECLINE_OPTION = /\b(decline|prefer not|do not wish|don'?t wish|choose not|not to (?:say|disclose|answer|identify|specify)|rather not|no answer)\b/i;
+
+/**
+ * The "decline to answer" option for a sensitive question — only if the
+ * consultant has said that is what they want.
+ *
+ * ── WHY THIS IS A SWITCH AND NOT A DEFAULT ────────────────────────────
+ *
+ * Gender, race, veteran and disability questions are about the person, not the
+ * job, and they are voluntary. Declining is the one answer that never states
+ * something untrue — but even that is the consultant's call, so with the switch
+ * off these stay questions for a person exactly as they always were.
+ *
+ * @returns the option text to choose, a RegExp for a dropdown whose options are
+ *          not known until it opens, or null
+ */
+const resolveEeo = (label, book, optionLabels = null) => {
+    if (book?.eeoPolicy !== 'DECLINE') return null;
+    if (!EEO_QUESTION.test(String(label ?? ''))) return null;
+    if (!optionLabels) return DECLINE_OPTION;
+    const hits = optionLabels.filter((o) => DECLINE_OPTION.test(o));
+    return hits.length === 1 ? hits[0] : null;
+};
+
+/**
  * What belongs in the field with this label, if anything.
  *
  * Approved answers are consulted FIRST. A consultant who has answered "What is
@@ -210,6 +317,9 @@ const resolveAnswer = (label, book) => {
 
     const fromProfile = book.profileByKey.get(key);
     if (fromProfile) return { value: fromProfile, source: 'PROFILE', questionId: null };
+
+    const bySkill = skillYears(key, book.skills);
+    if (bySkill !== null) return { value: String(bySkill), source: 'PROFILE', questionId: null };
 
     // Exact phrases first, distinctive words second — so a label the list
     // already knows can never be re-decided by the looser pass.
@@ -314,6 +424,10 @@ module.exports = {
     normaliseQuestion,
     buildAnswerBook,
     resolveAnswer,
+    resolveEeo,
+    skillYears,
+    DECLINE_OPTION,
+    EEO_QUESTION,
     isAffirmative,
     chooseOption,
     chooseSuggestion,

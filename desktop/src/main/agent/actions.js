@@ -25,6 +25,7 @@
 const { fillValue } = require('../browser/filler.js');
 const {
     SUBMIT_WORDS, clickSteadily, dismissUploadToast, textOf, STEP_SETTLE_MS,
+    confirmationEvidence,
 } = require('../browser/applyFlow.js');
 const { locate, pageLikeFor } = require('./observe.js');
 
@@ -212,6 +213,38 @@ const executeAction = async (page, action, ctx) => {
         };
     }
 
+    case 'fill_many': {
+        // Each entry goes through the SAME checks as a single fill — the page as
+        // it is now, this machine's answers, the already-filled rule — so a
+        // batch is never a way round one. A refused entry is reported, not
+        // fatal: the rest still go in, and the model reads what was refused.
+        const done = [];
+        const notes = [];
+        for (const entry of action.fills ?? []) {
+            const one = await executeAction(page, {
+                ...action, action: 'fill', ref: entry.ref, source: entry.source, fills: [],
+            }, ctx);
+            if (one.ok) {
+                done.push(one.qa);
+            } else {
+                notes.push(`${entry.ref}: ${one.error}`);
+            }
+            if (one.ok) {
+                const [min, max] = ctx.typing?.betweenFieldsMs ?? [300, 900];
+                await page.waitForTimeout(Math.round(min + Math.random() * (max - min)));
+            }
+        }
+        if (done.length === 0) {
+            return refuse(`none of those fields could be filled — ${notes.slice(0, 3).join('; ')}`);
+        }
+        return {
+            ok: true,
+            result: `filled ${done.length} of ${action.fills.length} fields`
+                + (notes.length ? `; refused: ${notes.slice(0, 3).join('; ')}` : ''),
+            qas: done,
+        };
+    }
+
     case 'upload_resume': {
         if (!ctx.resumePath) return refuse('there is no resume to upload for this job');
         if (!target) return refuse(`there is no element ${action.ref} on this page`);
@@ -380,18 +413,20 @@ const pressAgentSubmit = async (page, submit, log = () => {}) => {
         return { ok: false, error: `"${text.slice(0, 60)}" no longer looks like a submit button — check the application in the browser.` };
     }
 
+    const urlBefore = typeof page.url === 'function' ? page.url() : null;
     await clickSteadily(locator, log);
     await page.waitForTimeout(3_000);
 
-    const thanked = await page.locator(SUBMITTED_TEXT).count().catch(() => 0) > 0;
-    const gone = !(await locate(page, submit.frameIndex ?? 0, submit.ref));
-    const confirmed = thanked || gone;
+    // The button going away is not evidence — see confirmationEvidence.
+    const evidence = await confirmationEvidence(page, { urlBefore });
+    const confirmed = Boolean(evidence);
     return {
         ok: true,
         confirmed,
+        evidence,
         detail: confirmed
-            ? 'the site confirmed the application'
-            : 'submitted, but the site showed no confirmation — please check',
+            ? `the site confirmed the application (${evidence})`
+            : 'submit was pressed, but the site showed no confirmation — check it in the browser',
     };
 };
 

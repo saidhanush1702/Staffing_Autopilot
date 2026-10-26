@@ -46,6 +46,8 @@ const WAIT_MS = {
     ACCOUNT_WALL: 300_000,
     // Reading terms before agreeing to them is not something to rush.
     LEGAL_GATE: 300_000,
+    // A code sent to the person's inbox: they have to go and read it.
+    EMAIL_VERIFY: 300_000,
 };
 
 /** What the person is being asked to do, in a few words. */
@@ -55,6 +57,7 @@ const HEADLINE = {
     SIGN_IN: 'Sign-in needed',
     ACCOUNT_WALL: 'Sign-in needed to continue',
     LEGAL_GATE: 'Terms need your agreement',
+    EMAIL_VERIFY: 'A verification code is needed',
 };
 
 /** How often to look at whether they have finished. */

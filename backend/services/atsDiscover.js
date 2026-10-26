@@ -100,7 +100,7 @@ export const mineExistingPostings = async (orgId) => {
         `SELECT source_url, company
            FROM job_postings
           WHERE organization_id = $1
-            AND source_url ~* '(greenhouse\\.io|lever\\.co|ashbyhq\\.com|myworkdayjobs\\.com|smartrecruiters\\.com)'`,
+            AND source_url ~* '(greenhouse\\.io|lever\\.co|ashbyhq\\.com|myworkdayjobs\\.com|smartrecruiters\\.com|recruitee\\.com|apply\\.workable\\.com|breezy\\.hr|jobs\\.personio\\.(de|com)|bamboohr\\.com)'`,
         [orgId],
     );
 

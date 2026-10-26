@@ -24,6 +24,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { schedulerTimezone } from '../config/discoverySchedule.js';
+import { applicationProfileFor } from '../config/applicationProfile.js';
 import { checkTransition } from '../config/queueStates.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
 import { findOrCreateQuestion } from './questionController.js';
@@ -283,20 +284,14 @@ export const deviceQueue = async (req, res, next) => {
         // The consultant's own details, so the filler has something to type.
         // Sent with the queue rather than fetched separately: the app needs
         // both or neither, and one round trip cannot half-succeed.
-        const { rows: profile } = await query(
-            `SELECT u.name, u.email, p.phone, p.city, p.state, p.linkedin_url,
-                    w.name AS work_auth, p.base_resume_artifact_id
-               FROM consultant_profiles p
-               JOIN users u ON u.id = p.user_id
-          LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
-              WHERE p.user_id = $1 AND p.organization_id = $2`,
-            [consultantId, orgId],
-        );
+        // Built by the same function the AI agent's catalogue uses, so the two
+        // can never be offered different facts. See config/applicationProfile.js.
+        const profile = await applicationProfileFor({ consultantId, orgId });
 
         return res.json({
             items: rows,
             approvedAnswers: answers,
-            profile: profile[0] ?? null,
+            profile: profile ?? null,
         });
     } catch (err) {
         return next(err);

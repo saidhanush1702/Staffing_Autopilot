@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('smartapply', {
     // Answers to the countdown banner. See attention.js for what each means.
     attentionContinue: () => ipcRenderer.invoke('attentionContinue'),
     attentionSkip: () => ipcRenderer.invoke('attentionSkip'),
+    /** "I've done it" for an application on hold for a person. */
+    runResume: (itemId) => ipcRenderer.invoke('runResume', itemId),
 
     /** Open a board's login page so the consultant can sign in themselves. */
     signIn: (board) => ipcRenderer.invoke('signIn', board),
@@ -78,6 +80,8 @@ contextBridge.exposeInMainWorld('smartapply', {
     openReview: (itemId) => ipcRenderer.invoke('openReview', itemId),
 
     /** Record that the consultant already submitted it themselves, in the browser. */
+    /** A picture of a waiting application, as a data URL. */
+    reviewEvidence: (itemId) => ipcRenderer.invoke('reviewEvidence', itemId),
     markSubmitted: (itemId) => ipcRenderer.invoke('markSubmitted', itemId),
 
     /**
