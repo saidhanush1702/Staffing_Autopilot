@@ -352,11 +352,56 @@ const describeObstruction = async (locator) => {
  *
  * @returns true when a file was attached
  */
+/**
+ * ── WHICH FILE BOX IS THE RESUME? ─────────────────────────────────────
+ *
+ * Taking "the first file input on the page" is right until a page has two.
+ * Ashby opens with an "Autofill from resume" box that PARSES what it is given
+ * and fills fields from it — attach the CV there and the form is filled with
+ * answers the consultant never approved. Others pair a resume box with a cover
+ * letter box.
+ *
+ * So the box is chosen by what it is called (id, name, aria-label, its label),
+ * and when several are present and none says "resume" or "cv", none is chosen:
+ * a person attaches it, which costs a click, rather than the file going into
+ * the wrong box.
+ *
+ * @returns a locator for exactly one input, or null
+ */
+const AUTOFILL_BOX = /autofill|auto-fill|import|parse/i;
+
+const findResumeInput = async (page) => {
+    const inputs = page.locator('input[type="file"]');
+    const count = await inputs.count().catch(() => 0);
+    if (count === 0) return null;
+
+    const named = [];
+    for (let i = 0; i < count; i += 1) {
+        const input = inputs.nth(i);
+        const said = typeof input.evaluate === 'function'
+            ? await input.evaluate((el) => [
+                el.id, el.name, el.getAttribute('aria-label'),
+                el.closest('label')?.innerText,
+                el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.innerText : '',
+                el.closest('[class*="autofill" i]') ? 'autofill' : '',
+            ].filter(Boolean).join(' ')).catch(() => '')
+            : '';
+        named.push({ input, said });
+    }
+
+    const resume = named.filter((n) => RESUME_WORDS.test(n.said) && !AUTOFILL_BOX.test(n.said));
+    if (resume.length === 1) return resume[0].input;
+    if (resume.length > 1) return null;
+    // Nothing is called a resume. One lone file box is the resume box; more
+    // than one is a guess.
+    return count === 1 && !AUTOFILL_BOX.test(named[0].said) ? named[0].input : null;
+};
+
 const attachResume = async (page, recipe, resumePath, log = () => {}) => {
     if (!resumePath) return false;
 
-    const hidden = page.locator('input[type="file"]').first();
-    if (await hidden.count() > 0) {
+    const hidden = await findResumeInput(page);
+    if (hidden) {
         await hidden.setInputFiles(resumePath);
         log('attached the resume to the form');
         return true;
@@ -706,6 +751,8 @@ const runApplyFlow = async (page, board, fillOptions, {
         applied: recipe.applied ?? APPLIED_SELECTOR,
         closed: recipe.closed ?? CLOSED_SELECTOR,
         open: recipe.open,
+        // A form that is already on the page needs no opener at all.
+        form: recipe.inPlace ? recipe.dialog : null,
     }, OPENER_TIMEOUT_MS);
 
     // Applying twice under someone's name is worse than not applying. If the
@@ -728,7 +775,7 @@ const runApplyFlow = async (page, board, fillOptions, {
         };
     }
 
-    if (verdict !== 'open') {
+    if (verdict !== 'open' && verdict !== 'form') {
         // Nothing the board offers, and no notice explaining why. Is there an
         // apply button that simply leads somewhere else? Saying which of the
         // two it is matters: one is a job for a person, the other is a page we
@@ -784,24 +831,35 @@ const runApplyFlow = async (page, board, fillOptions, {
             ...empty,
             outcome: 'NOT_VERIFIED',
             detail: `${board.label} has a form here, but filling it has not been `
-                + 'checked yet — left for you',
+                + 'checked yet, so the app will not type into it',
         };
     }
 
-    const opener = page.locator(recipe.open).first();
+    // ── THE FORM IS ALREADY HERE ────────────────────────────────────────
+    //
+    // Greenhouse and Lever put the application on the page the link lands on,
+    // and the button at the top only scrolls to it. There is nothing to press,
+    // and pressing the "Apply" that happens to be there would be pressing a
+    // control the recipe never needed.
+    // The race can answer "open" because a top-of-page Apply button won it
+    // while the form was ALSO already showing -- Greenhouse has both. If the
+    // form is there, it is there.
+    const inPlace = verdict === 'form'
+        || (Boolean(recipe.inPlace) && await visible(page, recipe.dialog));
+    const opener = page.locator(recipe.open ?? recipe.dialog).first();
 
     // Refuse even here. A board that labels its opener "Apply now" and submits
     // immediately would otherwise be a one-click disaster.
-    if (await isSubmit(opener)) {
+    if (!inPlace && await isSubmit(opener)) {
         return {
             ...empty,
             outcome: 'NO_APPLY_FLOW',
-            detail: 'the apply control looks like it submits directly — left for you',
+            detail: 'the apply control looks like it submits directly, so the app will not press it',
         };
     }
 
     const before = new URL(page.url()).host;
-    await clickSteadily(opener, log);
+    if (!inPlace) await clickSteadily(opener, log);
 
     // ── THE CHOOSER, WHERE THERE IS ONE ───────────────────────────────
     //
@@ -819,7 +877,7 @@ const runApplyFlow = async (page, board, fillOptions, {
                 return {
                     ...empty,
                     outcome: 'NO_APPLY_FLOW',
-                    detail: `${board.label} did not offer a way to fill this in by hand`,
+                    detail: `${board.label} did not offer a way to fill this in step by step`,
                 };
             }
             await clickSteadily(choice, log);
@@ -1102,6 +1160,43 @@ const runApplyFlow = async (page, board, fillOptions, {
  * that has moved on underneath us must fail loudly instead of clicking whatever
  * now occupies that position.
  */
+/**
+ * What a page says once an application has landed.
+ *
+ * ── A BUTTON GOING AWAY IS NOT A CONFIRMATION ─────────────────────────
+ *
+ * The submit control disappears when the page re-renders, when it navigates
+ * somewhere unrelated, when the session expires and bounces to a login — all
+ * of which look exactly like success from the button's side. Treating that as
+ * "the board confirmed it" wrote a permanent hub record for applications that
+ * may never have been sent.
+ *
+ * So confirmation needs something the page SAYS: a thank-you / received /
+ * sent message, the recipe's own `submitted` marker, or a move to an address
+ * that names a completed application. Without one the answer is "pressed, not
+ * confirmed", and a person checks.
+ */
+const CONFIRMED_TEXT = 'text=/thank you for (applying|your application)|application (has been |was )?(submitted|received|sent)|we(.ve| have) received your application|your application was sent|successfully (applied|submitted)/i';
+const CONFIRMED_URL = /(thank[-_ ]?you|confirm(ation|ed)?|success|submitted|application[-_]?(sent|complete))/i;
+
+/**
+ * Evidence that the application landed.
+ *
+ * @returns a short description of what was seen, or null when nothing was
+ */
+const confirmationEvidence = async (page, { urlBefore = null, marker = null } = {}) => {
+    if (marker && await visible(page, marker)) return 'the site’s own confirmation marker';
+    if (typeof page.locator === 'function'
+        && await page.locator(CONFIRMED_TEXT).count().catch(() => 0) > 0) {
+        return 'a confirmation message';
+    }
+    const now = typeof page.url === 'function' ? page.url() : '';
+    if (urlBefore && now && now !== urlBefore && CONFIRMED_URL.test(now)) {
+        return 'a confirmation page';
+    }
+    return null;
+};
+
 const pressSubmit = async (page, board) => {
     const recipe = board.apply;
     if (!recipe?.submit) {
@@ -1117,12 +1212,12 @@ const pressSubmit = async (page, board) => {
         };
     }
 
+    const urlBefore = typeof page.url === 'function' ? page.url() : null;
     await clickSteadily(button);
     await page.waitForTimeout(2_500);
 
-    const confirmed = recipe.submitted
-        ? await visible(page, recipe.submitted)
-        : await page.locator(recipe.submit).count() === 0;
+    const evidence = await confirmationEvidence(page, { urlBefore, marker: recipe.submitted });
+    const confirmed = Boolean(evidence);
 
     return {
         ok: true,
@@ -1130,9 +1225,10 @@ const pressSubmit = async (page, board) => {
         // Not the same claim. `ok` means the click happened; `confirmed` means
         // the board showed us something that says it landed. Reporting the
         // second when we only know the first is how a record starts lying.
+        evidence,
         detail: confirmed
-            ? 'the board confirmed the application'
-            : 'submitted, but the board showed no confirmation — please check',
+            ? `the board confirmed the application (${evidence})`
+            : 'submit was pressed, but the board showed no confirmation — check it in the browser',
     };
 };
 
@@ -1145,5 +1241,6 @@ module.exports = {
     whichAppears,
     clickSteadily, describeObstruction,
     CLOSED_SELECTOR, EXTERNAL_SELECTOR, APPLIED_SELECTOR, destinationOf, ATS_NAMES,
-    findExternalApply, APPLY_CONTROL_TEXT,
+    findExternalApply, APPLY_CONTROL_TEXT, findResumeInput,
+    confirmationEvidence, CONFIRMED_TEXT, CONFIRMED_URL,
 };

@@ -1,0 +1,34 @@
+{
+  "meta": {},
+  "result": {
+    "jobOpening": {
+      "jobOpeningShareUrl": "https://brightfin.bamboohr.com/careers/127",
+      "jobOpeningName": "L1 Technical Support Specialist (UA Private Entrepreneur Only)",
+      "jobOpeningStatus": "Open",
+      "jobCategoryId": "18472",
+      "departmentId": "18704",
+      "departmentLabel": "000031-Ops Tech Support",
+      "employmentStatusLabel": "Active-FT",
+      "employmentType": null,
+      "location": {
+        "city": null,
+        "state": null,
+        "postalCode": null,
+        "addressCountry": null
+      },
+      "atsLocation": {
+        "country": "Ukraine",
+        "countryId": "220",
+        "state": null,
+        "city": null
+      },
+      "description": "<p><span style=\"font-weight: bold\">Company Overview: </span><br></p>\n<p><span style=\"font-size: 12pt\">Brightfin is an enterprise SaaS software company that provides complete visibility and control over IT spend. With a suite of solutions that cover IT Financial Management (ITFM), Telecom Expense Management (TEM), Managed Mobility Services (MMS), FInOps, Cloud, and AI spend, Brightfin brings \"Total Spend Intelligence\" to CIOs, CFOs, IT, Finance, and procurement teams so they can better forecast, manage, optimize costs, and redirect wasteful spend to strategic priorities. Brightfin was the first ServiceNow partner to provide a natively accessible cost optimization application built into the ServiceNow platform</span></p>\n<p><br></p>\n<p><span style=\"font-weight: bold\">Job Summary</span>: The role of a L1 Technical Support Engineer involves providing technical support to clients, diagnosing ",
+      "compensation": null,
+      "datePosted": "2026-10-06",
+      "minimumExperience": "Entry-level",
+      "locationType": "1",
+      "seekPromoted": false,
+      "aiProcessingDisclosureEnabled": false
+    }
+  }
+}

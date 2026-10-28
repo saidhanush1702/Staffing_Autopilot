@@ -12,6 +12,7 @@
  * What is NOT covered here, and cannot be: that the tray appears, that windows
  * render, that Playwright launches a browser. Those need a desktop session.
  */
+process.env.SMARTAPPLY_BOT_FLOWS = '*';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -313,9 +314,9 @@ hub = fakeHub({
 r = await engineWith(hub, fakeSessions({ landsOn: 'https://boards.greenhouse.io/acme/jobs/1' })).run();
 check('a redirect off-board is handed to the consultant', r.handedToHuman, 1);
 check('  and reclassified at the hub',
-    hub.calls.some((c) => c.name === 'reclassify'), true);
+    hub.calls.some((c) => c.name === 'skipped'), true);
 check('  with the destination named',
-    /greenhouse\.io/.test(hub.calls.find((c) => c.name === 'reclassify').args[1].reason), true);
+    /greenhouse\.io/.test(hub.calls.find((c) => c.name === 'skipped').args[1].reason), true);
 
 // On-board, but the recipe is unverified — the safety that makes D3 shippable.
 hub = fakeHub({
@@ -326,14 +327,15 @@ r = await engineWith(hub, fakeSessions({ landsOn: 'https://wellfound.com/jobs/1/
 check('an unverified recipe never fills', r.filled, 0);
 check('  it is handed over instead', r.handedToHuman, 1);
 
-section('cycle — an unknown portal is handed back, not guessed at');
+section('cycle — an unknown portal waits for the agent, and is not guessed at');
 
 hub = fakeHub({
     heartbeat: () => Promise.resolve({ dailyCap: 5, usedToday: 0, paused: false, pausedBoards: [] }),
     queue: () => Promise.resolve({ items: [item({ portal: 'WORKDAY' })] }),
 });
 r = await engineWith(hub, fakeSessions()).run();
-check('no recipe → reclassified', r.handedToHuman, 1);
+check('no recipe and no agent → left waiting, not handed to anyone',
+    [r.handedToHuman, hub.calls.some((c) => c.name === 'skipped' || c.name === 'reclassify')], [0, false]);
 check('  never leased', r.leased, 0);
 
 section('cycle — one failing item does not kill the pass (R-26)');
@@ -657,21 +659,58 @@ hub = fakeHub({
     }),
     resume: () => Promise.resolve('/tmp/cv.pdf'),
 });
-engine = engineWith(hub, fakeSessions({
-    landsOn: 'https://wellfound.com/jobs/1/apply',
-    fields: [
-        formField({ index: 0, label: 'Email', type: 'email' }),
-        formField({ index: 1, label: 'What is your expected rate?', required: true }),
-    ],
-}));
-r = await engine.run();
+// Nobody answers, three times over. Each time the job goes to the BACK of the
+// queue; only the third is a real park at the hub. (A fake clock moves past the
+// cool-down between passes, and a stand-in for the person says "later" at once
+// instead of the engine waiting out the real two minutes.)
+{
+    const { RunLedger: Ledger } = require('../src/main/runs.js');
+    hub.askQuestions = (...args) => { hub.calls.push({ name: 'askQuestions', args }); return Promise.resolve({ ok: true }); };
+    const clock = { t: Date.now() };
+    const store = new Store(path.join(tmp, `state-${Math.random()}.json`));
+    const attn = new Attention({ pollMs: 5 });
+    engine = new CycleEngine({
+        hub,
+        sessions: fakeSessions({
+            landsOn: 'https://wellfound.com/jobs/1/apply',
+            fields: [
+                formField({ index: 0, label: 'Email', type: 'email' }),
+                formField({ index: 1, label: 'What is your expected rate?', required: true }),
+            ],
+        }),
+        store,
+        outbox: new Outbox(path.join(tmp, `ob-${Math.random()}.json`)),
+        paths,
+        attention: attn,
+        signInWaitMs: 2_000,
+        signInPollMs: 20,
+        ledger: new Ledger({ store, now: () => clock.t }),
+    });
+    const later = () => setTimeout(() => attn.skip(), 40);
 
-check('an unknown required question parks the application', r.parked, 1);
-check('  the question is sent to the hub for approval',
-    hub.calls.find((c) => c.name === 'parked').args[1].unknownQuestions[0].questionText,
-    'What is your expected rate?');
-check('  and nothing is put in front of the consultant to submit',
-    engine.store.get('awaitingReview').length, 0);
+    later();
+    r = await engine.run();
+    check('first time nobody answers: it goes to the back of the queue, not to the hub', r.parked, 0);
+    check('  nothing was parked at the hub yet', hub.calls.some((c) => c.name === 'parked'), false);
+    check('  the question is already on the Questions tab', hub.calls.some((c) => c.name === 'askQuestions'), true);
+    check('  and the job is waiting, once', [engine.ledger.get('q1')?.gate.kind, engine.ledger.gateAttempts('q1')],
+        ['UNKNOWN_QUESTIONS', 1]);
+
+    clock.t += 31 * 60_000;
+    later();
+    r = await engine.run();
+    check('second time: still at the back', [r.parked, engine.ledger.gateAttempts('q1')], [0, 2]);
+
+    clock.t += 31 * 60_000;
+    later();
+    r = await engine.run();
+    check('third time is the last: now it is parked at the hub', r.parked, 1);
+    check('  the question is sent to the hub for approval',
+        hub.calls.find((c) => c.name === 'parked').args[1].unknownQuestions[0].questionText,
+        'What is your expected rate?');
+    check('  and nothing is put in front of the consultant to submit',
+        engine.store.get('awaitingReview').length, 0);
+}
 
 // A page with no application form on it is not a filled application.
 hub = fakeHub({
@@ -870,10 +909,16 @@ check('sign-in happens on the job page, needing no guessed login path',
 // The public parts were measured; the form behind the account wall was not.
 // Until somebody has watched one being filled, these classify and hand over.
 // Workday earned it: filling was watched working through `runApplyFlow`
-// against the live site. SmartRecruiters has not, and cannot be -- it answers
-// automated requests with a challenge.
-check('only Workday is verified',
-    Object.values(DESTINATIONS).filter((d) => d.verified).map((d) => d.name), ['WORKDAY']);
+// against the live site. Greenhouse, Lever and Ashby earned it the same way, by
+// a dry run (tools/dry-run-form.mjs) against a live public posting that filled
+// the form and stopped short of sending it. SmartRecruiters has not, and cannot
+// be -- it answers automated requests with a challenge.
+check('only the systems watched working are verified',
+    Object.values(DESTINATIONS).filter((d) => d.verified).map((d) => d.name),
+    ['WORKDAY', 'GREENHOUSE', 'LEVER', 'ASHBY']);
+check('  Workday alone still refuses to auto-submit; the others follow the consultant\'s choice',
+    Object.values(DESTINATIONS).filter((d) => d.verified).filter((d) => d.neverAutoSubmit).map((d) => d.name),
+    ['WORKDAY']);
 check('  and a verified destination still refuses to auto-submit',
     tenantFor('https://acme.wd5.myworkdayjobs.com/x/job/y').neverAutoSubmit, true);
 // The chooser and the form are different elements -- conflating them was the
@@ -884,8 +929,9 @@ check('the chooser and the fill root are not the same selector',
 // the whole page instead of the form.
 check('the fill root is a single selector, never a list',
     DESTINATIONS.WORKDAY.apply.dialog.includes(','), false);
-check('and every one of them refuses to auto-submit',
-    Object.values(DESTINATIONS).every((d) => d.neverAutoSubmit), true);
+check('Workday and SmartRecruiters refuse to auto-submit; Greenhouse, Lever and Ashby do not',
+    Object.values(DESTINATIONS).filter((d) => d.neverAutoSubmit).map((d) => d.name),
+    ['WORKDAY', 'SMARTRECRUITERS']);
 check('  which a tenant carries through', wd1.neverAutoSubmit, true);
 
 // SmartRecruiters answered our probes with a DataDome challenge. R-22 says stop.
@@ -1013,8 +1059,12 @@ dHub = biHub();
 dSess = handOffSessions(WD, { signedIn: false });
 dEngine = engineWith(dHub, dSess);
 dStats = await dEngine.run();
+// It is put on hold now, not handed over: the person can sign in at any point
+// in the next day and the job carries on (see tests/runs.mjs).
 check('an unsigned-in destination asks for a sign-in',
-    /sign in/.test(dStats.outcomes[0].reason), true);
+    /sign in/i.test(dStats.outcomes[0].reason), true);
+check('  and the job is on hold for them, not given up on',
+    dStats.outcomes[0].result, 'ON_HOLD');
 check('  and the login page was opened for them', dStats.signInNeeded.length, 1);
 
 // An employer's own careers site is not a system we handle — unchanged.
@@ -1407,13 +1457,19 @@ const applyHub = () => fakeHub({
 });
 
 /** A board page whose apply flow reaches submit on the first step. */
-const readyPage = () => {
+const readyPage = ({ confirms = false } = {}) => {
     const clicked = [];
     const ctrl = (kind) => ({
         // Nothing on this page but the opener and, later, Submit. `already`
         // counted 1 while reporting itself invisible, which the old glance
         // tolerated and the verdict race does not.
-        count: async () => (['next', 'closed', 'already'].includes(kind) ? 0 : 1),
+        //
+        // `confirmed` is the thank-you message: it appears only after Submit
+        // has been pressed, and only on a page told to show one. A page that
+        // shows nothing is the case the strict check exists for.
+        count: async () => (kind === 'confirmed'
+            ? (confirms && clicked.includes('submit') ? 1 : 0)
+            : (['next', 'closed', 'already'].includes(kind) ? 0 : 1)),
         first() { return this; },
         nth() { return this; },
         isVisible: async () => !['next', 'already', 'closed'].includes(kind),
@@ -1426,7 +1482,8 @@ const readyPage = () => {
         selectOption: async () => {},
         page: () => ({ waitForTimeout: async () => {} }),
     });
-    const kindOf = (sel) => (sel.includes('OPEN') ? 'open'
+    const kindOf = (sel) => (sel.startsWith('text=/thank you') ? 'confirmed'
+        : sel.includes('OPEN') ? 'open'
         : sel.includes('NEXT') ? 'next'
             : sel.includes('SUBMIT') ? 'submit'
                 : sel.includes('APPLIED') ? 'already'
@@ -1472,7 +1529,7 @@ check('  and it waits on the review screen', engine.store.get('awaitingReview').
 
 // Auto-submit ON: the same run sends it.
 sess = fakeSessions();
-rp = readyPage();
+rp = readyPage({ confirms: true });
 sess.page = async () => rp;
 hub = applyHub();
 engine = engineWith(hub, sess);
@@ -1484,6 +1541,22 @@ check('  with the answers that were filled',
     Array.isArray(hub.calls.find((c) => c.name === 'submitted').args[1].qa), true);
 check('  and it does not linger on the review screen',
     engine.store.get('awaitingReview').length, 0);
+
+// Auto-submit ON, but the site shows nothing to say it landed. The button was
+// pressed; that is not the same as sent, so no permanent record is written.
+sess = fakeSessions();
+rp = readyPage({ confirms: false });
+sess.page = async () => rp;
+hub = applyHub();
+engine = engineWith(hub, sess);
+engine.store.set({ automationOn: true, autoSubmit: true });
+r = await engine.run();
+check('an unconfirmed submit still presses the button', rp.clicked.includes('submit'), true);
+check('  but the hub is not told it was sent', hub.calls.some((c) => c.name === 'submitted'), false);
+check('  it is not counted as submitted', r.submitted, 0);
+check('  the ledger says so', r.outcomes.map((o) => o.result), ['SUBMITTED_UNCONFIRMED']);
+check('  and it stays on the review list, marked',
+    engine.store.get('awaitingReview').map((w) => Boolean(w.unconfirmed)), [true]);
 
 // ── A BOARD CAN REFUSE, AND THE TOGGLE DOES NOT OVERRULE IT ──────────
 //
@@ -1906,7 +1979,7 @@ check('  it carries on to the review screen instead',
     aStats.outcomes.map((o) => o.result), ['READY_TO_SUBMIT']);
 check('  nothing was counted as parked', aStats.parked, 0);
 
-// ── NOBODY ANSWERS: exactly the old behaviour ────────────────────────
+// ── NOBODY ANSWERS: the job goes to the back of the queue ────────────
 bank = [];
 aHub = askingHub(bank);
 aSess = fakeSessions();
@@ -1915,11 +1988,13 @@ aAttn = new Attention({ pollMs: 5 });
 aEngine = engineWith(aHub, aSess, { attention: aAttn });
 
 aStats = await aEngine.run();
-check('an unanswered question still parks the job in the end',
-    aHub.calls.some((c) => c.name === 'parked'), true);
-check('  counted as parked', aStats.parked, 1);
-check('  and the reason names what it is waiting on',
-    /notice period/.test(aStats.outcomes[0].reason), true);
+check('an unanswered question puts the job at the back of the queue, not in the hub\'s parking',
+    [aHub.calls.some((c) => c.name === 'parked'), aStats.outcomes[0].result], [false, 'ON_HOLD']);
+check('  not counted as parked yet', aStats.parked, 0);
+check('  and the reason says what it is waiting on',
+    /question/.test(aStats.outcomes[0].reason), true);
+check('  the questions themselves are already with the consultant and the recruiter',
+    aHub.calls.some((c) => c.name === 'askQuestions'), true);
 
 // ── SKIPPED: the person said move on ─────────────────────────────────
 bank = [];
@@ -1931,8 +2006,8 @@ aEngine = engineWith(aHub, aSess, { attention: aAttn });
 setTimeout(() => { aAttn.skip(); }, 30);
 
 aStats = await aEngine.run();
-check('skipping parks it too, and says so',
-    /skipped/.test(aStats.outcomes[0].reason), true);
+check('"do this one later" puts it at the back too',
+    aStats.outcomes[0].result, 'ON_HOLD');
 
 BOARDS.WELLFOUND.verified = false;
 check('the test board is left as it was found', BOARDS.WELLFOUND.verified, false);
@@ -2022,11 +2097,14 @@ BOARDS.WELLFOUND.verified = true;
     check('AI was asked and found nothing', hub.calls.some((c) => c.name === 'questionSuggestions'), true);
     check('  no AI-matched answer was ever banked',
         hub.calls.some((c) => c.name === 'answerQuestion' && c.args[1].source === 'AI_MATCH'), false);
-    check('  the job still falls through to the person, exactly as before',
-        /skipped/.test(stats.outcomes[0].reason), true);
+    check('  the job still goes to the person, and to the back of the queue while it waits',
+        stats.outcomes[0].result, 'ON_HOLD');
 }
 
-// ── AI IS SWITCHED OFF FOR THIS RUN: never consulted at all ───────────
+// ── THE CONSULTANT'S OLD "AI OFF" SWITCH IS GONE ──────────────────────
+//
+// The organisation is the only master switch now. A leftover `agentFallback:
+// false` in someone's saved settings must not quietly turn the AI check off.
 {
     const bank = [];
     const hub = matchingHub(bank, {
@@ -2042,10 +2120,9 @@ BOARDS.WELLFOUND.verified = true;
     engine.store.set({ agentFallback: false });
     setTimeout(() => { attn.skip(); }, 30);
 
-    const stats = await engine.run();
-    check('a consultant who switched AI off is never asked about it here either',
-        hub.calls.some((c) => c.name === 'questionSuggestions'), false);
-    check('  the job still falls through to the person', /skipped/.test(stats.outcomes[0].reason), true);
+    await engine.run();
+    check('a stale "agent off" setting is ignored: the AI is still asked',
+        hub.calls.some((c) => c.name === 'questionSuggestions'), true);
 }
 
 // ── THE SAME WORDING IS NOT RE-SENT TO A MODEL TWICE IN ONE SESSION ────
@@ -2566,7 +2643,9 @@ section('AI agent — when the engine hands a job to it');
 
     const noRecipe = item({
         id: 'ag1', portal: 'GREENHOUSE', channel: 'AGENT', company: 'Acme', title: 'Engineer',
-        source_url: 'https://boards.greenhouse.io/acme/jobs/1',
+        // A site nothing is coded for. (A Greenhouse address would now go
+        // through Greenhouse's recipe first; see the next block.)
+        source_url: 'https://careers.acme-corp.example/jobs/1',
     });
     const queueOf = (...items) => () => Promise.resolve({ items, approvedAnswers: [], profile: {} });
 
@@ -2581,9 +2660,9 @@ section('AI agent — when the engine hands a job to it');
         const eng = engineWith(hub, fakeSessions({ landsOn: noRecipe.source_url }), { runAgent: runner });
         const stats = await eng.run();
         check('a job with no recipe goes to the agent, not straight to a person',
-            hub.calls.some((c) => c.name === 'reclassify'), false);
+            hub.calls.some((c) => c.name === 'skipped'), false);
         check('  the hub was asked first, as NO_RECIPE', hub.started[0]?.entry, 'NO_RECIPE');
-        check('  naming the site', hub.started[0]?.host, 'boards.greenhouse.io');
+        check('  naming the site', hub.started[0]?.host, 'careers.acme-corp.example');
         check('  the job was leased before the agent touched it', hub.calls.some((c) => c.name === 'lease'), true);
         check('  a filled form is reported like any other', hub.calls.some((c) => c.name === 'filled'), true);
         check('  and counted as the agent’s work', [stats.agentTried, stats.agentFilled], [1, 1]);
@@ -2595,6 +2674,55 @@ section('AI agent — when the engine hands a job to it');
         check('  and the run is closed on the hub', hub.finished[0]?.outcome, 'READY_TO_SUBMIT');
     }
 
+    // A posting on a system the app has a recipe for is worked through that
+    // recipe first, and the agent is only what is left behind it.
+    {
+        const onGreenhouse = item({
+            id: 'gh1', portal: 'GREENHOUSE', channel: 'AGENT', company: 'Acme', title: 'Engineer',
+            source_url: 'https://job-boards.greenhouse.io/acme/jobs/1',
+        });
+        const hub = agentHub({ queue: queueOf(onGreenhouse) });
+        const sess = fakeSessions({ landsOn: onGreenhouse.source_url });
+        const eng = engineWith(hub, sess, { runAgent: agentReturns({ outcome: 'INCOMPLETE', detail: 'stuck' }) });
+        await eng.run();
+        check('a Greenhouse posting is leased and opened by the recipe path',
+            [hub.calls.some((c) => c.name === 'lease'), sess.calls.includes('openJob')], [true, true]);
+        check('  and reaches the agent only as a rescue, not as a stranger',
+            hub.started[0]?.entry, 'RECIPE_FAILED');
+    }
+
+    // PRODUCTION DEFAULT: only LinkedIn keeps a scripted flow. A Workday posting
+    // (which the Workday recipe used to take, and stalled on page two) is the
+    // agent's, entered as NO_RECIPE.
+    {
+        const wd = item({
+            id: 'wd1', portal: 'WORKDAY', channel: 'AGENT', company: 'Nvidia', title: 'Engineer',
+            source_url: 'https://nvidia.wd5.myworkdayjobs.com/en-US/site/job/1',
+        });
+        const hub = agentHub({ queue: queueOf(wd) });
+        const sess = fakeSessions({ landsOn: wd.source_url });
+        const eng = engineWith(hub, sess, {
+            runAgent: agentReturns({ outcome: 'INCOMPLETE', detail: 'stuck' }),
+            botFlows: new Set(['LINKEDIN']),
+        });
+        await eng.run();
+        check('with only LinkedIn scripted, a Workday job goes straight to the AI agent',
+            hub.started[0]?.entry, 'NO_RECIPE');
+        check('  and the Workday recipe was never started', hub.started.some((x) => x.entry === 'RECIPE_FAILED'), false);
+
+        const gh = item({
+            id: 'gh9', portal: 'GREENHOUSE', channel: 'AGENT', company: 'Acme', title: 'Engineer',
+            source_url: 'https://job-boards.greenhouse.io/acme/jobs/9',
+        });
+        const hub2 = agentHub({ queue: queueOf(gh) });
+        const eng2 = engineWith(hub2, fakeSessions({ landsOn: gh.source_url }), {
+            runAgent: agentReturns({ outcome: 'INCOMPLETE', detail: 'stuck' }),
+            botFlows: new Set(['LINKEDIN']),
+        });
+        await eng2.run();
+        check('  likewise Greenhouse', hub2.started[0]?.entry, 'NO_RECIPE');
+    }
+
     {
         const hub = agentHub({
             queue: queueOf(noRecipe),
@@ -2603,8 +2731,9 @@ section('AI agent — when the engine hands a job to it');
         const runner = agentReturns({ outcome: 'READY_TO_SUBMIT' });
         const eng = engineWith(hub, fakeSessions(), { runAgent: runner });
         await eng.run();
-        check('an agent the hub refuses: the job is handed over as before',
-            hub.calls.some((c) => c.name === 'reclassify'), true);
+        check('an agent the hub refuses: the job waits, reported to nobody',
+            [hub.calls.some((c) => c.name === 'skipped'), hub.calls.some((c) => c.name === 'reclassify')],
+            [false, false]);
         check('  without leasing or opening anything', hub.calls.some((c) => c.name === 'lease'), false);
         check('  and without the agent running', runner.calls.length, 0);
     }
@@ -2614,7 +2743,7 @@ section('AI agent — when the engine hands a job to it');
         const eng = engineWith(hub, fakeSessions(), { runAgent: agentReturns({ outcome: 'READY_TO_SUBMIT' }) });
         eng.store.set({ agentFallback: false });
         await eng.run();
-        check('a consultant who switched the agent off is never asked about it', hub.started.length, 0);
+        check('a stale "agent off" setting is ignored: the agent is still asked', hub.started.length, 1);
     }
 
     {
@@ -2625,7 +2754,7 @@ section('AI agent — when the engine hands a job to it');
             }),
         });
         await eng.run();
-        const handed = hub.calls.find((c) => c.name === 'reclassify');
+        const handed = hub.calls.find((c) => c.name === 'skipped');
         check('what the agent cannot finish still reaches a person', Boolean(handed), true);
         check('  with the agent’s reason attached', /got stuck/.test(handed?.args[1]?.reason ?? ''), true);
         check('  and the run records how it ended', hub.finished[0]?.outcome, 'INCOMPLETE');
@@ -2637,8 +2766,9 @@ section('AI agent — when the engine hands a job to it');
             runAgent: agentReturns({ outcome: 'CLOSED', detail: 'the posting says it is closed' }),
         });
         const stats = await eng.run();
-        check('a posting the agent finds closed is skipped, not handed over',
-            [hub.calls.some((c) => c.name === 'skipped'), hub.calls.some((c) => c.name === 'reclassify')],
+        const reasons = hub.calls.filter((c) => c.name === 'skipped').map((c) => c.args[1]?.reason ?? '');
+        check('a posting the agent finds closed is skipped as expired, not as "could not apply"',
+            [reasons.some((r) => /expired/i.test(r)), reasons.some((r) => /could not apply/i.test(r))],
             [true, false]);
         check('  and counted as expired', stats.closed, 1);
     }
@@ -2650,7 +2780,7 @@ section('AI agent — when the engine hands a job to it');
         });
         await eng.run();
         check('shadow mode hands the job over exactly as if the agent did not exist',
-            [hub.calls.some((c) => c.name === 'reclassify'), hub.calls.some((c) => c.name === 'filled')],
+            [hub.calls.some((c) => c.name === 'skipped'), hub.calls.some((c) => c.name === 'filled')],
             [true, false]);
         check('  and records the run as SHADOW', hub.finished[0]?.outcome, 'SHADOW');
     }
@@ -2687,7 +2817,7 @@ section('AI agent — when the engine hands a job to it');
         check('a recipe that lands somewhere it does not know hands the page to the agent',
             hub.started[0]?.entry, 'RECIPE_FAILED');
         check('  naming where it landed', hub.started[0]?.host, 'careers.initech.example');
-        check('  and the job is not handed over', hub.calls.some((c) => c.name === 'reclassify'), false);
+        check('  and the job is not handed over', hub.calls.some((c) => c.name === 'skipped'), false);
     }
 
     // A page that says the job is shut is never handed to the agent — the

@@ -1,0 +1,104 @@
+{
+  "id": "744000157221438",
+  "name": "Key Holder, Palm Beach",
+  "uuid": "fa05eb7e-70fe-445f-9e07-41e1f5c7f553",
+  "jobId": "57943afc-74f7-4fa6-a481-fc6984bcf3b7",
+  "jobAdId": "5cce7662-930b-4f0f-9c22-90e3c24b7c21",
+  "defaultJobAd": true,
+  "refNumber": "REF4013C",
+  "company": {
+    "name": "Equinox",
+    "identifier": "Equinox"
+  },
+  "location": {
+    "city": "Palm Beach",
+    "region": "FL",
+    "country": "us",
+    "remote": false,
+    "hybrid": false,
+    "latitude": "26.7056206",
+    "longitude": "-80.0364297",
+    "fullLocation": "Palm Beach, FL, United States"
+  },
+  "customField": [
+    {
+      "fieldId": "5d9f91b45d95674b7eff50f4",
+      "fieldLabel": "Location - Region",
+      "valueId": "68fd9b74-37ce-4e49-be75-2d1ec12dda69",
+      "valueLabel": "Central"
+    },
+    {
+      "fieldId": "COUNTRY",
+      "fieldLabel": "Country/Region",
+      "valueId": "us",
+      "valueLabel": "United States"
+    },
+    {
+      "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+      "fieldLabel": "Department",
+      "valueId": "6815171",
+      "valueLabel": "SoulCycle - Studio Crew"
+    },
+    {
+      "fieldId": "57476804e4b056dd66cc2bf8",
+      "fieldLabel": "Brands",
+      "valueId": "8f0f6ce0-e86f-4455-8d36-eeb1f6e286f9",
+      "valueLabel": "SoulCycle"
+    }
+  ],
+  "releasedDate": "2026-10-22T19:53:33.839Z",
+  "creator": {
+    "name": "",
+    "avatarUrl": ""
+  },
+  "postingUrl": "https://jobs.smartrecruiters.com/Equinox/744000157221438-key-holder-palm-beach",
+  "applyUrl": "https://jobs.smartrecruiters.com/Equinox/744000157221438-key-holder-palm-beach?oga=true",
+  "referralUrl": "https://jobs.smartrecruiters.com/external-referrals/company/Equinox/publication/fa05eb7e-70fe-445f-9e07-41e1f5c7f553?dcr_ci=Equinox",
+  "jobAd": {
+    "sections": {
+      "companyDescription": {
+        "title": "Company Description",
+        "text": "<p><strong>Who We Are</strong></p><p>We’re purpose-driven. With every ride, we aim to redefine health and happiness. It’s all about being more than a workout: SoulCycle is a mind-body-soul experience, built on community, love, respect, acceptance, and a lot of fun. It comes to life through the ride, the relationships, and the unparalleled hospitality. And all of that comes from our people. Join us—we’d love to have you</p><p><strong>Our Mission</strong></p><p>To foster an open, diverse, &amp; inclusive community—while embracing each unique individual exactly as they are. We empower each other "
+      },
+      "jobDescription": {
+        "title": "Job Description",
+        "text": "<p>Part-time employees must have at least 3 days of availability week over week, totaling 20 hours, with at least one of those days being a Saturday or Sunday. Additionally, all employees are expected to be available to work peak holiday shifts.&#xa0;</p><p>The responsibilities and duties of this position described here are representative of those an employee must perform. This is not a comprehensive list and other duties may be assigned.</p><p><strong>ROLES AND RESPONSIBILITIES:</strong></p><ul><li>Provide high level customer service and hospitality to clients</li><li>Assist the Studio Manage"
+      },
+      "qualifications": {
+        "title": "Qualifications",
+        "text": "<ul><li>Must have customer service experience</li><li>Must have the ability to prioritize and multi-task within a fast-paced environment</li><li>Must be willing to initiate tasks and perform duties without direction</li><li>Must have excellent communication skills and be able to work with a wide range of personalities</li><li>Must have outstanding customer service and problem solving skills</li><li>Must have a positive, can-do attitude</li><li>Must have friendly and professional phone and email etiquette</li><li>Must have superior organizational skill</li><li>&#xa0;must have at least 3 days of"
+      },
+      "additionalInformation": {
+        "title": "Additional Information",
+        "text": "<p>For additional Information visit our Career Site:&#xa0;<a href=\"https://www.soul-cycle.com/careers/\" rel=\"noopener noreferrer\">https://www.soul-cycle.com/careers/</a></p>"
+      }
+    }
+  },
+  "active": true,
+  "visibility": "PUBLIC",
+  "industry": {
+    "id": "health_wellness_fitness",
+    "label": "Health, Wellness And Fitness"
+  },
+  "function": {
+    "id": "other",
+    "label": "Other"
+  },
+  "department": {
+    "id": 6815171,
+    "label": "SoulCycle - Studio Crew"
+  },
+  "experienceLevel": {
+    "id": "not_applicable",
+    "label": "Not Applicable"
+  },
+  "typeOfEmployment": {
+    "id": "part-time",
+    "label": "Part-time"
+  },
+  "language": {
+    "code": "en",
+    "label": "English",
+    "labelNative": "English (US)"
+  }
+}

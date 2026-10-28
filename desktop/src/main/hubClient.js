@@ -52,7 +52,12 @@ class HubClient {
 
     #headers() {
         const token = this.getToken();
-        if (!token) throw new Revoked('This device has not been activated.');
+        if (!token) {
+            // Reached only by a device that believes it is activated: tell the
+            // owner so it can return to the activation screen.
+            this.onRevoked?.('This device is no longer activated.');
+            throw new Revoked('This device has not been activated.');
+        }
         return {
             Authorization: `Device ${token}`,
             'X-Machine-Fingerprint': this.fingerprint,

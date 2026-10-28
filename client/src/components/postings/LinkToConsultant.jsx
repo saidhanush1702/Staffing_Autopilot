@@ -85,7 +85,7 @@ const LinkToConsultant = ({ posting, onClose, onLinked }) => {
                         other job — tailored resume, fabrication check — and then
                         {done.channel === 'BOT'
                             ? ' picked up by their desktop app.'
-                            : ' shown to them to apply by hand.'}
+                            : ' picked up by their desktop app, where the AI agent fills it in.'}
                     </p>
                 </div>
             )}

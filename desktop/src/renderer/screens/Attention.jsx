@@ -26,6 +26,7 @@ const LABEL = {
     SIGN_IN: 'Sign-in',
     ACCOUNT_WALL: 'Sign-in',
     LEGAL_GATE: 'Terms',
+    EMAIL_VERIFY: 'Verification code',
 };
 
 /** Seconds, as a person says them. */
@@ -50,7 +51,17 @@ const Attention = ({ attention, onChanged }) => {
     }, [attention?.until]);
 
     // A new pause is a new decision; nothing should look pressed from the last.
-    useEffect(() => { setBusy(null); }, [attention?.kind, attention?.until]);
+    // The notice is included: when a press found the gate still up, the buttons
+    // must come back, or "Checking…" would sit there for the rest of the wait.
+    useEffect(() => { setBusy(null); }, [attention?.kind, attention?.until, attention?.notice]);
+
+    // And a press that changed nothing on screen must not leave the button
+    // greyed out either. The main process answers within a poll tick.
+    useEffect(() => {
+        if (busy !== 'continue') return undefined;
+        const id = setTimeout(() => setBusy(null), 4_000);
+        return () => clearTimeout(id);
+    }, [busy]);
 
     if (!attention) return null;
 
@@ -61,6 +72,7 @@ const Attention = ({ attention, onChanged }) => {
     const press = async (which) => {
         setBusy(which);
         if (which === 'continue') await window.smartapply.attentionContinue();
+        else if (which === 'force') await window.smartapply.attentionForce();
         else await window.smartapply.attentionSkip();
         onChanged?.();
     };
@@ -86,6 +98,15 @@ const Attention = ({ attention, onChanged }) => {
 
             <p className="attention-message">{attention.message}</p>
 
+            {/* A press of "I've done it" looked, and the gate is still up. Said
+                out loud, so nobody sits watching a countdown wondering why. */}
+            {attention.notice && (
+                <p className="note stop">
+                    {attention.notice} Finish it, then press “I’ve done it” again — or
+                    carry on anyway.
+                </p>
+            )}
+
             {/* Empties as the time runs out. */}
             <div className="attention-track">
                 <div className="attention-fill" style={{ width: `${fraction * 100}%` }} />
@@ -93,14 +114,11 @@ const Attention = ({ attention, onChanged }) => {
 
             <div className="row">
                 <p className="muted">
-                    {attention.holdUntilDeadline
-                        // Says out loud that the clock is what decides, so a
-                        // consultant who has finished knows to press the button
-                        // rather than sitting through the rest of it wondering
-                        // why nothing happened.
-                        ? 'It waits the full time so you are never cut off mid-answer — '
-                          + 'press “I’ve done it” to go on sooner.'
-                        : 'If nobody does this, the app moves on to the next job.'}
+                    {attention.releaseOnContinue
+                        ? 'Answer in the form or on the Questions tab, then press “I’ve done it” — '
+                          + 'it carries on straight away.'
+                        : 'If nobody does this in time, this job goes to the back of the queue '
+                          + 'and the app moves on.'}
                 </p>
                 <span style={{ display: 'flex', gap: 8 }}>
                     <button
@@ -109,15 +127,25 @@ const Attention = ({ attention, onChanged }) => {
                         disabled={busy !== null}
                         onClick={() => press('skip')}
                     >
-                        Skip this job
+                        Do this one later
                     </button>
+                    {attention.notice && (
+                        <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy !== null}
+                            onClick={() => press('force')}
+                        >
+                            Continue anyway
+                        </button>
+                    )}
                     <button
                         type="button"
                         className="primary"
                         disabled={busy !== null}
                         onClick={() => press('continue')}
                     >
-                        {busy === 'continue' ? 'Checking…' : 'I’ve done it'}
+                        {busy === 'continue' ? 'Going on…' : 'I’ve done it'}
                     </button>
                 </span>
             </div>

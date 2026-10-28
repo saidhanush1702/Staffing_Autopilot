@@ -1,0 +1,476 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 744,
+  "content": [
+    {
+      "id": "744000157221438",
+      "name": "Key Holder, Palm Beach",
+      "uuid": "fa05eb7e-70fe-445f-9e07-41e1f5c7f553",
+      "jobAdId": "5cce7662-930b-4f0f-9c22-90e3c24b7c21",
+      "defaultJobAd": true,
+      "refNumber": "REF4013C",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T19:53:33.839Z",
+      "location": {
+        "city": "Palm Beach",
+        "region": "FL",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "26.7056206",
+        "longitude": "-80.0364297",
+        "fullLocation": "Palm Beach, FL, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "6815171",
+        "label": "SoulCycle - Studio Crew"
+      },
+      "function": {
+        "id": "other",
+        "label": "Other"
+      },
+      "typeOfEmployment": {
+        "id": "part-time",
+        "label": "Part-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "68fd9b74-37ce-4e49-be75-2d1ec12dda69",
+          "valueLabel": "Central"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "6815171",
+          "valueLabel": "SoulCycle - Studio Crew"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "8f0f6ce0-e86f-4455-8d36-eeb1f6e286f9",
+          "valueLabel": "SoulCycle"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157221438",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000157221119",
+      "name": "Studio Crew, Palm Beach",
+      "uuid": "5d08f01a-98ce-410b-84c4-a7bfab0cbfb4",
+      "jobAdId": "1e84cf33-34e3-47e4-8647-a2fabb8986b5",
+      "defaultJobAd": true,
+      "refNumber": "REF3990D",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T19:52:24.828Z",
+      "location": {
+        "city": "Palm Beach",
+        "region": "FL",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "26.7056206",
+        "longitude": "-80.0364297",
+        "fullLocation": "Palm Beach, FL, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "6815171",
+        "label": "SoulCycle - Studio Crew"
+      },
+      "function": {
+        "id": "other",
+        "label": "Other"
+      },
+      "typeOfEmployment": {
+        "id": "part-time",
+        "label": "Part-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "68fd9b74-37ce-4e49-be75-2d1ec12dda69",
+          "valueLabel": "Central"
+        },
+        {
+          "fieldId": "558d7f79e4b06067bdf6900e",
+          "fieldLabel": "Location",
+          "valueId": "61c0ed25-0b77-49ad-a798-a8e66248c631",
+          "valueLabel": "7206 - SOUL - Palm Beach"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "6815171",
+          "valueLabel": "SoulCycle - Studio Crew"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "8f0f6ce0-e86f-4455-8d36-eeb1f6e286f9",
+          "valueLabel": "SoulCycle"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157221119",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000157216749",
+      "name": "Membership Sales Advisor, Orange County",
+      "uuid": "54ba1162-a584-4c21-9590-ab6a2cb6fff0",
+      "jobAdId": "3daf542d-4e4f-48dc-a1a3-331e4f24fd91",
+      "defaultJobAd": true,
+      "refNumber": "REF4073T",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T19:26:47.331Z",
+      "location": {
+        "city": "Irvine",
+        "region": "CA",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "33.6845673",
+        "longitude": "-117.8265049",
+        "fullLocation": "Irvine, CA, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "660882",
+        "label": "Club - Sales"
+      },
+      "function": {
+        "id": "sales",
+        "label": "Sales"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "d9238488-2e59-4787-af64-3389c5a49b53",
+          "valueLabel": "So Cal - OC/SD"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "660882",
+          "valueLabel": "Club - Sales"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Equinox"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157216749",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000157211179",
+      "name": "Style Advisors, West Palm Beach",
+      "uuid": "b25dc458-84e1-4da5-97bb-c7e63d12d3f6",
+      "jobAdId": "f5517cda-a7f9-405b-987c-45b606edf883",
+      "defaultJobAd": true,
+      "refNumber": "REF4791A",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T18:51:02.648Z",
+      "location": {
+        "city": "West Palm Beach",
+        "region": "FL",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "26.7144532",
+        "longitude": "-80.0549456",
+        "fullLocation": "West Palm Beach, FL, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "890416",
+        "label": "Club - Retail"
+      },
+      "function": {
+        "id": "sales",
+        "label": "Sales"
+      },
+      "typeOfEmployment": {
+        "id": "part-time",
+        "label": "Part-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "13ae9a95-9e29-4e35-9c57-bc3f5601e5ca",
+          "valueLabel": "SOUTH"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "890416",
+          "valueLabel": "Club - Retail"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Equinox"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157211179",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000157206699",
+      "name": "Assistant General Manager, San Francisco",
+      "uuid": "4a4d41da-affb-4eec-86af-bde93a0fa596",
+      "jobAdId": "b23dd7a8-38fb-460f-9c53-d69a39cd8a9e",
+      "defaultJobAd": true,
+      "refNumber": "REF629A",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T18:22:47.760Z",
+      "location": {
+        "city": "San Francisco",
+        "region": "CA",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "fullLocation": "San Francisco, CA, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "660950",
+        "label": "Club - Management - Operations"
+      },
+      "function": {
+        "id": "management",
+        "label": "Management"
+      },
+      "typeOfEmployment": {
+        "id": "permanent",
+        "label": "Full-time"
+      },
+      "experienceLevel": {
+        "id": "not_applicable",
+        "label": "Not Applicable"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "bb5dce4c-87f4-441e-8bf5-1b693cc5b8f2",
+          "valueLabel": "West"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "660950",
+          "valueLabel": "Club - Management - Operations"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Equinox"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157206699",
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    },
+    {
+      "id": "744000157204159",
+      "name": "Front Desk Manager on Duty, Woodbury (Long Island)",
+      "uuid": "27925fcc-a722-4a53-8dd4-74c4c3d34775",
+      "jobAdId": "1e8ed937-0632-4adf-99b2-5b743b80fb28",
+      "defaultJobAd": true,
+      "refNumber": "REF5430R",
+      "company": {
+        "identifier": "Equinox",
+        "name": "Equinox"
+      },
+      "releasedDate": "2026-10-22T18:11:30.831Z",
+      "location": {
+        "city": "Woodbury",
+        "region": "NY",
+        "country": "us",
+        "remote": false,
+        "hybrid": false,
+        "latitude": "41.3645382",
+        "longitude": "-74.1059775",
+        "fullLocation": "Woodbury, NY, United States"
+      },
+      "industry": {
+        "id": "health_wellness_fitness",
+        "label": "Health, Wellness And Fitness"
+      },
+      "department": {
+        "id": "660916",
+        "label": "Club - Staff"
+      },
+      "function": {
+        "id": "customer_service",
+        "label": "Customer Service"
+      },
+      "typeOfEmployment": {
+        "id": "part-time",
+        "label": "Part-time"
+      },
+      "experienceLevel": {
+        "id": "associate",
+        "label": "Associate"
+      },
+      "customField": [
+        {
+          "fieldId": "5d9f91b45d95674b7eff50f4",
+          "fieldLabel": "Location - Region",
+          "valueId": "868d793e-1894-4e79-9d63-4c8fbd0df603",
+          "valueLabel": "Northeast"
+        },
+        {
+          "fieldId": "558d7f79e4b06067bdf6900e",
+          "fieldLabel": "Location",
+          "valueId": "373f07b6-90c9-486e-81b1-c07e3be91df2",
+          "valueLabel": "142 - Woodbury"
+        },
+        {
+          "fieldId": "COUNTRY",
+          "fieldLabel": "Country/Region",
+          "valueId": "us",
+          "valueLabel": "United States"
+        },
+        {
+          "fieldId": "58b7e4d3e4b09a6d37a0cdc3",
+          "fieldLabel": "Department",
+          "valueId": "660916",
+          "valueLabel": "Club - Staff"
+        },
+        {
+          "fieldId": "57476804e4b056dd66cc2bf8",
+          "fieldLabel": "Brands",
+          "valueId": "default",
+          "valueLabel": "Equinox"
+        }
+      ],
+      "visibility": "PUBLIC",
+      "ref": "https://api.smartrecruiters.com/v1/companies/Equinox/postings/744000157204159",
+      "creator": {
+        "name": "Seth Lagrosa"
+      },
+      "language": {
+        "code": "en",
+        "label": "English",
+        "labelNative": "English (US)"
+      }
+    }
+  ]
+}

@@ -31,6 +31,7 @@ const { buildAnswerBook } = require('../browser/answers.js');
 const { TYPING } = require('../config.js');
 const { observe: realObserve } = require('./observe.js');
 const { executeAction: realExecute } = require('./actions.js');
+const { classifyPage } = require('./pageKind.js');
 
 const MAX_ACTIONS = 40;
 const STUCK_AFTER = 3;
@@ -56,7 +57,7 @@ const humanPause = (typing) => new Promise((r) => {
 const runAgent = async (page, {
     hub, runId, fillOptions = {}, root = null,
     log = () => {}, activity = () => {},
-    waitForHuman = null, waitForBotCheck = null,
+    waitForHuman = null, waitForBotCheck = null, waitForGate = null,
     shadow = false, prior = null, maxActions = MAX_ACTIONS, typing = TYPING,
 } = {}, deps = {}) => {
     const observe = deps.observe ?? realObserve;
@@ -78,6 +79,7 @@ const runAgent = async (page, {
     let lastActed = false;
     let proposals = 0;
     let turns = 0;
+    let gateRounds = 0;
 
     const end = (r) => ({
         outcome: r.outcome,
@@ -87,9 +89,11 @@ const runAgent = async (page, {
         attachedResume,
         steps: actions,
         submit: r.submit ?? null,
+        gateKind: r.gateKind ?? null,
         agent: { runId, actions, refused, turns, proposals: shadow ? history : undefined },
     });
 
+    let openedApply = 0;
     while (actions < maxActions) {
         let seen;
         try {
@@ -107,6 +111,64 @@ const runAgent = async (page, {
             lastResult = 'a human check was cleared by the consultant';
             lastSignature = null;
             continue;
+        }
+
+        // ── PAGES THE MODEL NEED NOT BE ASKED ABOUT ───────────────────────
+        //
+        // A verification-code page is the person's to deal with — only they
+        // can read their inbox — and a closed posting needs no model call at
+        // all. Both are recognised from the page's own words (pageKind.js).
+        if (!shadow) {
+            const kind = classifyPage(seen.observation);
+            if (kind === 'EMAIL_VERIFY') {
+                gateRounds += 1;
+                const cleared = waitForGate && gateRounds <= 3
+                    ? await waitForGate(page, {
+                        kind,
+                        message: 'This site sent a verification code to your email. Enter it in '
+                            + 'the browser window and the AI agent carries on.',
+                    })
+                    : false;
+                if (!cleared) {
+                    return end({
+                        outcome: 'ACCOUNT_WALL',
+                        detail: 'this site is waiting for an email verification code',
+                        gateKind: 'EMAIL_VERIFY',
+                    });
+                }
+                lastResult = 'the consultant entered the verification code';
+                lastSignature = null;
+                lastActed = false;
+                continue;
+            }
+            if (kind === 'CLOSED' && actions === 0) {
+                return end({ outcome: 'CLOSED', detail: 'the page says the posting is closed' });
+            }
+
+            // A posting with nothing to fill and an Apply control: press it. No
+            // model call is needed to know that is the next step, and a model
+            // asked "what now?" of a page with only a footer box has been seen to
+            // pick the box.
+            if (kind === 'JOB_PAGE' && openedApply < 3 && qa.length === 0) {
+                const apply = seen.observation.controls.find((c) => !c.disabled
+                    && /^\s*(apply( now| for this (job|position|role))?|apply on company (site|website)|start (your )?application|easy apply|apply manually)\s*[›>»]?\s*$/i.test(c.text));
+                if (apply) {
+                    openedApply += 1;
+                    const opened = await execute(page, {
+                        action: 'press', ref: apply.ref, reason: `open the application (${apply.text})`,
+                    }, {
+                        registry: seen.registry, errors: [], book, approvedAnswers: [],
+                        resumePath: null, attachedResume, filledCount: 0, typing, log, waitForHuman,
+                    });
+                    actions += 1;
+                    lastSignature = null;
+                    lastActed = Boolean(opened.ok);
+                    lastResult = opened.ok ? opened.result : `refused: ${opened.error}`;
+                    activity(`Opening the application — ${apply.text}`);
+                    history.push({ n: actions, action: 'press', ref: apply.ref, source: '', result: lastResult });
+                    continue;
+                }
+            }
         }
 
         if (lastActed && lastSignature !== null && seen.signature === lastSignature) {
@@ -208,6 +270,7 @@ const runAgent = async (page, {
             refusedInARow = 0;
             lastActed = true;
             if (done.qa) qa.push(done.qa);
+            if (done.qas) qa.push(...done.qas);
             if (done.attachedResume) attachedResume = true;
             lastResult = done.result;
             await humanPause(typing);

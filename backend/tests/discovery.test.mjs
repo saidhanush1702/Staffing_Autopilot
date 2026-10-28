@@ -386,8 +386,8 @@ check('FILLING → READY (crashed app, lease expired)', move('FILLING', 'READY')
 check('AWAITING_REVIEW → READY (nobody reviewed it)', move('AWAITING_REVIEW', 'READY'), 'ok');
 check('PARKED_UNKNOWN → READY (the answer was approved)', move('PARKED_UNKNOWN', 'READY'), 'ok');
 check('PREPARING → QUEUED (preparation failed, retry)', move('PREPARING', 'QUEUED'), 'ok');
-// The HUMAN lane: nothing filled the form, the consultant applied themselves.
-check('READY → SUBMITTED (human lane)', move('READY', 'SUBMITTED'), 'ok');
+// There is no human lane: a submission only ever follows a filled form.
+check('READY → SUBMITTED is refused (nobody applies by hand)', move('READY', 'SUBMITTED') === 'ok', false);
 
 /* ── matching ─────────────────────────────────────────────────────────── */
 

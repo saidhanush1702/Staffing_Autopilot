@@ -32,12 +32,12 @@
  */
 
 /** Bumped whenever the prompt changes, so behaviour can be tied to a version. */
-export const AGENT_PROMPT_VERSION = 'agent-2026-09-16.1';
+export const AGENT_PROMPT_VERSION = 'agent-2026-10-23.1';
 
 export const AGENT_MODES = ['OFF', 'SHADOW', 'ON'];
 
 export const ACTIONS = [
-    'fill', 'upload_resume', 'press', 'ask_human', 'needs_sign_in', 'ready', 'stop',
+    'fill', 'fill_many', 'upload_resume', 'press', 'ask_human', 'needs_sign_in', 'ready', 'stop',
 ];
 
 export const STOP_KINDS = ['closed', 'already_applied', 'not_a_job_form', 'blocked'];
@@ -49,6 +49,9 @@ export const STOP_KINDS = ['closed', 'already_applied', 'not_a_job_form', 'block
 export const PROFILE_KEYS = [
     'fullName', 'firstName', 'lastName', 'email', 'phone', 'city', 'state',
     'linkedin', 'workAuth',
+    'github', 'portfolio', 'headline', 'currentCompany', 'currentTitle',
+    'school', 'degree', 'fieldOfStudy', 'educationLevel', 'graduationYear',
+    'yearsExperience',
 ];
 
 /**
@@ -68,7 +71,7 @@ export const PROFILE_KEYS = [
 export const AGENT_ACTION_SCHEMA = {
     type: 'object',
     additionalProperties: false,
-    required: ['action', 'ref', 'source', 'refs', 'kind', 'reason'],
+    required: ['action', 'ref', 'source', 'refs', 'fills', 'kind', 'reason'],
     properties: {
         action: { type: 'string', enum: ACTIONS },
         ref: {
@@ -83,6 +86,26 @@ export const AGENT_ACTION_SCHEMA = {
             type: 'array',
             items: { type: 'string' },
             description: 'For ask_human only: refs of the required fields nobody can answer. Otherwise [].',
+        },
+        fills: {
+            type: 'array',
+            // ── ONE REPLY, MANY FIELDS ────────────────────────────────
+            //
+            // One field per model call meant a 30-field page cost 30 round
+            // trips, each re-sending the whole page. Naming every fillable
+            // field at once cuts that to a handful. Still no free text: each
+            // entry is a ref and a SOURCE, validated one by one exactly as a
+            // single fill is.
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['ref', 'source'],
+                properties: {
+                    ref: { type: 'string' },
+                    source: { type: 'string' },
+                },
+            },
+            description: 'For fill_many only: one { ref, source } per field to fill. Otherwise [].',
         },
         kind: {
             type: 'string',
@@ -129,6 +152,7 @@ WHAT MAY GO INTO A FIELD
 ACTIONS
 Every reply has action, ref, source, refs, kind and reason. Use "" or [] for the ones an action does not need, and "none" for kind on anything that is not a stop.
 - fill: ref = a field ref; source = "profile:<key>" or "answer:<id>".
+- fill_many: fills = a list of { ref, source }, one per field, using the same sources as fill. PREFER THIS whenever two or more fields on the page can be filled: put every fillable field in one reply instead of answering one at a time. Do not list a field that already has a value.
 - upload_resume: ref = a file field or an upload button, when the page asks for a resume or CV and RESUME is available.
 - press: ref = a control that moves the application forward: Apply, Apply manually, Next, Continue, Save and continue, a step tab, or a button that closes a cookie or information popup. Never a control that submits or sends the application, withdraws, deletes, or signs out.
 - ask_human: refs = the REQUIRED fields on this page that nothing in the catalogue can answer. Fill everything else you can on the page first.
@@ -168,6 +192,17 @@ export const profileKeysFor = (profile = {}) => {
         state: Boolean(p.state),
         linkedin: Boolean(p.linkedin_url),
         workAuth: Boolean(p.work_auth),
+        github: Boolean(p.github_url),
+        portfolio: Boolean(p.portfolio_url),
+        headline: Boolean(p.headline),
+        currentCompany: Boolean(p.current_company),
+        currentTitle: Boolean(p.current_title),
+        school: Boolean(p.school),
+        degree: Boolean(p.degree),
+        fieldOfStudy: Boolean(p.field_of_study),
+        educationLevel: Boolean(p.education_level),
+        graduationYear: Boolean(p.graduation_year),
+        yearsExperience: p.total_years !== null && p.total_years !== undefined,
     };
     return PROFILE_KEYS.filter((k) => has[k]);
 };
@@ -248,6 +283,9 @@ export const buildTurnInput = ({
 
 const REF = /^[A-Za-z0-9:_-]{1,40}$/;
 
+/** Most fields one fill_many may name. A page with more is filled in rounds. */
+export const MAX_FILLS = 25;
+
 /**
  * Check a model's reply and map answer aliases back to question ids.
  *
@@ -263,7 +301,7 @@ export const validateAction = (raw, catalogue) => {
     const reason = clip(raw.reason, 300);
     // 'none' is the schema's word for "this field does not apply"; the
     // internal shape keeps using '' so nothing downstream had to change.
-    const out = { action, ref: '', source: '', refs: [], kind: '', reason };
+    const out = { action, ref: '', source: '', refs: [], fills: [], kind: '', reason };
 
     const needRef = () => {
         if (!REF.test(ref)) return `"${action}" needs the ref of an element on the page.`;
@@ -271,26 +309,49 @@ export const validateAction = (raw, catalogue) => {
         return null;
     };
 
+    /** A source the catalogue actually holds, with answer aliases mapped to real ids. */
+    const checkSource = (rawSource) => {
+        const source = String(rawSource ?? '').trim();
+        const [kind, key] = source.includes(':') ? source.split(/:(.*)/s) : ['', source];
+        if (kind === 'profile') {
+            if (!catalogue.profileKeys.includes(key)) {
+                return { error: `profile:${clip(key, 30)} is not in the catalogue.` };
+            }
+            return { source: `profile:${key}` };
+        }
+        if (kind === 'answer' || /^a\d+$/.test(source)) {
+            const alias = kind === 'answer' ? key : source;
+            const questionId = catalogue.aliases.get(alias);
+            if (!questionId) return { error: `answer:${clip(alias, 30)} is not in the catalogue.` };
+            return { source: `answer:${questionId}` };
+        }
+        return { error: 'a fill needs a source of profile:<key> or answer:<id>.' };
+    };
+
     switch (action) {
     case 'fill': {
         const bad = needRef();
         if (bad) return { ok: false, error: bad };
-        const source = String(raw.source ?? '').trim();
-        const [kind, key] = source.includes(':') ? source.split(/:(.*)/s) : ['', source];
-        if (kind === 'profile') {
-            if (!catalogue.profileKeys.includes(key)) {
-                return { ok: false, error: `profile:${clip(key, 30)} is not in the catalogue.` };
-            }
-            out.source = `profile:${key}`;
-        } else if (kind === 'answer' || /^a\d+$/.test(source)) {
-            const alias = kind === 'answer' ? key : source;
-            const questionId = catalogue.aliases.get(alias);
-            if (!questionId) {
-                return { ok: false, error: `answer:${clip(alias, 30)} is not in the catalogue.` };
-            }
-            out.source = `answer:${questionId}`;
-        } else {
-            return { ok: false, error: 'fill needs a source of profile:<key> or answer:<id>.' };
+        const checked = checkSource(raw.source);
+        if (checked.error) return { ok: false, error: checked.error };
+        out.source = checked.source;
+        return { ok: true, action: out };
+    }
+    case 'fill_many': {
+        const list = Array.isArray(raw.fills) ? raw.fills : [];
+        if (list.length === 0) return { ok: false, error: 'fill_many needs at least one { ref, source }.' };
+        if (list.length > MAX_FILLS) {
+            return { ok: false, error: `fill_many takes at most ${MAX_FILLS} fields at a time.` };
+        }
+        const seen = new Set();
+        for (const entry of list) {
+            const r = String(entry?.ref ?? '').trim();
+            if (!REF.test(r)) return { ok: false, error: 'every fill_many entry needs the ref of a field.' };
+            if (seen.has(r)) return { ok: false, error: `${clip(r, 30)} is listed twice in fill_many.` };
+            seen.add(r);
+            const checked = checkSource(entry?.source);
+            if (checked.error) return { ok: false, error: `${clip(r, 30)}: ${checked.error}` };
+            out.fills.push({ ref: r, source: checked.source });
         }
         return { ok: true, action: out };
     }

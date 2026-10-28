@@ -28,6 +28,12 @@
     "jobspipe:freshness": "node scripts/jobspipe-freshness.mjs",
     "jobspipe:poll": "node -e \"import('./jobs/jobspipePoller.js').then(m=>m.pollAllOrgs().then(r=>{console.log(r);process.exit(0)}))\"",
     "test:jobspipe-search": "node tests/jobspipeSearch.test.mjs",
+    "test:ats": "node tests/atsMirror.test.mjs",
+    "test:ats-db": "node tests/atsMirror.db.test.mjs",
+    "ats:probe": "node scripts/ats-probe.mjs",
+    "test:matching": "node tests/matcherV2.test.mjs && node tests/locations.test.mjs && node tests/eligibility.test.mjs && node tests/suggestions.test.mjs && node tests/matchingBench.test.mjs && node tests/applicationProfile.test.mjs",
+    "test:matching-db": "node tests/matchingV2.db.test.mjs",
+    "matcher:compare": "node scripts/matcher-compare.mjs",
     "test:profile": "node tests/profileResume.test.mjs && node tests/profileApi.test.mjs",
     "test:all": "node tests/llm.test.mjs && node tests/worker.test.mjs && node tests/tailoring.test.mjs && node tests/profileResume.test.mjs && node tests/profileApi.test.mjs"
   },

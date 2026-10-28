@@ -46,6 +46,8 @@ const WAIT_MS = {
     ACCOUNT_WALL: 300_000,
     // Reading terms before agreeing to them is not something to rush.
     LEGAL_GATE: 300_000,
+    // A code sent to the person's inbox: they have to go and read it.
+    EMAIL_VERIFY: 300_000,
 };
 
 /** What the person is being asked to do, in a few words. */
@@ -55,6 +57,7 @@ const HEADLINE = {
     SIGN_IN: 'Sign-in needed',
     ACCOUNT_WALL: 'Sign-in needed to continue',
     LEGAL_GATE: 'Terms need your agreement',
+    EMAIL_VERIFY: 'A verification code is needed',
 };
 
 /** How often to look at whether they have finished. */
@@ -76,6 +79,19 @@ class Attention {
         // immediately, so a press and a check can never interleave badly.
         this.continueAsked = false;
         this.skipAsked = false;
+        // "Carry on regardless": ends the wait whatever the check says.
+        this.forceAsked = false;
+        // Wakes the poll loop early, so a button press is answered at once
+        // instead of at the next tick.
+        this.wake = null;
+    }
+
+    /** Sleep, but get up the moment a button is pressed. */
+    #sleep(ms) {
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => { this.wake = null; resolve(); }, ms);
+            this.wake = () => { clearTimeout(timer); this.wake = null; resolve(); };
+        });
     }
 
     /** What the screen should be showing, if anything. */
@@ -87,6 +103,19 @@ class Attention {
     continueNow() {
         if (!this.current) return false;
         this.continueAsked = true;
+        this.wake?.();
+        return true;
+    }
+
+    /**
+     * "Carry on anyway" — the person has seen the app's doubt and says go on.
+     * Offered only after a press of "I've done it" found something unfinished,
+     * so it is a decision made with the reason in front of them.
+     */
+    forceNow() {
+        if (!this.current) return false;
+        this.forceAsked = true;
+        this.wake?.();
         return true;
     }
 
@@ -94,6 +123,7 @@ class Attention {
     skip() {
         if (!this.current) return false;
         this.skipAsked = true;
+        this.wake?.();
         return true;
     }
 
@@ -109,12 +139,27 @@ class Attention {
         kind, board = null, boardLabel = null, company = null, title = null,
         message = '', check = async () => false, waitMs = null,
         holdUntilDeadline = false,
+        // ── WHAT "I'VE DONE IT" MEANS ─────────────────────────────────
+        //
+        // For a question there is nothing the app can verify: the answer is
+        // in a form, and "every required box is filled" turns true at the
+        // first keystroke and, on a form like Lever's (every checkbox of a
+        // group is marked required), never turns true at all. So pressing
+        // the button IS the answer: the wait ends and the engine re-reads
+        // the page, which is the only honest check there is.
+        //
+        // For a sign-in or a challenge the app CAN look, so it looks once;
+        // and if it still sees the gate it says so, on the banner, and
+        // offers "Continue anyway" instead of quietly carrying on counting.
+        releaseOnContinue = false,
+        stillMessage = null,
     }) {
         const total = waitMs ?? WAIT_MS[kind] ?? 60_000;
         const startedAt = Date.now();
 
         this.continueAsked = false;
         this.skipAsked = false;
+        this.forceAsked = false;
         this.current = {
             kind,
             headline: HEADLINE[kind] ?? 'The app needs you',
@@ -130,6 +175,9 @@ class Attention {
             // Tells the screen whether pressing on is possible before the
             // clock runs out, so the banner can say which it is.
             holdUntilDeadline,
+            releaseOnContinue,
+            // Set when a press of "I've done it" found the gate still up.
+            notice: null,
         };
         this.publish(this.current);
         this.notify(this.current);
@@ -145,19 +193,23 @@ class Attention {
             if (!holdUntilDeadline && await check()) return 'done';
 
             while (Date.now() < this.current.until) {
-                await new Promise((r) => { setTimeout(r, this.pollMs); });
+                await this.#sleep(this.pollMs);
 
                 if (this.skipAsked) return 'skipped';
+                if (this.forceAsked) return 'done';
 
-                // A press of "I've done it" is a request to look again, not a
-                // claim that the work is done. If the gate is still up, the
-                // countdown carries on rather than the job being abandoned on
-                // somebody's optimism. This is the ONE way past a
-                // `holdUntilDeadline` wait, and it is deliberate: it is the
-                // consultant saying so, not the app guessing.
                 if (this.continueAsked) {
                     this.continueAsked = false;
+                    // A question: the press is the answer. Go on now.
+                    if (releaseOnContinue) return 'done';
+                    // A gate the app can see: look once, and if it is still
+                    // up, SAY so rather than carrying on counting in silence.
                     if (await check()) return 'done';
+                    this.current = {
+                        ...this.current,
+                        notice: stillMessage ?? 'That does not look finished yet.',
+                    };
+                    this.publish(this.current);
                     continue;
                 }
 

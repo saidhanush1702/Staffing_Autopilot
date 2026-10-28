@@ -121,6 +121,9 @@ export const criteriaSchema = Joi.object({
     locations: Joi.array().items(locationRule).max(MAX_LOCATIONS).default([]),
     workTypeIds: Joi.array().items(Joi.number().integer().positive()).max(20).default([]),
     minPay: minPayRule,
+    // "I would move for the right job" -- a statement about the person, so it
+    // lives beside the criteria rather than on any one location.
+    openToRelocate: Joi.boolean().default(false),
     changeNote: Joi.string().trim().max(500).allow('', null).default(null),
 });
 
@@ -155,6 +158,7 @@ export const normalise = (input) => ({
         unit: input.minPay?.unit ?? null,
         currency: input.minPay?.currency ?? 'USD',
     },
+    openToRelocate: Boolean(input.openToRelocate),
 });
 
 /**
@@ -175,6 +179,7 @@ export const fingerprint = (c) => JSON.stringify([
     c.locations.map((l) => [l.city ?? '', l.state ?? '', l.workMode, l.radiusMiles ?? 0]),
     c.workTypeIds,
     [c.minPay.amount === null ? null : Number(c.minPay.amount), c.minPay.unit, c.minPay.currency],
+    Boolean(c.openToRelocate),
 ]);
 
 /** Is there anything at all in this set? An empty set matches nothing. */
@@ -184,7 +189,8 @@ export const isEmpty = (c) => c.jobTitles.length === 0
     && c.excludedCompanies.length === 0
     && c.locations.length === 0
     && c.workTypeIds.length === 0
-    && c.minPay.amount === null;
+    && c.minPay.amount === null
+    && !c.openToRelocate;
 
 /** One-line human summary of what changed between two normalised sets. */
 export const describeDiff = (before, after) => {
@@ -213,6 +219,10 @@ export const describeDiff = (before, after) => {
             : `Minimum pay ${after.minPay.currency} ${after.minPay.amount} ${after.minPay.unit.toLowerCase()}`);
     }
 
+    if (Boolean(before.openToRelocate) !== Boolean(after.openToRelocate)) {
+        parts.push(after.openToRelocate ? 'Open to relocate' : 'No longer open to relocate');
+    }
+
     return parts.length ? parts.join('; ') : 'No content change';
 };
 
@@ -225,4 +235,5 @@ export const EMPTY_CRITERIA = Object.freeze({
     locations: [],
     workTypeIds: [],
     minPay: { amount: null, unit: null, currency: 'USD' },
+    openToRelocate: false,
 });

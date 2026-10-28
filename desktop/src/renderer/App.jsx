@@ -8,6 +8,7 @@ import Applied from './screens/Applied.jsx';
 import Activity from './screens/Activity.jsx';
 import StatusPill from './screens/StatusPill.jsx';
 import Attention from './screens/Attention.jsx';
+import WaitingRuns from './screens/WaitingRuns.jsx';
 import ThemeButton from './screens/ThemeButton.jsx';
 import {
     Mark, IconWork, IconQuestion, IconAnswers, IconBoards, IconApplied, IconActivity,
@@ -92,26 +93,16 @@ const App = () => {
 
     // Revocation is terminal and takes the whole window. Anything less would
     // leave someone clicking at an app that has already wiped itself.
+    //
+    // It is not a dead end: it is the activation screen, with the reason on
+    // top. Entering a new code brings the app back; nothing else is offered
+    // until then.
     if (snap.state === 'REVOKED') {
         return (
-            <div className="centred">
-                <div className="centred-inner">
-                    <div className="card stack">
-                        <div className="row">
-                            <h1>Access removed</h1>
-                            <span className="pill stop">Revoked</span>
-                        </div>
-                        <p className="sub" style={{ marginTop: 0 }}>
-                            {snap.detail || 'An administrator revoked this device.'}
-                        </p>
-                        <div className="note stop">
-                            Everything this app held on your machine has been deleted, including
-                            saved sign-ins. Ask your administrator for a new activation code if
-                            you should still have access.
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <Activation
+                onActivated={refresh}
+                revokedReason={snap.detail || 'An administrator revoked this device.'}
+            />
         );
     }
 
@@ -225,6 +216,7 @@ const App = () => {
                 waiting on a person, and that must not be something you have to
                 be on the right tab to discover. */}
             <Attention attention={snap.attention} onChanged={refresh} />
+            <WaitingRuns runs={snap.waitingRuns} onChanged={refresh} />
 
             {/* Boards is a live browser page; it gets the whole window. The
                 reading tabs stay in a capped column. */}

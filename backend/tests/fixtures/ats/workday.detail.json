@@ -1,0 +1,40 @@
+{
+  "jobPostingInfo": {
+    "id": "121c333bf790102e02eab6ffe0150000",
+    "title": "Package Design Methodology Engineer",
+    "jobDescription": "<p>NVIDIA has been transforming computer graphics, PC gaming, and accelerated computing for more than 25 years. It’s a unique legacy of innovation that’s fueled by great technology—and amazing people. Today, we’re tapping into the unlimited potential of AI to define the next era of computing. An era in which our GPU acts as the brains of computers, robots, and self-driving cars that can understand the world. Doing what’s never been done before takes vision, innovation, and the world’s best talent. As an NVIDIAN, you’ll be immersed in a diverse, supportive environment where everyone is inspired to do their best work. Come join the team and see how you can make a lasting impact on the world.</p><p></p><p>NVIDIA&#39;s Advanced Package Engineering team sits at the intersection of cutting-edge chip design and the physical reality of getting silicon to product — and we&#39;re expanding it. As AI systems grow more complex, NVIDIA&#39;s multi-die packages have become some of the most challenging engineered products, connecting dozens of chiplets across substrates, interposers, and heterogeneous interfaces. The engineers who build the automation infrastructure for these packages don&#39;t just write software — they directly determine whether NVIDIA can tape out on schedule and at scale. This role is a rare opportunity to craft production-grade EDA tooling that operates at the bleeding e",
+    "location": "US, CA, Santa Clara",
+    "additionalLocations": [
+      "US, TX, Austin",
+      "US, CA, Remote"
+    ],
+    "postedOn": "Posted Today",
+    "startDate": "2026-10-22",
+    "timeType": "Full time",
+    "jobReqId": "JR2021653",
+    "jobPostingId": "Package-Design-Methodology-Engineer_JR2021653",
+    "jobPostingSiteId": "NVIDIAExternalCareerSite",
+    "country": {
+      "descriptor": "United States of America",
+      "id": "bc33aa3152ec42d4995f4791a106ed09"
+    },
+    "canApply": true,
+    "posted": true,
+    "includeResumeParsing": true,
+    "jobRequisitionLocation": {
+      "descriptor": "US, CA, Santa Clara",
+      "country": {
+        "descriptor": "United States of America",
+        "id": "bc33aa3152ec42d4995f4791a106ed09",
+        "alpha2Code": "US"
+      }
+    },
+    "externalUrl": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA-Santa-Clara/Package-Design-Methodology-Engineer_JR2021653",
+    "questionnaireId": "2f2764b3a82910064296831695150000"
+  },
+  "hiringOrganization": {
+    "name": "2100 NVIDIA USA",
+    "url": ""
+  },
+  "userAuthenticated": false
+}

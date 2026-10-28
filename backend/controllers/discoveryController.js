@@ -50,6 +50,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { fingerprintPosting } from '../config/fingerprint.js';
 import { evaluate } from '../config/jobMatcher.js';
+import { attachMatcherInputs } from '../services/benchExtras.js';
+import { recordSuggestion } from '../services/matchLinker.js';
 import { createSession, isConfigured, providerConfig } from '../connectors/serpapi.js';
 import { jobResultToPosting } from '../connectors/googleJobs.js';
 import {
@@ -271,7 +273,7 @@ const forgetFilter = async (orgId, q, window) => {
 // this query would drift from this one the first time criteria gain a field,
 // and the webhook would then quietly match against a stale idea of what a
 // consultant wants.
-export const loadMatchableConsultants = async (orgId) => {
+export const loadMatchableConsultants = async (orgId, { consultantId = null } = {}) => {
     const { rows } = await query(
         `SELECT u.id, u.name,
                 sc.current_version_id AS version_id
@@ -283,8 +285,9 @@ export const loadMatchableConsultants = async (orgId) => {
             AND u.employment_status = 'ACTIVE'
             AND sc.is_active
             AND sc.current_version_id IS NOT NULL
-            AND NOT p.is_paused`,
-        [orgId],
+            AND NOT p.is_paused
+            AND ($2::char(36) IS NULL OR u.id = $2::char(36))`,
+        [orgId, consultantId],
     );
 
     const out = [];
@@ -323,7 +326,9 @@ export const loadMatchableConsultants = async (orgId) => {
             },
         });
     }
-    return out;
+    // Skills, experience, relocation and the organisation's matcher version,
+    // for v2. A no-op for the data v1 reads. See services/benchExtras.js.
+    return attachMatcherInputs(orgId, out);
 };
 
 /**
@@ -960,6 +965,14 @@ export const executeRun = async (orgId, { trigger = 'MANUAL', userId = null } = 
                     workTypeName: row.work_type_name,
                 });
                 if (verdict.stage !== 'score') stats.prefilter_out += 1;
+                // v2's middle outcome, for a recruiter rather than the queue.
+                if (verdict.bucket === 'SUGGEST') {
+                    await recordSuggestion({
+                        orgId, consultantId: consultant.id, versionId: consultant.versionId,
+                        postingId: row.id, verdict, via: 'Discovery run',
+                    });
+                    continue;
+                }
                 if (!verdict.matched) continue;
 
                 // ON CONFLICT: a consultant is matched to a posting once, ever.

@@ -24,6 +24,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { schedulerTimezone } from '../config/discoverySchedule.js';
+import { applicationProfileFor } from '../config/applicationProfile.js';
 import { checkTransition } from '../config/queueStates.js';
 import { normaliseQuestion } from '../config/questionNormaliser.js';
 import { findOrCreateQuestion } from './questionController.js';
@@ -220,12 +221,10 @@ export const heartbeat = async (req, res, next) => {
 /**
  * GET /api/device/queue
  *
- * Only READY items, only this consultant, only the BOT and AGENT lanes. The
- * HUMAN lane belongs to the portal — sending it here would put the same job in
- * front of the consultant twice with no indication of which one to act on.
- *
- * AGENT items have no coded recipe; the app asks the hub before letting the AI
- * agent try one, and hands it to HUMAN if the answer is no.
+ * Only READY items, only this consultant. Every lane is the app's: BOT items
+ * have a coded recipe, AGENT items have none and the app asks the hub before
+ * letting the AI agent try one. (HUMAN rows from before that lane was retired
+ * are served as AGENT until the migration converts them.)
  */
 export const deviceQueue = async (req, res, next) => {
     try {
@@ -250,12 +249,12 @@ export const deviceQueue = async (req, res, next) => {
           LEFT JOIN job_matches m ON m.id = q.match_id
               WHERE q.consultant_id = $1
                 AND q.organization_id = $2
-                AND q.channel IN ('BOT', 'AGENT')
+                AND q.channel IN ('BOT', 'AGENT', 'HUMAN')
                 AND st.name IN ('READY', 'FILLING')
                 -- not already leased by somebody else, or the lease lapsed
                 AND (q.leased_by IS NULL OR q.leased_by = $3 OR q.leased_until < now())
-              ORDER BY COALESCE(m.score, 0) DESC, q.became_ready_at ASC
-              LIMIT 25`,
+              -- no cap: every matched job reaches the desktop queue
+              ORDER BY COALESCE(m.score, 0) DESC, q.became_ready_at ASC`,
             [consultantId, orgId, req.device.id],
         );
 
@@ -283,20 +282,14 @@ export const deviceQueue = async (req, res, next) => {
         // The consultant's own details, so the filler has something to type.
         // Sent with the queue rather than fetched separately: the app needs
         // both or neither, and one round trip cannot half-succeed.
-        const { rows: profile } = await query(
-            `SELECT u.name, u.email, p.phone, p.city, p.state, p.linkedin_url,
-                    w.name AS work_auth, p.base_resume_artifact_id
-               FROM consultant_profiles p
-               JOIN users u ON u.id = p.user_id
-          LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
-              WHERE p.user_id = $1 AND p.organization_id = $2`,
-            [consultantId, orgId],
-        );
+        // Built by the same function the AI agent's catalogue uses, so the two
+        // can never be offered different facts. See config/applicationProfile.js.
+        const profile = await applicationProfileFor({ consultantId, orgId });
 
         return res.json({
             items: rows,
             approvedAnswers: answers,
-            profile: profile[0] ?? null,
+            profile: profile ?? null,
         });
     } catch (err) {
         return next(err);
@@ -611,42 +604,21 @@ export const reportSkipped = async (req, res, next) => {
 };
 
 /**
- * POST /api/device/queue/:id/reclassify — this job is not automatable after all.
+ * POST /api/device/queue/:id/reclassify — the app could not apply to this job.
  *
- * A LinkedIn job cannot be told apart from an external redirect by its apply
- * link; only opening it reveals whether Easy Apply is available. When it is
- * not, the item moves to the HUMAN lane and back to READY so the consultant
- * picks it up in the portal instead. Nothing is lost — the job simply changes
- * hands.
+ * This route used to move the job to a HUMAN lane so the consultant could apply
+ * by hand. That lane is gone: nothing is left for a consultant to apply to on
+ * their own. The route stays only because installed copies of the desktop app
+ * still call it, and it now does what the app does itself today — the job is
+ * SKIPPED with the reason written on it, where a recruiter can read it and put
+ * the job back with Requeue once whatever stopped it is fixed.
  */
 export const reclassify = async (req, res, next) => {
     try {
-        const item = await loadOwnedItem(req.device, req.params.id);
-        if (!item) return res.status(404).json({ error: 'Queue item not found.' });
-
-        const verdict = checkTransition(item.status, 'READY');
-        if (!verdict.ok) return res.status(verdict.status).json({ error: verdict.error });
-
-        const readyId = await statusIdFor('READY');
-
-        await withTransaction(async (client) => {
-            await client.query(
-                `UPDATE queue_items
-                    SET channel = 'HUMAN', status_id = $2,
-                        leased_by = NULL, leased_until = NULL, updated_at = now()
-                  WHERE id = $1`,
-                [item.id, readyId],
-            );
-            await client.query(
-                `INSERT INTO queue_item_transitions
-                    (id, organization_id, queue_item_id, from_status_id, to_status_id, reason)
-                 VALUES ($1,$2,$3,$4,$5,$6)`,
-                [uuidv4(), req.device.orgId, item.id, item.status_id, readyId,
-                    req.body.reason || 'Not automatable — moved to the consultant'],
-            );
+        return await moveItem(req, res, 'SKIPPED', {
+            reason: req.body.reason || 'The app could not apply to this job automatically.',
+            extra: { leasedBy: null, leasedUntil: null },
         });
-
-        return res.json({ ok: true, status: 'READY', channel: 'HUMAN' });
     } catch (err) {
         return next(err);
     }

@@ -1,0 +1,388 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+      "title": " Security Engineer, Cloud",
+      "department": "Engineering",
+      "team": "Backend",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "Remote (Canada)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "Canada"
+            }
+          }
+        },
+        {
+          "location": "Remote (US)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "United States"
+            }
+          }
+        },
+        {
+          "location": "Miami, FL",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "Florida",
+              "addressCountry": "USA",
+              "addressLocality": "Miami"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-04-07T17:12:35.753+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York City"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/34413f8d-26bf-4bbc-8ade-eb309a0e2245",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/34413f8d-26bf-4bbc-8ade-eb309a0e2245/application",
+      "descriptionHtml": "<h1><strong>About Ramp</strong></h1><p style=\"min-height:1.5em\">Ramp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.</p><p style=\"min-height:1.5em\">The problems are high-stakes, data-dense, and unforgiving.</p><p style=\"min-height:1.5em\">We hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.</p><p style=\"min-height:1.5em\">The median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.</p><p style=\"min-height:1.5em\">If you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.</p><p style=\"min-height:1.5em\"></p><h1>About the Role</h1><p style=\"min-height:1.5em\">The Security Engineering team helps make Ramp the most secure place for our customers to collect, manage, and put to work their business’ financial information </p><p style=\"min-height:1.5em\">Our work …[truncated for fixture]",
+      "descriptionPlain": "ABOUT RAMP\n\nRamp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.\n\nThe problems are high-stakes, data-dense, and unforgiving.\n\nWe hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.\n\nThe median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.\n\nIf you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.\n\n\n\n\nABOUT THE ROLE\n\nThe Security Engineering team helps make Ramp the most secure place for our customers to collect, manage, and put to work their business’ financial information \n\nOur work centers in three areas:\n\n - Ramp builds products with an eye for security\n\n - Ramp detects and responds to threats before they cause harm\n\n - Security powers Ramp’s growth\n\nCheck out our Engineering Blog https://engineering.ramp.com/ for more on our tech stack, missi …[truncated for fixture]",
+      "compensation": {
+        "compensationTierSummary": "$211.4K – $290.6K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$211.4K - $290.6K",
+        "compensationTiers": [
+          {
+            "id": "5f7a903e-36e4-492c-ac09-f2745d717daa",
+            "tierSummary": "$211.4K – $290.6K • Offers Equity",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "feaef96f-559f-4df8-a38c-3eee072a8d74",
+                "summary": "Offers Equity",
+                "compensationType": "EquityPercentage",
+                "interval": "NONE",
+                "currencyCode": null,
+                "minValue": null,
+                "maxValue": null
+              },
+              {
+                "id": "3481c194-45fd-4b89-8592-e8f4d4b51f20",
+                "summary": "$211.4K – $290.6K",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 211400,
+                "maxValue": 290600
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 211400,
+            "maxValue": 290600
+          }
+        ]
+      }
+    },
+    {
+      "id": "f564dcf9-9390-4a3f-896f-8047a5086040",
+      "title": "Mobile Engineer, Android",
+      "department": "Engineering",
+      "team": "Mobile",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "Remote (Canada)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "Canada"
+            }
+          }
+        },
+        {
+          "location": "San Francisco, CA",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California ",
+              "addressCountry": "USA",
+              "addressLocality": "San Fransisco"
+            }
+          }
+        },
+        {
+          "location": "Remote (US)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "United States"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2025-07-31T21:58:34.674+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York City"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/f564dcf9-9390-4a3f-896f-8047a5086040",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/f564dcf9-9390-4a3f-896f-8047a5086040/application",
+      "descriptionHtml": "<h1><strong>About Ramp</strong></h1><p style=\"min-height:1.5em\">Ramp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.</p><p style=\"min-height:1.5em\">The problems are high-stakes, data-dense, and unforgiving.</p><p style=\"min-height:1.5em\">We hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.</p><p style=\"min-height:1.5em\">The median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.</p><p style=\"min-height:1.5em\">If you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.</p><p style=\"min-height:1.5em\"></p><h1>About the Role</h1><p style=\"min-height:1.5em\">As an Android Engineer at Ramp, you’ll enhance our successful and rapidly growing mobile app. You will improve the core platform that thousands of businesses rely on while also building the future of  …[truncated for fixture]",
+      "descriptionPlain": "ABOUT RAMP\n\nRamp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.\n\nThe problems are high-stakes, data-dense, and unforgiving.\n\nWe hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.\n\nThe median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.\n\nIf you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.\n\n\n\n\nABOUT THE ROLE\n\nAs an Android Engineer at Ramp, you’ll enhance our successful and rapidly growing mobile app. You will improve the core platform that thousands of businesses rely on while also building the future of automated finance by integrating AI and intelligent agents into the mobile experience. This is a chance to grow your skills on a proven product and define the next generation of fintech.\n\nCheck out our Engineering Blog https://engineering …[truncated for fixture]",
+      "compensation": {
+        "compensationTierSummary": "$189K – $330K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$189K - $330K",
+        "compensationTiers": [
+          {
+            "id": "0283497e-f83b-42ef-9a0a-6215891aa062",
+            "tierSummary": "$189K – $330K • Offers Equity",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "8d3064c5-4a45-4c4a-b26c-157ec697171c",
+                "summary": "Offers Equity",
+                "compensationType": "EquityPercentage",
+                "interval": "NONE",
+                "currencyCode": null,
+                "minValue": null,
+                "maxValue": null
+              },
+              {
+                "id": "104095ff-c915-4e77-b3fa-5472d81297ef",
+                "summary": "$189K – $330K",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 189000,
+                "maxValue": 330000
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 189000,
+            "maxValue": 330000
+          }
+        ]
+      }
+    },
+    {
+      "id": "4e64ab86-4e30-403b-b1b9-41dc052570ce",
+      "title": "Software Engineer, Frontend",
+      "department": "Engineering",
+      "team": "Frontend",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "Remote (Canada)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "Canada"
+            }
+          }
+        },
+        {
+          "location": "San Francisco, CA",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "California ",
+              "addressCountry": "USA",
+              "addressLocality": "San Fransisco"
+            }
+          }
+        },
+        {
+          "location": "Remote (US)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "United States"
+            }
+          }
+        },
+        {
+          "location": "Miami, FL",
+          "address": {
+            "postalAddress": {
+              "addressRegion": "Florida",
+              "addressCountry": "USA",
+              "addressLocality": "Miami"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2023-03-09T17:44:00.817+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York City"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/4e64ab86-4e30-403b-b1b9-41dc052570ce",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/4e64ab86-4e30-403b-b1b9-41dc052570ce/application",
+      "descriptionHtml": "<h1><strong>About Ramp</strong></h1><p style=\"min-height:1.5em\">Ramp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.</p><p style=\"min-height:1.5em\">The problems are high-stakes, data-dense, and unforgiving.</p><p style=\"min-height:1.5em\">We hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.</p><p style=\"min-height:1.5em\">The median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.</p><p style=\"min-height:1.5em\">If you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.</p><p style=\"min-height:1.5em\"></p><h1>About the Role</h1><p style=\"min-height:1.5em\">Our ideal candidate has a deep understanding of JavaScript, a passion for web performance, and can creatively come up with solutions to solve customer's needs. Our tech stack currently involves TypeSc …[truncated for fixture]",
+      "descriptionPlain": "ABOUT RAMP\n\nRamp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.\n\nThe problems are high-stakes, data-dense, and unforgiving.\n\nWe hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.\n\nThe median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.\n\nIf you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.\n\n\n\n\nABOUT THE ROLE\n\nOur ideal candidate has a deep understanding of JavaScript, a passion for web performance, and can creatively come up with solutions to solve customer's needs. Our tech stack currently involves TypeScript, React, Vite, and Ryu, our in-house design system.\n\nCheck out our Engineering Blog https://engineering.ramp.com/ for more on our tech stack, mission and values!\n\n\n\n\nWHAT YOU’LL DO\n\n - Build! \n\n - Design performant, beautiful, and usa …[truncated for fixture]",
+      "compensation": {
+        "compensationTierSummary": "$143.2K – $284K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$143.2K - $284K",
+        "compensationTiers": [
+          {
+            "id": "d9eaeb56-51d9-4be4-86c9-b26349916689",
+            "tierSummary": "$143.2K – $284K • Offers Equity",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "cbaab0c0-63eb-44e2-8d08-8a164c6d2547",
+                "summary": "Offers Equity",
+                "compensationType": "EquityPercentage",
+                "interval": "NONE",
+                "currencyCode": null,
+                "minValue": null,
+                "maxValue": null
+              },
+              {
+                "id": "80691622-cb25-464e-bdc0-24de33568581",
+                "summary": "$143.2K – $284K",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 143200,
+                "maxValue": 284000
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 143200,
+            "maxValue": 284000
+          }
+        ]
+      }
+    },
+    {
+      "id": "4745807e-82f4-4b1a-857c-dc8dadc73076",
+      "title": "Credit Risk Associate",
+      "department": "Risk",
+      "team": "Risk",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [],
+      "publishedAt": "2026-08-12T20:22:32.685+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York City"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/ramp/4745807e-82f4-4b1a-857c-dc8dadc73076",
+      "applyUrl": "https://jobs.ashbyhq.com/ramp/4745807e-82f4-4b1a-857c-dc8dadc73076/application",
+      "descriptionHtml": "<h1><strong>About Ramp</strong></h1><p style=\"min-height:1.5em\">Ramp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.</p><p style=\"min-height:1.5em\">The problems are high-stakes, data-dense, and unforgiving.</p><p style=\"min-height:1.5em\">We hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.</p><p style=\"min-height:1.5em\">The median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.</p><p style=\"min-height:1.5em\">If you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.</p><p style=\"min-height:1.5em\"></p><p style=\"min-height:1.5em\">As a member of Ramp's Risk Strategy &amp; Operations team, you will leverage data to develop and optimize credit strategies.</p><p style=\"min-height:1.5em\">Credit is one of Ramp's most consequential products. Every policy c …[truncated for fixture]",
+      "descriptionPlain": "ABOUT RAMP\n\nRamp is building the smart infrastructure for finance teams, embedded in the transaction flow of every dollar a business spends. We automate how over $275B in annualized spend flows in and out of 85,000+ companies: authorizing payments, flagging risk, categorizing spend, and closing books.\n\nThe problems are high-stakes, data-dense, and unforgiving.\n\nWe hire people with high agency and high urgency. We look for slope over intercept. We care less about where you trained and more about what you’ve built. At Ramp, everyone is a builder who owns problems end to end and makes consequential decisions that shape the outcome.\n\nThe median Ramp customer saves 7.5% and grows revenue 16% in their first year – far in excess of businesses operating without Ramp. We believe every ambitious company deserves the same.\n\nIf you want to build systems that directly shape how companies move and manage billions, Ramp is the place to do it.\n\n\n\nAs a member of Ramp's Risk Strategy & Operations team, you will leverage data to develop and optimize credit strategies.\n\nCredit is one of Ramp's most consequential products. Every policy change affects how customers can grow their usage, and how responsibly Ramp scales up while managing risk. Credit Risk Strategy owns these tradeoffs end to end.\n\nIn this role, you will own or help build strategy across credit risk areas like credit limits, payment sp …[truncated for fixture]",
+      "compensation": {
+        "compensationTierSummary": "$108K – $200K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$108K - $200K",
+        "compensationTiers": [
+          {
+            "id": "3865ac68-c076-4133-91b9-cfaea3a4f89f",
+            "tierSummary": "$108K – $200K • Offers Equity",
+            "title": null,
+            "additionalInformation": null,
+            "components": [
+              {
+                "id": "9d40857b-61cd-459c-8771-1667c7678f93",
+                "summary": "$108K – $200K",
+                "compensationType": "Salary",
+                "interval": "1 YEAR",
+                "currencyCode": "USD",
+                "minValue": 108000,
+                "maxValue": 200000
+              },
+              {
+                "id": "57a28b15-31a5-4f85-8ce8-97872de92745",
+                "summary": "Offers Equity",
+                "compensationType": "EquityPercentage",
+                "interval": "NONE",
+                "currencyCode": null,
+                "minValue": null,
+                "maxValue": null
+              }
+            ]
+          }
+        ],
+        "summaryComponents": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 108000,
+            "maxValue": 200000
+          },
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          }
+        ]
+      }
+    }
+  ]
+}

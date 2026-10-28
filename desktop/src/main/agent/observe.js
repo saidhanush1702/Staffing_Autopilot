@@ -97,7 +97,37 @@ const readFrame = (frame, key, root) => frame.evaluate(({
             && Number(s.opacity) !== 0 && r.width > 0 && r.height > 0;
     };
 
-    const fieldRefs = [...scope.querySelectorAll(fieldSel)].map((el) => stamp(el, 'f'));
+    const fieldEls = [...scope.querySelectorAll(fieldSel)];
+    const fieldRefs = fieldEls.map((el) => stamp(el, 'f'));
+
+    // ── FIELDS THAT ARE NOT THE APPLICATION ───────────────────────────
+    //
+    // A careers page carries other forms: "get updates from us" in the footer, a
+    // job-alert box, a site search. They are fields like any other, and an agent
+    // that is told "fill the form" fills the nearest one — Stripe's newsletter
+    // box got the consultant's email while the real application sat behind an
+    // "Apply now" button. A field is set aside when it lives in the page's
+    // chrome (footer, navigation, header), or in a small block that talks about
+    // newsletters, subscribing or marketing mail. A recipe's own root is never
+    // second-guessed.
+    const CHROME = 'footer, [role="contentinfo"], nav, [role="navigation"], [role="banner"], [role="search"], aside';
+    const MARKETING = /newsletter|subscribe|subscription|unsubscribe|marketing (communication|email|message)|(insights|news|updates?|alerts?) (and|&|from|by email)|get .{0,40}(updates|news|alerts|insights)|job alerts?|stay (in touch|up to date)|notify me|talent (community|network)|join our (talent|community|mailing)/i;
+    const isNoise = (el) => {
+        if (found && found.contains(el)) return false;
+        // A real application can sit in a dialog or main; chrome never does.
+        if (el.closest(CHROME) && !el.closest('form[action*="apply" i], [role="dialog"], dialog, [aria-modal="true"]')) return true;
+        let box = el.closest('form') ?? el.parentElement;
+        for (let i = 0; i < 6 && box && box !== document.body; i += 1) {
+            const n = box.querySelectorAll(fieldSel).length;
+            if (n > 3) return false;               // a big form is the application
+            const parent = box.parentElement;
+            if (MARKETING.test(box.innerText || '')) return true;
+            if (!parent || parent.querySelectorAll(fieldSel).length > n) break;
+            box = parent;
+        }
+        return false;
+    };
+    const fieldNoise = fieldEls.map(isNoise);
 
     // ── controls, most useful first ───────────────────────────────────
     //
@@ -159,6 +189,7 @@ const readFrame = (frame, key, root) => frame.evaluate(({
     return {
         scoped: Boolean(found),
         fieldRefs,
+        fieldNoise,
         controls,
         headings,
         errors,
@@ -256,11 +287,33 @@ const observe = async (page, { root = null } = {}) => {
         }
 
         // Radios are one question per group, exactly as the filler treats them.
+        // So are three or more checkboxes sharing a group ("Which languages do
+        // you speak?"): left alone they reached the model as forty separate
+        // required fields, and it asked the person forty questions.
         const groups = new Map();
+        const boxCount = new Map();
+        for (const f of described) {
+            if (f.type === 'checkbox') boxCount.set(groupOf(f), (boxCount.get(groupOf(f)) ?? 0) + 1);
+        }
         described.forEach((f, i) => {
             const ref = raw.fieldRefs[i];
             if (!ref) return;
+            if (raw.fieldNoise?.[i]) return;
             if (IGNORED_TYPES.has(f.type) || f.disabled || !f.visible) return;
+
+            if (f.type === 'checkbox' && (boxCount.get(groupOf(f)) ?? 0) >= 3) {
+                // Without a readable question there is nothing sensible to ask.
+                if (!asAsked(f.groupLabel)) return;
+                const gk = `box:${groupOf(f)}`;
+                let g = groups.get(gk);
+                if (!g) {
+                    g = { ref, field: f, members: [], multi: true };
+                    groups.set(gk, g);
+                    fields.push({ group: g, frameIndex: fi });
+                }
+                g.members.push({ ref, field: f });
+                return;
+            }
 
             if (f.type === 'radio') {
                 const gk = groupOf(f);
@@ -281,6 +334,7 @@ const observe = async (page, { root = null } = {}) => {
         for (const g of groups.values()) {
             registry.set(g.ref, {
                 kind: 'group', frameIndex: fi, ref: g.ref, field: g.field, members: g.members,
+                multi: Boolean(g.multi),
             });
         }
 
@@ -296,12 +350,16 @@ const observe = async (page, { root = null } = {}) => {
         const chosen = group.members.find((m) => m.field.hasValue);
         const entry = {
             ref: group.ref,
-            type: 'radio',
+            type: group.multi ? 'checkboxes' : 'radio',
             label: clip(asAsked(group.field.groupLabel || group.field.label), LIMITS.label),
             options: group.members.map((m) => clip(m.field.label, 80)).filter(Boolean),
             value: chosen ? clip(chosen.field.label, 80) || '(chosen)' : '',
         };
-        if (group.members.some((m) => m.field.required)) entry.required = true;
+        // A page marks EVERY box of a set required (Lever does, and checks it
+        // with its own script), which says nothing about the set. The question
+        // is required when the question itself says so.
+        const asterisk = /[*\u2731]/.test(group.field.groupLabel ?? '');
+        if (group.multi ? asterisk : group.members.some((m) => m.field.required)) entry.required = true;
         return entry;
     });
 

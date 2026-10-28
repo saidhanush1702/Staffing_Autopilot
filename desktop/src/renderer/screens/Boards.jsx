@@ -1,32 +1,30 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /**
- * ── ONE BOARD AT A TIME ───────────────────────────────────────────────
+ * ── ONE SCREEN FOR EVERYTHING THE APP DOES TO A JOB ───────────────────
  *
- * A row of sub-tabs — LinkedIn, Built In, and the rest — and under the chosen
- * one, a split: the board's live page on the left, what the app is doing to it
- * on the right.
+ * This used to be a row of sub-tabs — one per job board — each with its own
+ * log, and a separate card for the AI agent. It described a system in which a
+ * job belonged to a board and was either a "bot job" or an "agent job".
  *
- * ── WHY SUB-TABS RATHER THAN A LIST OF CARDS ──────────────────────────
- *
- * Only one board's page can be on screen anyway. An Electron view is a native
- * layer painted ON TOP of this HTML — nothing clips it, so two open at once
- * would overlap. A list of expandable cards pretended otherwise; sub-tabs say
- * out loud what was always true.
+ * It is neither. Every job is opened, taken by a written flow if the page has
+ * one, carried on by the AI agent if not, and stopped for a person when
+ * something needs them. So there is one view: the live page of the job being
+ * worked, and one stream of what is happening to it, each line tagged with the
+ * hand that was on it — "bot" for a written flow, "agent" for the AI.
  *
  * ── WHY THE PAGE IS A HOLE IN THE LAYOUT ──────────────────────────────
  *
- * For the same reason, React cannot draw the page. It leaves a gap, measures
- * where the gap landed, and asks the main process to move the view over it —
- * re-measuring on every scroll, resize and layout change. All the bookkeeping
- * below serves that one illusion.
+ * An Electron view is a native layer painted ON TOP of this HTML — nothing
+ * clips it — so React cannot draw the page. It leaves a gap, measures where the
+ * gap landed, and asks the main process to move the view over it, re-measuring
+ * on every scroll, resize and layout change.
  *
  * ── AND WHY FULL SCREEN KEEPS A STRIP ─────────────────────────────────
  *
- * In full screen the view covers everything except a bar at the top. That bar
- * is not decoration: an HTML button underneath the view would be both invisible
- * and unclickable, so the only way out has to live outside the view's bounds.
- * Escape works too.
+ * In full screen the view covers everything except a bar at the top. An HTML
+ * button underneath the view would be invisible and unclickable, so the way out
+ * has to live outside the view's bounds. Escape works too.
  */
 const TONE = {
     IDLE: ['idle', 'Idle'],
@@ -36,12 +34,12 @@ const TONE = {
     AGENT: ['brand', 'AI agent working'],
     SUBMITTING: ['brand', 'Submitting'],
     SUBMITTED: ['ok', 'Submitted'],
-    READY_TO_SUBMIT: ['warn', 'Waiting on you'],
-    PARKED: ['warn', 'Parked'],
-    HANDED_OVER: ['idle', 'Passed to you'],
+    READY_TO_SUBMIT: ['warn', 'Ready to review'],
+    PARKED: ['warn', 'Waiting for you'],
+    HANDED_OVER: ['idle', 'Could not apply'],
     CLOSED: ['idle', 'Expired'],
     SIGNED_IN: ['ok', 'Signed in'],
-    SIGNED_OUT: ['warn', 'Signed out'],
+    SIGNED_OUT: ['warn', 'Waiting for you'],
     STOPPED: ['stop', 'Stopped'],
     ERROR: ['stop', 'Problem'],
 };
@@ -49,33 +47,32 @@ const TONE = {
 const LIVE = ['CONNECTING', 'WORKING', 'FILLING', 'AGENT', 'SUBMITTING'];
 const time = (iso) => (iso ? new Date(iso).toLocaleTimeString() : '');
 
-/** Count the queue by the board each job belongs to. */
-const queueByBoard = (queue = []) => queue.reduce((acc, item) => {
-    const key = String(item.portal ?? '').toUpperCase();
-    acc[key] = (acc[key] ?? 0) + 1;
-    return acc;
-}, {});
-
-const Boards = ({ boards, snap, showBoard, onShown }) => {
+const Boards = ({ snap, showBoard, onShown }) => {
     const slot = useRef(null);
     const [embedded, setEmbedded] = useState(false);
-    const [applied, setApplied] = useState({});
-    const [selected, setSelected] = useState(boards?.[0]?.board ?? null);
+    const [applied, setApplied] = useState(0);
     const [full, setFull] = useState(false);
+    const [onlyAgent, setOnlyAgent] = useState(false);
+
+    const applying = snap?.applying ?? { state: 'IDLE', session: null, lines: [] };
+    // The page in front: whatever is being worked, else whatever somebody asked
+    // to see (a sign-in prompt), else the last thing worked.
+    const [pinned, setPinned] = useState(null);
+    const selected = showBoard ?? applying.session ?? pinned;
+
+    useEffect(() => {
+        if (applying.session) setPinned(applying.session);
+    }, [applying.session]);
 
     useEffect(() => {
         window.smartapply.browserIsEmbedded().then((r) => setEmbedded(Boolean(r.embedded)));
 
-        // How many have gone out, per board. Asked of the hub rather than kept
-        // locally: the app forgets an application once submitted, and the hub
-        // is the only thing holding the running total.
+        // How many have gone out. Asked of the hub rather than kept locally: the
+        // app forgets an application once submitted, and the hub holds the
+        // running total.
         window.smartapply.applications().then((res) => {
             if (!res?.ok) return;
-            const counts = {};
-            for (const [key, rows] of Object.entries(res.byBoard ?? {})) {
-                counts[String(key).toUpperCase()] = rows.length;
-            }
-            setApplied(counts);
+            setApplied(Object.values(res.byBoard ?? {}).reduce((n, rows) => n + rows.length, 0));
         });
 
         // Leaving this tab must take the view with it — it floats above the
@@ -83,15 +80,12 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
         return () => { window.smartapply.hideBoardView(null); };
     }, []);
 
-    // Something elsewhere asked for a board: a sign-in prompt, or the Work tab.
+    // Something elsewhere asked for a page: a sign-in prompt, or the Work tab.
     useEffect(() => {
         if (!showBoard) return;
-        setSelected(showBoard);
         onShown?.();
     }, [showBoard, onShown]);
 
-    // Escape is the reliable way out, since the view covers most of what a
-    // person would otherwise reach for.
     useEffect(() => {
         if (!full) return undefined;
         const onKey = (e) => { if (e.key === 'Escape') setFull(false); };
@@ -117,7 +111,6 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
         const screen = document.querySelector('.screen');
         window.addEventListener('resize', place, true);
         screen?.addEventListener('scroll', place, true);
-
         return () => {
             observer.disconnect();
             window.removeEventListener('resize', place, true);
@@ -126,31 +119,35 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
         };
     }, [embedded, selected, full, place]);
 
-    if (!boards || boards.length === 0) {
-        return (
-            <div className="card empty">
-                <p className="value">No job boards yet</p>
-                <p>They appear once the app knows which boards your jobs come from.</p>
-            </div>
-        );
-    }
-
-    const waiting = queueByBoard(snap?.queue);
-    const board = boards.find((b) => b.board === selected) ?? boards[0];
-    const [tone, label] = TONE[board.state] ?? ['idle', board.state];
-    const lines = board.lines ?? [];
-    const live = LIVE.includes(board.state);
+    const [tone, label] = TONE[applying.state] ?? ['idle', applying.state];
+    const live = LIVE.includes(applying.state);
+    const waiting = snap?.queue?.length ?? 0;
+    const signedOut = (snap?.boards ?? []).find((b) => b.state === 'SIGNED_OUT');
+    const lines = (onlyAgent ? applying.lines.filter((l) => l.by === 'agent') : applying.lines);
 
     const activity = (
         <div className="board-activity">
-            <p className="label">Activity</p>
+            <div className="row">
+                <p className="label">Activity</p>
+                <label className="muted" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                        type="checkbox"
+                        checked={onlyAgent}
+                        onChange={(e) => setOnlyAgent(e.target.checked)}
+                    />
+                    AI agent only
+                </label>
+            </div>
             {lines.length === 0
                 ? <p className="muted" style={{ marginTop: 6 }}>Nothing yet.</p>
                 : (
                     <div className="log" style={{ maxHeight: 'none', marginTop: 6 }}>
                         {[...lines].reverse().map((l, i) => (
-                            <div className="log-line" key={i}>
+                            <div className="log-line" key={`${l.at}-${i}`}>
                                 <span className="log-time">{time(l.at)}</span>
+                                <span className={`pill ${l.by === 'agent' ? 'brand' : 'idle'}`} style={{ marginRight: 6 }}>
+                                    {l.by === 'agent' ? 'agent' : 'bot'}
+                                </span>
                                 <span>{l.message}</span>
                             </div>
                         ))}
@@ -164,7 +161,7 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
             {full && (
                 <div className="fullbar">
                     <span>
-                        <strong>{board.label}</strong>
+                        <strong>AI agent</strong>
                         <span className={`pill ${tone}`} style={{ marginLeft: 10 }}>
                             <span className={`dot${live ? ' live' : ''}`} />
                             {label}
@@ -176,65 +173,45 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
                 </div>
             )}
 
-            {/* Sub-tabs, hidden in full screen where the point is the page. */}
             {!full && (
-                <div className="subtabs" role="tablist">
-                    {boards.map((b) => {
-                        const [t] = TONE[b.state] ?? ['idle'];
-                        return (
-                            <button
-                                key={b.board}
-                                type="button"
-                                role="tab"
-                                aria-selected={b.board === board.board}
-                                className="subtab"
-                                onClick={() => setSelected(b.board)}
-                            >
-                                <span
-                                    className={`dot tone-${t}${LIVE.includes(b.state) ? ' live' : ''}`}
-                                />
-                                {b.label}
-                                <span className="subtab-count">{waiting[b.board] ?? 0}</span>
-                            </button>
-                        );
-                    })}
-                </div>
-            )}
-
-            {!full && (
-                <div className="row">
-                    <div className="counts">
-                        <span><strong>{waiting[board.board] ?? 0}</strong> in queue</span>
-                        <span className="counts-sep" />
-                        <span><strong>{applied[board.board] ?? 0}</strong> applied</span>
-                        {!board.canFill && (
-                            <>
-                                <span className="counts-sep" />
-                                <span className="muted">filling not switched on</span>
-                            </>
-                        )}
+                <div className="card stack">
+                    <div className="row">
+                        <div>
+                            <h2>
+                                AI agent
+                                <span className={`pill ${tone}`} style={{ marginLeft: 10 }}>
+                                    <span className={`dot${live ? ' live' : ''}`} />
+                                    {label}
+                                </span>
+                            </h2>
+                            <p className="muted" style={{ marginTop: 3 }}>
+                                Every job is opened here. A written flow takes it when the page has one; the
+                                AI agent carries on when it does not.
+                            </p>
+                        </div>
+                        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            {signedOut && (
+                                <button
+                                    type="button"
+                                    className="primary"
+                                    onClick={() => window.smartapply.signIn(signedOut.board)}
+                                    title="Opens a proper browser window for this site"
+                                >
+                                    Sign in to {signedOut.label}
+                                </button>
+                            )}
+                            {embedded && (
+                                <button type="button" className="secondary" onClick={() => setFull(true)}>
+                                    Full screen
+                                </button>
+                            )}
+                        </span>
                     </div>
-                    <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        {board.state === 'SIGNED_OUT' && (
-                            <button
-                                type="button"
-                                className="primary"
-                                onClick={() => window.smartapply.signIn(board.board)}
-                                title="Opens a proper browser window for this board"
-                            >
-                                Sign in
-                            </button>
-                        )}
-                        {embedded && (
-                            <button
-                                type="button"
-                                className="secondary"
-                                onClick={() => setFull(true)}
-                            >
-                                Full screen
-                            </button>
-                        )}
-                    </span>
+                    <div className="counts">
+                        <span><strong>{waiting}</strong> in queue</span>
+                        <span className="counts-sep" />
+                        <span><strong>{applied}</strong> applied</span>
+                    </div>
                 </div>
             )}
 
@@ -245,7 +222,7 @@ const Boards = ({ boards, snap, showBoard, onShown }) => {
                 </div>
             ) : (
                 <>
-                    <p className="note">This build opens boards in a separate browser window.</p>
+                    <p className="note">This build opens pages in a separate browser window.</p>
                     {activity}
                 </>
             )}

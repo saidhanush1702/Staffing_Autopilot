@@ -451,7 +451,7 @@ const run = async () => {
         `INSERT INTO queue_items
             (id, organization_id, consultant_id, posting_id, status_id, channel)
          VALUES ($1,$2,$3,$4,
-                 (SELECT id FROM lkp_queue_statuses WHERE name='PREPARING'), 'HUMAN')
+                 (SELECT id FROM lkp_queue_statuses WHERE name='PREPARING'), 'AGENT')
          ON CONFLICT (id) DO UPDATE
             SET status_id = (SELECT id FROM lkp_queue_statuses WHERE name='PREPARING')`,
         [made.itemId, made.orgId, made.consultantId, made.postingId],

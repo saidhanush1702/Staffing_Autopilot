@@ -1,0 +1,78 @@
+{
+  "total": 2000,
+  "jobPostings": [
+    {
+      "title": "Package Design Methodology Engineer",
+      "externalPath": "/job/US-CA-Santa-Clara/Package-Design-Methodology-Engineer_JR2021653",
+      "locationsText": "3 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2021653"
+      ]
+    },
+    {
+      "title": "Senior Manager, Engineering -  Enterprise AI and Automation",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-Manager--Engineering----Enterprise-AI-and-Automation_JR2013287",
+      "locationsText": "US, CA, Santa Clara",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2013287"
+      ]
+    },
+    {
+      "title": "Senior ASIC Verification Engineer",
+      "externalPath": "/job/US-TX-Austin/Senior-ASIC-Verification-Engineer_JR2002691-1",
+      "locationsText": "US, TX, Austin",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2002691"
+      ]
+    },
+    {
+      "title": "Senior DFT Engineer - Post Silicon",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-DFT-Engineer_JR2026202",
+      "locationsText": "2 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2026202"
+      ]
+    },
+    {
+      "title": "Senior Reliability Engineer",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-Reliability-Engineer_JR2019406",
+      "locationsText": "US, CA, Santa Clara",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2019406"
+      ]
+    },
+    {
+      "title": "Senior Network Reliability Engineer - DGX Cloud",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-Network-Reliability-Engineer---DGX-Cloud_JR2018113",
+      "locationsText": "2 Locations",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2018113"
+      ]
+    },
+    {
+      "title": "Senior MGX Ecosystem Engineer, Power",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-MGX-Ecosystem-Engineer--Power_JR2028585-1",
+      "locationsText": "US, CA, Santa Clara",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2028585"
+      ]
+    },
+    {
+      "title": "Senior Systems Architect - Datacenter",
+      "externalPath": "/job/US-CA-Santa-Clara/Senior-Systems-Architect---Datacenter_JR2019127",
+      "locationsText": "US, CA, Santa Clara",
+      "postedOn": "Posted Today",
+      "bulletFields": [
+        "JR2019127"
+      ]
+    }
+  ],
+  "userAuthenticated": false
+}

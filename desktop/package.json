@@ -11,10 +11,11 @@
     "dev:main": "wait-on tcp:5273 && electron .",
     "build:renderer": "vite build",
     "start": "npm run build:renderer && electron .",
-    "test": "node tests/run.mjs && node tests/dom.mjs",
+    "test": "node tests/run.mjs && node tests/runs.mjs && node tests/resolver.mjs && node tests/verify.mjs && node tests/packs.mjs && node tests/pagekind.mjs && node tests/fixtures.mjs && node tests/gates.mjs && node tests/pipeline.mjs && node tests/dom.mjs",
     "test:dom": "node tests/dom.mjs",
     "test:e2e": "node tests/e2e.mjs",
     "verify:board": "node tools/verify-board.mjs",
+    "dry-run:form": "node tools/dry-run-form.mjs",
     "probe:selectors": "node tools/probe-selectors.mjs",
     "dist": "npm run build:renderer && electron-builder",
     "release": "node tools/release.mjs"

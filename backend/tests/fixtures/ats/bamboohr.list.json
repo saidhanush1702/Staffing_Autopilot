@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "totalCount": 1
+  },
+  "result": [
+    {
+      "id": "127",
+      "jobOpeningName": "L1 Technical Support Specialist (UA Private Entrepreneur Only)",
+      "departmentId": "18704",
+      "departmentLabel": "000031-Ops Tech Support",
+      "employmentStatusLabel": "Active-FT",
+      "employmentType": null,
+      "location": {
+        "city": null,
+        "state": null
+      },
+      "atsLocation": {
+        "country": "Ukraine",
+        "state": null,
+        "province": null,
+        "city": null
+      },
+      "isRemote": null,
+      "locationType": "1"
+    }
+  ]
+}

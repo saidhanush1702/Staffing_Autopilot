@@ -89,19 +89,18 @@ const TRANSITIONS = {
     // the desktop app and the cap both key on.
     RESUME_REVIEW: ['READY', 'PREPARING', 'QUEUED', 'SKIPPED'],
 
-    // FILLING is the desktop app taking it. SUBMITTED direct from READY is the
-    // HUMAN lane: nothing filled the form, the consultant applied themselves
-    // and reported it.
+    // FILLING is the desktop app taking it.
     //
     // PREPARING is a person asking for this job's resume to be tailored. It is
     // only reachable while the item is READY — once the desktop app has taken
     // it (FILLING) the application is already in progress with whichever
     // resume it was given.
-    READY: ['FILLING', 'SUBMITTED', 'SKIPPED', 'PREPARING'],
+    // No READY → SUBMITTED: that was the human lane's "the consultant applied
+    // themselves". A submission now only ever follows AWAITING_REVIEW, which the
+    // desktop app reaches by filling the form.
+    READY: ['FILLING', 'SKIPPED', 'PREPARING'],
 
-    // Back to READY covers two real cases: an expired lease from a crashed app,
-    // and a LinkedIn job that turned out not to be Easy Apply and was
-    // reclassified to the HUMAN lane.
+    // Back to READY covers an expired lease from a crashed app.
     FILLING: ['AWAITING_REVIEW', 'PARKED_UNKNOWN', 'READY', 'SKIPPED'],
 
     // The loop back to the answer bank. Approving the missing answer releases

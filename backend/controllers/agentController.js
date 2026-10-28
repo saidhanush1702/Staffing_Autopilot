@@ -34,6 +34,7 @@ import {
     buildCatalogue, buildTurnInput, validateAction,
 } from '../config/agentProtocol.js';
 import { logAction } from './auditLogController.js';
+import { applicationProfileFor } from '../config/applicationProfile.js';
 
 /* ── schemas ──────────────────────────────────────────────────────────── */
 
@@ -89,7 +90,7 @@ const orgAgentSettings = async (orgId) => {
  * answer, never a draft nobody has reviewed.
  */
 export const catalogueFor = async ({ consultantId, orgId }) => {
-    const [{ rows: answers }, { rows: profile }] = await Promise.all([
+    const [{ rows: answers }, me] = await Promise.all([
         query(
             `SELECT q.id AS question_id, q.question_text, a.approved_text AS answer_text
                FROM answers a
@@ -102,22 +103,13 @@ export const catalogueFor = async ({ consultantId, orgId }) => {
                 AND a.approved_text IS NOT NULL`,
             [consultantId, orgId],
         ),
-        query(
-            `SELECT u.name, u.email, p.phone, p.city, p.state, p.linkedin_url,
-                    w.name AS work_auth, p.base_resume_artifact_id
-               FROM consultant_profiles p
-               JOIN users u ON u.id = p.user_id
-          LEFT JOIN lkp_work_auth_statuses w ON w.id = p.work_auth_status_id
-              WHERE p.user_id = $1 AND p.organization_id = $2`,
-            [consultantId, orgId],
-        ),
+        applicationProfileFor({ consultantId, orgId }),
     ]);
 
-    const me = profile[0] ?? {};
     return buildCatalogue({
-        profile: me,
+        profile: me ?? {},
         answers,
-        hasResume: Boolean(me.base_resume_artifact_id),
+        hasResume: Boolean(me?.base_resume_artifact_id),
     });
 };
 
