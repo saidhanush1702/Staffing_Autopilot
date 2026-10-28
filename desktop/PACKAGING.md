@@ -166,6 +166,8 @@ outside, exactly like an app that cannot open a browser.
 build but do not publish — proof the pipeline works before it can ever put a
 broken build in front of a consultant.
 
+**Note:** electron-builder's default is to create a DRAFT release, which `/releases/latest` cannot see. `releaseType: release` in `package.json` makes tagged builds publish immediately; remove it if you want to review each release as a draft first.
+
 **First release ever, or anything that needs a human eye first**: publish the
 GitHub release as a **draft** (electron-builder's `publish: always` still
 creates it as a normal, immediately-visible release — turning it into a draft

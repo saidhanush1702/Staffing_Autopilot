@@ -57,7 +57,8 @@
       {
         "provider": "github",
         "owner": "saidhanush1702",
-        "repo": "Staffing_Autopilot"
+        "repo": "Staffing_Autopilot",
+        "releaseType": "release"
       }
     ],
     "mac": {
