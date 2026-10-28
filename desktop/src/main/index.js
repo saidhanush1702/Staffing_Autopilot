@@ -144,13 +144,45 @@ let attention = null;
 const BOARD_LOG_MAX = 40;
 const boardActivity = new Map();
 
+/**
+ * ── ONE STORY ─────────────────────────────────────────────────────────
+ *
+ * Everything the app does to a job — the written flows and the AI agent alike —
+ * is one stream, in the order it happened. A job is no longer "a LinkedIn job"
+ * or "an agent job"; it is a job, and each line says which hand was on it.
+ */
+const FEED_MAX = 400;
+const applyFeed = [];
+
 const recordActivity = (board, state, message) => {
     const entry = boardActivity.get(board) ?? { board, state: 'IDLE', lines: [] };
     entry.state = state;
     entry.at = new Date().toISOString();
     entry.lines = [...entry.lines, { at: entry.at, state, message }].slice(-BOARD_LOG_MAX);
     boardActivity.set(board, entry);
+
+    const { BOARDS } = require('./browser/boards.js');
+    applyFeed.push({
+        at: entry.at,
+        state,
+        board,
+        boardLabel: BOARDS[board]?.label ?? (board === 'AGENT' ? 'AI agent' : board),
+        // Who had a hand on it: the agent's own state, or a written flow.
+        by: state === 'AGENT' ? 'agent' : 'bot',
+        message,
+    });
+    if (applyFeed.length > FEED_MAX) applyFeed.splice(0, applyFeed.length - FEED_MAX);
     toRenderer('status', { ...status, ...snapshot() });
+};
+
+/** The single "Applying" view: the stream, and which page is in front. */
+const applyingForDisplay = () => {
+    const last = applyFeed[applyFeed.length - 1] ?? null;
+    return {
+        state: last?.state ?? 'IDLE',
+        session: engine?.currentSession ?? null,
+        lines: applyFeed,
+    };
 };
 
 /** Every board we know about, whether or not it has done anything yet. */
@@ -206,9 +238,9 @@ const snapshot = () => ({
     outstandingQuestions: store?.get('outstandingQuestions') ?? 0,
     automationOn: store?.get('automationOn') ?? false,
     autoSubmit: store?.get('autoSubmit') ?? false,
-    agentFallback: store?.get('agentFallback') ?? true,
     eeoPolicy: store?.get('eeoPolicy') ?? 'ASK',
     boards: boardsForDisplay(),
+    applying: applyingForDisplay(),
     pendingReports: outbox?.pending ?? 0,
     activated: Boolean(store?.get('activatedAt')),
     // What the bot is waiting for, or null. Carries a deadline rather than a
@@ -383,9 +415,10 @@ const runCycle = async (trigger) => {
         // nobody submits is the one state where the app is finished and the
         // work still is not.
         const waiting = (store.get('awaitingReview') ?? []).length;
+        // A job the app could not apply to is no longer "yours": it is skipped
+        // with a reason, and nothing is left for the consultant to do by hand.
         const needsYou = waiting > 0
-            || (result.signInNeeded?.length ?? 0) > 0
-            || (result.handedToHuman ?? 0) > 0;
+            || (result.signInNeeded?.length ?? 0) > 0;
         setStatus(result.paused ? 'PAUSED' : (needsYou ? 'NEEDS_YOU' : 'IDLE'));
     } catch (err) {
         if (err.name !== 'Revoked' && err.name !== 'UpgradeRequired') setStatus('OFFLINE', err.message);
@@ -446,7 +479,6 @@ const registerIpc = () => {
             autoSubmit: Boolean(options.autoSubmit),
             // Decided on the way in, like autoSubmit. The organisation still
             // has to allow the agent; this can only switch it off.
-            agentFallback: options.agentFallback !== false,
             // Only ever the two values the filler understands.
             eeoPolicy: options.eeoPolicy === 'DECLINE' ? 'DECLINE' : 'ASK',
         });
@@ -485,6 +517,7 @@ const registerIpc = () => {
     // decision, taken immediately, no recheck.
     ipcMain.handle('attentionContinue', () => ({ ok: Boolean(attention?.continueNow()) }));
     ipcMain.handle('attentionSkip', () => ({ ok: Boolean(attention?.skip()) }));
+    ipcMain.handle('attentionForce', () => ({ ok: Boolean(attention?.forceNow()) }));
     // "I've done it" for a job on hold: try it at once instead of waiting for
     // the next interval. The queue is looked at straight away so the person
     // does not sit watching nothing happen.
@@ -691,8 +724,15 @@ const registerIpc = () => {
         }
     });
 
-    // "I already submitted it myself, in the browser."
+    // "It went through" -- only for an application the app pressed Submit on and
+    // could not confirm. There is no "I applied myself": nothing is left for a
+    // consultant to apply to by hand, so recording one is refused here, not just
+    // hidden on the screen.
     ipcMain.handle('markSubmitted', async (_e, itemId) => {
+        const entry = (store.get('awaitingReview') ?? []).find((w) => w.itemId === itemId);
+        if (!entry?.unconfirmed) {
+            return { ok: false, error: 'Only an application the app has already submitted can be marked as sent.' };
+        }
         try {
             const res = await engine.reportSubmitted(itemId);
             setStatus(status.state);

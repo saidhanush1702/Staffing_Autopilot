@@ -831,7 +831,7 @@ const runApplyFlow = async (page, board, fillOptions, {
             ...empty,
             outcome: 'NOT_VERIFIED',
             detail: `${board.label} has a form here, but filling it has not been `
-                + 'checked yet — left for you',
+                + 'checked yet, so the app will not type into it',
         };
     }
 
@@ -854,7 +854,7 @@ const runApplyFlow = async (page, board, fillOptions, {
         return {
             ...empty,
             outcome: 'NO_APPLY_FLOW',
-            detail: 'the apply control looks like it submits directly — left for you',
+            detail: 'the apply control looks like it submits directly, so the app will not press it',
         };
     }
 
@@ -877,7 +877,7 @@ const runApplyFlow = async (page, board, fillOptions, {
                 return {
                     ...empty,
                     outcome: 'NO_APPLY_FLOW',
-                    detail: `${board.label} did not offer a way to fill this in by hand`,
+                    detail: `${board.label} did not offer a way to fill this in step by step`,
                 };
             }
             await clickSteadily(choice, log);

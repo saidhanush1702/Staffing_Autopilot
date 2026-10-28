@@ -24,7 +24,9 @@
  * number cannot answer it.
  */
 
-const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+import { evaluateV2 } from './jobMatcherV2.js';
+
+export const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 /** Whole-word containment, so "go" does not match "golang". */
 const hasWord = (haystack, needle) => {
@@ -240,6 +242,10 @@ export const hasPositiveSignal = (criteria) => (
  *   makes the per-run drop-rate reporting R-16 asks for possible.
  */
 export const evaluate = (posting, criteria, options = {}) => {
+    // The organisation's choice of matcher travels on the criteria (set where
+    // the bench is loaded), so the three doors that call this needed no change.
+    if ((options.version ?? criteria.matcherVersion) === 2) return evaluateV2(posting, criteria, options);
+
     // Fail closed. A consultant who has not said what they want receives
     // nothing, rather than everything.
     if (!hasPositiveSignal(criteria)) {

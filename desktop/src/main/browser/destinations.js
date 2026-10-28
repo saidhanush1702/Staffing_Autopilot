@@ -193,7 +193,6 @@ const DESTINATIONS = {
             submit: 'button[type="submit"]:has-text("Submit application")',
             maxSteps: 3,
         },
-        neverAutoSubmit: true,
         // Filled end to end by `npm run dry-run:form` against a live posting:
         // the right four fields from the profile, the country and the required
         // consent question reported as unanswered, nothing submitted. Resume
@@ -226,7 +225,6 @@ const DESTINATIONS = {
             submit: '#btn-submit',
             maxSteps: 3,
         },
-        neverAutoSubmit: true,
         // Dry-run against a live Palantir posting: eight profile fields filled,
         // twelve real questions left to a person, nothing submitted.
         verified: true,
@@ -254,7 +252,6 @@ const DESTINATIONS = {
             submit: 'button:has-text("Submit Application")',
             maxSteps: 3,
         },
-        neverAutoSubmit: true,
         // Dry-run against a live Ramp application page: four profile fields
         // filled, the Yes/No buttons read as questions, nothing submitted. The
         // posting-page `open` selector is the least proven part; when it
@@ -343,7 +340,7 @@ const tenantFor = (url) => {
         botCheckWaitMs: system.botCheckWaitMs ?? 0,
         apply: system.apply,
         legalGate: system.legalGate,
-        neverAutoSubmit: system.neverAutoSubmit !== false,
+        neverAutoSubmit: Boolean(system.neverAutoSubmit),
         verified: Boolean(system.verified),
     };
 };

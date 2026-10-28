@@ -26,7 +26,7 @@ const GROUPS = [
     ['SUBMITTED', 'Applied', 'ok'],
     ['READY_TO_SUBMIT', 'Filled, waiting for you', 'warn'],
     ['PARKED', 'Waiting on an answer', 'warn'],
-    ['HANDED_OVER', 'For you to apply by hand', 'idle'],
+    ['HANDED_OVER', 'Could not be applied to', 'idle'],
     ['CLOSED', 'Expired — no longer accepting applications', 'idle'],
     ['ALREADY_APPLIED', 'Already applied', 'idle'],
     ['NEEDS_SIGN_IN', 'Needs you to sign in', 'warn'],

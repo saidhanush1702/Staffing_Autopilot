@@ -5,14 +5,18 @@ import { useState } from 'react';
  *
  * Applications that are filled in and stopped at the portal's submit step.
  *
- * ── TWO SUBMIT BUTTONS, AND THEY DO DIFFERENT THINGS ──────────────────
+ * ── ONE WAY TO SEND ───────────────────────────────────────────────────
  *
- *   "Submit"              presses the portal's submit button from here
- *   "I sent it myself"    records what the consultant did in the browser
+ *   "Submit"   the app presses the portal's submit button from here
  *
- * The distinction that matters survives either way: no application is sent
- * without a person reading the answers and choosing to send it. The app never
- * reaches either button on its own — the work loop stops here and waits.
+ * No application is sent without a person reading the answers and choosing to
+ * send it, and every application is sent by the app. There is no "I applied
+ * myself" any more: nothing is left for a consultant to do by hand.
+ *
+ * The one exception is an application the app DID press Submit on but could not
+ * confirm. It stays here marked, and "It went through" lets the person who
+ * looked at the site say so — a statement about the app's own submission, not
+ * a way of applying elsewhere.
  *
  * ── WHY EVERY ANSWER IS SHOWN ─────────────────────────────────────────
  *
@@ -112,9 +116,9 @@ const Application = ({ entry, onRefresh }) => {
             {entry.unconfirmed && (
                 <p className="note stop">
                     Submit was pressed, but the site did not show that the application landed.
-                    Open it in the browser and check. If it went through, press “I sent it
-                    myself”; if not, use “Do not send” and apply again by hand. Submit is hidden
-                    so it cannot be sent twice.
+                    Open it in the browser and check. If it went through, press “It went
+                    through”; if not, use “Do not send” and a recruiter can requeue the job.
+                    Submit is hidden so it cannot be sent twice.
                 </p>
             )}
 
@@ -139,14 +143,16 @@ const Application = ({ entry, onRefresh }) => {
                     >
                         {busy === 'discard' ? 'Removing…' : 'Do not send'}
                     </button>
-                    <button
-                        type="button"
-                        className="secondary"
-                        disabled={busy !== ''}
-                        onClick={() => act('recorded', () => window.smartapply.markSubmitted(entry.itemId))}
-                    >
-                        {busy === 'recorded' ? 'Recording…' : 'I sent it myself'}
-                    </button>
+                    {entry.unconfirmed && (
+                        <button
+                            type="button"
+                            className="secondary"
+                            disabled={busy !== ''}
+                            onClick={() => act('recorded', () => window.smartapply.markSubmitted(entry.itemId))}
+                        >
+                            {busy === 'recorded' ? 'Recording…' : 'It went through'}
+                        </button>
+                    )}
                     {!entry.unconfirmed && (
                         <button
                             type="button"

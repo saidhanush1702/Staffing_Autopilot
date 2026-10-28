@@ -28,6 +28,7 @@
  * Molina demo organisation. That is the append-only rule working, not a leak —
  * but it does mean the list grows by one every time this is run.
  */
+process.env.SMARTAPPLY_BOT_FLOWS = '*';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 

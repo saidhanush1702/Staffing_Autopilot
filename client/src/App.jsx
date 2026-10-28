@@ -23,6 +23,7 @@ const JobDiscovery = lazy(() => import('./pages/management/JobDiscovery.jsx'));
 const Postings = lazy(() => import('./pages/management/Postings.jsx'));
 const JobsPipe = lazy(() => import('./pages/management/JobsPipe.jsx'));
 const AtsMirror = lazy(() => import('./pages/management/AtsMirror.jsx'));
+const Matching = lazy(() => import('./pages/management/Matching.jsx'));
 const Devices = lazy(() => import('./pages/management/Devices.jsx'));
 // No longer linked from the sidebar (see Sidebar.jsx), but the route stays —
 // flagged resumes still land in RESUME_REVIEW and need a way to be cleared,
@@ -106,6 +107,7 @@ const App = () => (
                 <Route path="/management/postings" element={route(Postings, MGMT)} />
                 <Route path="/management/jobspipe" element={route(JobsPipe, MGMT)} />
                 <Route path="/management/ats" element={route(AtsMirror, MGMT)} />
+                <Route path="/management/matching" element={route(Matching, MGMT)} />
                 <Route path="/management/devices" element={route(Devices, MGMT)} />
 
                 {/* CONSULTANT — self-service portal */}

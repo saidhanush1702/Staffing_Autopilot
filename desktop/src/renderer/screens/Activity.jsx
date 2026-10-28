@@ -34,7 +34,7 @@ const Activity = ({ log, snap }) => {
                                     {c.paused ? 'paused'
                                         : c.stopped ? 'stopped'
                                             : `${c.filled ?? 0} filled · ${c.submitted ?? 0} sent · `
-                                              + `${c.parked ?? 0} parked · ${c.handedToHuman ?? 0} passed to you`}
+                                              + `${c.parked ?? 0} parked · ${c.handedToHuman ?? 0} could not apply`}
                                     {(c.errors?.length ?? 0) > 0 && (
                                         <><br /><span style={{ color: 'var(--stop)' }}>
                                             {c.errors.length} problem{c.errors.length === 1 ? '' : 's'}

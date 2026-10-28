@@ -61,6 +61,17 @@ const resolveSource = (source, { book, approvedAnswers }) => {
     return null;
 };
 
+/**
+ * Is this entry required? A page marks every box of a checkbox set required,
+ * which says nothing about the set, so a set is required only when its own
+ * question is marked (see observe.js).
+ */
+const isRequired = (entry) => {
+    if (entry.kind !== 'group') return Boolean(entry.field?.required);
+    if (entry.multi) return /[*\u2731]/.test(entry.field.groupLabel ?? '');
+    return entry.members.some((m) => m.field.required);
+};
+
 const hasValue = (entry) => (entry.kind === 'group'
     ? entry.members.some((m) => m.field.hasValue)
     : Boolean(entry.field?.hasValue));
@@ -127,10 +138,7 @@ const notReadyBecause = async (page, action, ctx) => {
     for (const entry of ctx.registry.values()) {
         if (entry.kind !== 'field' && entry.kind !== 'group') continue;
         const f = entry.field;
-        const required = entry.kind === 'group'
-            ? entry.members.some((m) => m.field.required)
-            : f.required;
-        if (!required) continue;
+        if (!isRequired(entry)) continue;
         if (f.type === 'file') {
             if (!ctx.attachedResume && !f.hasValue) missing.push(labelOf(entry) || 'resume');
             continue;
@@ -202,7 +210,7 @@ const executeAction = async (page, action, ctx) => {
             qa: {
                 questionText: labelOf(target),
                 answerText: filled.answerText,
-                fieldType: target.kind === 'group' ? 'radio' : f.type,
+                fieldType: target.kind === 'group' ? (target.multi ? 'checkbox' : 'radio') : f.type,
                 source: resolved.source,
                 questionId: resolved.questionId,
                 // The recipe matched this question to its answer word for
@@ -320,8 +328,11 @@ const executeAction = async (page, action, ctx) => {
             const f = entry.field;
             unknown.push({
                 questionText: labelOf(entry),
-                fieldType: entry.kind === 'group' ? 'radio' : f.type,
-                required: entry.kind === 'group' ? entry.members.some((m) => m.field.required) || true : true,
+                fieldType: entry.kind === 'group' ? (entry.multi ? 'checkbox' : 'radio') : f.type,
+                // Asked about means the model could not answer it; whether the
+                // page lets it be left blank is a separate question, and a set
+                // of checkboxes is only required if its own question says so.
+                required: entry.kind === 'group' && entry.multi ? isRequired(entry) : true,
                 options: entry.kind === 'group'
                     ? entry.members.map((m) => m.field.label).filter(Boolean)
                     : (f.options ?? []),

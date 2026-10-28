@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-    X, Loader2, AlertCircle, ExternalLink, History, Bot, User, Sparkles,
+    X, Loader2, AlertCircle, ExternalLink, History, Bot, Sparkles,
     SkipForward, RotateCcw, Ban,
 } from 'lucide-react';
 import api, { errorMessage } from '../../api/axios.js';
@@ -100,14 +100,13 @@ const QueueItemDrawer = ({ itemId, canEdit, isAdmin, onClose, onChanged }) => {
                         <>
                             <div className="flex flex-wrap items-center gap-2">
                                 <span className={`${badge} ${TONE.brand}`}>{item.status_label}</span>
-                                {/* The lane decides who is expected to act. Without it
-                                    the same job looks identical in two places. */}
-                                <span className={`${badge} ${item.channel === 'HUMAN' ? TONE.neutral : TONE.info}`}>
-                                    {item.channel === 'BOT' && <><Bot className="h-3.5 w-3.5" /> Desktop app</>}
-                                    {/* No coded automation exists for this site; the
-                                        desktop app's AI agent tries it first. */}
-                                    {item.channel === 'AGENT' && <><Sparkles className="h-3.5 w-3.5" /> AI agent</>}
-                                    {item.channel === 'HUMAN' && <><User className="h-3.5 w-3.5" /> Applies manually</>}
+                                {/* Every job is applied to by the desktop app. The lane
+                                    says how: a coded recipe, or the AI agent where no
+                                    recipe exists for the site. */}
+                                <span className={`${badge} ${TONE.info}`}>
+                                    {item.channel === 'BOT'
+                                        ? <><Bot className="h-3.5 w-3.5" /> Desktop app</>
+                                        : <><Sparkles className="h-3.5 w-3.5" /> AI agent</>}
                                 </span>
                                 <TailoringBadge
                                     state={item.tailoring_state}

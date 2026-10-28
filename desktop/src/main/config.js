@@ -59,8 +59,31 @@ const SIGNIN_POLL_MS = 3_000;
  * the person who has to act may be away from the machine.
  */
 const GATE_TTL_MS = 24 * 60 * 60_000;
-/** How often a held run is tried again when nothing says it is ready. */
-const GATE_RETRY_MS = 10 * 60_000;
+/**
+ * How long a site is left alone after a person did not come back to it.
+ *
+ * The job goes to the BACK of the queue, and the next jobs on the same site are
+ * not prompted straight away either — one sign-in window, not twenty. A human
+ * check gets longer, because trying again soon is what turns a temporary
+ * challenge into a blocked account (R-22).
+ */
+const GATE_RETRY_MS = 30 * 60_000;
+const GATE_COOLDOWN_MS = { BOT_CHECK: 2 * 60 * 60_000 };
+/** Times a job may time out waiting for a person before it is given up on. */
+const MAX_GATE_ATTEMPTS = 3;
+
+/**
+ * Which sites keep a written (scripted) flow. Everything else goes to the AI
+ * agent, which reads each page as it is. Only LinkedIn Easy Apply for now: the
+ * scripted Workday flow stalled on multi-page forms (it kept scrolling and
+ * re-asking for a field it had already filled), and the agent handles that
+ * better. Names are board names; 'SITES' is the Workday/Greenhouse/Lever/Ashby
+ * recipes; '*' means all (used by the test suites). Override with
+ * SMARTAPPLY_BOT_FLOWS="LINKEDIN,SITES".
+ */
+const BOT_FLOWS = new Set(
+    (process.env.SMARTAPPLY_BOT_FLOWS ?? 'LINKEDIN').split(',').map((s) => s.trim()).filter(Boolean),
+);
 /** Nudges after the wait begins; the last interval then repeats. */
 const GATE_REMINDER_MS = [5 * 60_000, 30 * 60_000, 2 * 60 * 60_000];
 const GATE_REMINDER_REPEAT_MS = 2 * 60 * 60_000;
@@ -146,6 +169,8 @@ module.exports = {
     SIGNIN_POLL_MS,
     GATE_TTL_MS,
     GATE_RETRY_MS,
+    GATE_COOLDOWN_MS,
+    MAX_GATE_ATTEMPTS, BOT_FLOWS,
     GATE_REMINDER_MS,
     GATE_REMINDER_REPEAT_MS,
     AUTO_SUBMIT,

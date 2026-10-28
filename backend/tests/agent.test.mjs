@@ -259,7 +259,7 @@ const run = async () => {
     section('the lane a new job starts in');
 
     await setOrg("agent_mode = 'OFF'");
-    check('no recipe and the agent off → HUMAN', await laneFor(FIX.orgId, false), 'HUMAN');
+    check('no recipe and the agent off → still AGENT (there is no HUMAN lane)', await laneFor(FIX.orgId, false), 'AGENT');
     await setOrg("agent_mode = 'SHADOW'");
     check('no recipe and the agent in shadow → AGENT', await laneFor(FIX.orgId, false), 'AGENT');
     check('a recipe always wins → BOT', await laneFor(FIX.orgId, true), 'BOT');

@@ -206,3 +206,33 @@ Each phase is shippable alone and leaves the previous behaviour intact behind a 
 2. Is "open to relocate" a per-consultant setting or per location row?
 3. Should *auto-draft criteria* go live for consultants immediately, or only after a recruiter approves?
 4. Who sees the Suggested-matches screen: recruiters only, or org admins too?
+
+---
+
+## 13. Build status
+
+All five phases are implemented. v2 is **off by default** for every organisation
+(`organizations.matcher_version = 1`) and needs migration `060_matcher_v2.sql`, which has not
+been applied yet.
+
+| Phase | Files | Tested by |
+|---|---|---|
+| A bench | `config/criteriaSuggest.js`, `controllers/matchingController.js` (bootstrap, bench, rematch), `services/rematch.js`, `services/matchLinker.js` | `matchingBench.test.mjs` (42, against the DB in a throwaway org) |
+| B skills | `config/skillGraph.js`, `config/jobMatcherV2.js` | `matcherV2.test.mjs` (61) |
+| C location | `config/locations.js` (+ `open_to_relocate`) | `locations.test.mjs` (50) |
+| D deal-breakers | `config/eligibility.js` | `eligibility.test.mjs` (47) |
+| E outcomes + screen | `matchLinker` (suggest / accept / dismiss), `client/src/pages/management/Matching.jsx` | `suggestions.test.mjs` (28, recording stand-in) and `matchingV2.db.test.mjs` (needs the migration) |
+
+Tuning done against the live pool with `npm run matcher:compare` (read-only): a chip-design role was
+scoring 84 for a full-stack developer because "front-end/back-end" are also skills (now ignored unless
+the posting names real tools); jobs in Shanghai and London passed as "location unknown" (now a country
+guard); a "PHP Full Stack" title queued for someone without PHP (now a suggestion); a "Full Stack
+Developer I" scored zero skills because its title names no tool (now means frontend + backend).
+
+To switch an organisation on: `npm run migrate`, `npm run test:matching-db`, run
+`npm run matcher:compare -- "<organisation>"`, read the "queued by v1, NOT queued by v2" list, then
+`PUT /api/management/matching/settings {"version": 2}` as an organisation admin.
+
+Deviations from the plan above, on purpose: the skill relations are a reviewed file
+(`skillGraph.js`) instead of a table, so each edge is versioned, tested and visible in a diff; and
+"open to relocate" is stored on the criteria version.

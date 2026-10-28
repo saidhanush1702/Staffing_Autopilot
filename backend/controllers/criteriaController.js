@@ -19,6 +19,20 @@ import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { canAccessConsultant } from '../utils/scope.js';
 import { logAction } from './auditLogController.js';
+import { rematchConsultant } from '../services/rematch.js';
+import { hasColumn } from '../services/benchExtras.js';
+
+/**
+ * Look through the pool for this consultant right after their criteria change,
+ * rather than at the next scheduled run. Never blocks or fails the save: a
+ * recruiter pressing Save must not wait on, or be blamed for, a search.
+ * Switched off with MATCH_REMATCH_ON_SAVE=0 (the test suite does).
+ */
+const rematchSoon = (orgId, consultantId, via) => {
+    if (process.env.MATCH_REMATCH_ON_SAVE === '0') return;
+    rematchConsultant({ orgId, consultantId, via })
+        .catch((err) => console.warn(`[rematch] ${consultantId}: ${err.message}`));
+};
 import {
     TERM_KINDS, normalise, fingerprint, describeDiff, EMPTY_CRITERIA,
 } from '../config/criteriaSchema.js';
@@ -77,7 +91,7 @@ const resolveConsultant = async (user, consultantId, { forWrite = false } = {}) 
  * principle that no read path ever meets a missing row. It starts PAUSED — a
  * consultant with no criteria must never receive every job on the internet.
  */
-const ensureCriteriaRow = async (runner, orgId, consultantId, actorId) => {
+export const ensureCriteriaRow = async (runner, orgId, consultantId, actorId) => {
     await runner(
         `INSERT INTO search_criteria (consultant_id, organization_id, is_active, created_by, updated_by)
          VALUES ($1, $2, FALSE, $3, $3)
@@ -128,6 +142,12 @@ const expandVersion = async (versionId) => {
     const v = head.rows[0];
     if (!v) return null;
 
+    let relocate = false;
+    if (await hasColumn('search_criteria_versions', 'open_to_relocate')) {
+        const r = await query('SELECT open_to_relocate FROM search_criteria_versions WHERE id = $1', [versionId]);
+        relocate = Boolean(r.rows[0]?.open_to_relocate);
+    }
+
     const byKind = (kind) => terms.rows.filter((t) => t.kind === kind).map((t) => t.value);
 
     return {
@@ -149,6 +169,7 @@ const expandVersion = async (versionId) => {
             workMode: l.work_mode,
             radiusMiles: l.radius_miles,
         })),
+        openToRelocate: relocate,
         workTypeIds: workTypes.rows.map((w) => w.work_type_id),
         // NUMERIC arrives from pg as a string; the client should not have to
         // know that.
@@ -192,7 +213,7 @@ const buildPayload = async (parent, consultant) => {
  * its consequences never come apart: a half-written version must never be
  * reachable through the current pointer.
  */
-const writeVersion = async (client, { orgId, consultantId, actorId, data, changeNote }) => {
+export const writeVersion = async (client, { orgId, consultantId, actorId, data, changeNote }) => {
     // Demote the outgoing version FIRST. uq_one_current_version_per_consultant
     // is a partial unique index, so two current rows cannot briefly coexist.
     await client.query(
@@ -221,6 +242,14 @@ const writeVersion = async (client, { orgId, consultantId, actorId, data, change
             changeNote || null, actorId,
         ],
     );
+    // Added by migration 060. Written only when the column exists, so a deploy
+    // that runs before the migration still saves everything else.
+    if (await hasColumn('search_criteria_versions', 'open_to_relocate')) {
+        await client.query(
+            'UPDATE search_criteria_versions SET open_to_relocate = $2 WHERE id = $1',
+            [versionId, Boolean(data.openToRelocate)],
+        );
+    }
 
     for (const [key, kind] of Object.entries(TERM_KINDS)) {
         const values = data[key];
@@ -336,6 +365,10 @@ export const saveCriteria = async (req, res, next) => {
             ipAddress: req.ip,
         }).catch(() => {});
 
+        // Only a set that is switched on can match anything; a paused one is
+        // checked when somebody activates it.
+        if (parent.is_active) rematchSoon(req.user.orgId, consultant.id, 'Re-checked after criteria changed');
+
         const fresh = await ensureCriteriaRow(query, req.user.orgId, consultant.id, req.user.id);
         return res.status(201).json({
             message: `Saved as version ${versionNo}.`,
@@ -395,6 +428,7 @@ export const toggleCriteriaActive = async (req, res, next) => {
             ipAddress: req.ip,
         }).catch(() => {});
 
+        if (isActive) rematchSoon(req.user.orgId, consultant.id, 'Re-checked after activation');
         return res.json({ message: isActive ? 'Criteria active.' : 'Criteria paused.', isActive });
     } catch (err) {
         return next(err);

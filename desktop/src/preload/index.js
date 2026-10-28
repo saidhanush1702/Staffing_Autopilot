@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('smartapply', {
     // Answers to the countdown banner. See attention.js for what each means.
     attentionContinue: () => ipcRenderer.invoke('attentionContinue'),
     attentionSkip: () => ipcRenderer.invoke('attentionSkip'),
+    // "Carry on anyway", offered after the app found the gate still up.
+    attentionForce: () => ipcRenderer.invoke('attentionForce'),
     /** "I've done it" for an application on hold for a person. */
     runResume: (itemId) => ipcRenderer.invoke('runResume', itemId),
 

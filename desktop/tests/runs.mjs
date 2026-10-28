@@ -7,6 +7,7 @@
  * its browser and hub as arguments, so a gate that needs a person can be proven
  * without one — and without waiting a real day for the time limit.
  */
+process.env.SMARTAPPLY_BOT_FLOWS = '*';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -59,8 +60,8 @@ section('the ledger records who is waiting on a person');
     check('  but no other lane', ledger.holdsLane('LINKEDIN'), false);
     check('  and it is not due for a retry straight away', ledger.due(ledger.get('q1')), false);
 
-    c.advance(11 * MIN);
-    check('  it is due once the retry interval has passed', ledger.due(ledger.get('q1')), true);
+    c.advance(31 * MIN);
+    check('  it is due once the cool-down has passed', ledger.due(ledger.get('q1')), true);
 
     const since = ledger.get('q1').since;
     ledger.defer({ ...base, gate: { kind: 'SIGN_IN', message: 'again' } });
@@ -259,11 +260,11 @@ section('a job that leaves the queue stops holding a lane');
 
     items.list = [];
     await engine.run();
-    check('the consultant applied by hand; the hold is forgotten',
+    check('the job left the queue; the hold is forgotten',
         engine.ledger.holdsLane('WELLFOUND'), false);
 }
 
-section('after a day it is handed over, once');
+section('after a day it is given up on, once');
 {
     const c = clock(Date.now());
     const items = { list: [job('q1', 'WELLFOUND', 'Globex')] };
@@ -285,8 +286,8 @@ section('after a day it is handed over, once');
     hub.calls.length = 0;
     await engine.run();
 
-    const handed = hub.calls.filter((x) => x.name === 'reclassify');
-    check('the hub was told it needs the consultant', handed.length, 1);
+    const handed = hub.calls.filter((x) => x.name === 'skipped');
+    check('the hub is told the job was skipped, once', handed.length, 1);
     check('  with the reason', /Waited more than a day/.test(handed[0]?.args[1]?.reason ?? ''), true);
     check('  and nothing is held any more', engine.ledger.all(), []);
 }

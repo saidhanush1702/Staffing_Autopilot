@@ -47,6 +47,11 @@ import {
     listCriteriaVersions, getCriteriaVersion, restoreCriteriaVersion, getMyCriteria,
 } from './controllers/criteriaController.js';
 import {
+    getSuggestion, rematch, bootstrap, bench,
+    listSuggestions, acceptSuggestionRoute, dismissSuggestionRoute,
+    getMatchingSettings, putMatchingSettings,
+} from './controllers/matchingController.js';
+import {
     criteriaSchema, toggleActiveSchema, restoreSchema,
 } from './config/criteriaSchema.js';
 import {
@@ -340,6 +345,25 @@ app.put('/api/management/consultants/:id/criteria',
     [verifyToken, isManagement, validate(criteriaSchema)], saveCriteria);
 app.post('/api/management/consultants/:id/criteria/toggle-active',
     [verifyToken, isManagement, validate(toggleActiveSchema)], toggleCriteriaActive);
+
+app.get('/api/management/consultants/:id/criteria/suggestion',
+    [verifyToken, isManagement], getSuggestion);
+app.post('/api/management/consultants/:id/criteria/rematch',
+    [verifyToken, isManagement], rematch);
+app.post('/api/management/criteria/bootstrap',
+    [verifyToken, isManagement], bootstrap);
+app.get('/api/management/matching/bench',
+    [verifyToken, isManagement], bench);
+app.get('/api/management/matching/suggestions',
+    [verifyToken, isManagement], listSuggestions);
+app.post('/api/management/matching/suggestions/:matchId/accept',
+    [verifyToken, isManagement], acceptSuggestionRoute);
+app.post('/api/management/matching/suggestions/:matchId/dismiss',
+    [verifyToken, isManagement], dismissSuggestionRoute);
+app.get('/api/management/matching/settings',
+    [verifyToken, isManagement], getMatchingSettings);
+app.put('/api/management/matching/settings',
+    [verifyToken, isOrgAdmin], putMatchingSettings);
 
 app.get('/api/management/consultants/:id/criteria/versions',
     [verifyToken, isManagement], listCriteriaVersions);

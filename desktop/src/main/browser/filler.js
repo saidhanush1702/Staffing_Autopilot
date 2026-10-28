@@ -1310,6 +1310,26 @@ function el(locators, field) {
 const fillValue = async (pageLike, target, value, { typing = TYPING, stateHint = null } = {}) => {
     const text = String(value ?? '');
 
+    if (target.members && target.members.every((m) => m.field.type === 'checkbox')) {
+        // A set of checkboxes takes SEVERAL options: "Python, Java" ticks both.
+        // Every named option has to exist, or nothing is ticked and the answer
+        // is reported as not fitting — a half-ticked set is a wrong answer.
+        const labels = target.members.map((m) => m.field.label);
+        const wanted = text.split(/\s*[,;|]\s*/).filter(Boolean);
+        const picks = wanted.map((w) => chooseOption(labels, w));
+        if (picks.length === 0 || picks.some((p) => !p)) {
+            return {
+                ok: false,
+                error: `not every option in "${text.slice(0, 60)}" is one of (${labels.filter(Boolean).slice(0, 8).join(', ')})`,
+            };
+        }
+        for (const pick of picks) {
+            const chosen = target.members.find((m) => m.field.label === pick);
+            await checkControl(chosen.locator, chosen.field);
+        }
+        return { ok: true, answerText: picks.join(', ') };
+    }
+
     if (target.members) {
         const labels = target.members.map((m) => m.field.label);
         const match = chooseOption(labels, text);

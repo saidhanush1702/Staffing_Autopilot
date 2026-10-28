@@ -20,10 +20,6 @@ import { useState } from 'react';
  */
 const Controls = ({ snap, onRefresh }) => {
     const [autoSubmit, setAutoSubmit] = useState(Boolean(snap.autoSubmit));
-    // On unless the consultant turned it off. The organisation decides whether
-    // the agent may run at all; this can only narrow that.
-    const [agentFallback, setAgentFallback] = useState(snap.agentFallback !== false);
-    const [eeoDecline, setEeoDecline] = useState(snap.eeoPolicy === 'DECLINE');
     const [busy, setBusy] = useState(false);
 
     const running = Boolean(snap.automationOn);
@@ -59,7 +55,7 @@ const Controls = ({ snap, onRefresh }) => {
                     onClick={() => act(running
                         ? window.smartapply.stopAutomation
                         : () => window.smartapply.startAutomation({
-                            autoSubmit, agentFallback, eeoPolicy: eeoDecline ? 'DECLINE' : 'ASK',
+                            autoSubmit, eeoPolicy: 'ASK',
                         }))}
                 >
                     {busy ? 'Working…' : (running ? 'Stop' : 'Start applying')}
@@ -68,50 +64,12 @@ const Controls = ({ snap, onRefresh }) => {
 
             {running ? (
                 <p className="muted">
-                    Stop first to change whether applications are submitted automatically
-                    {snap.agentFallback !== false
-                        ? ', or whether the AI agent may take over.'
-                        : '. The AI agent is off for this run.'}
+                    Stop first to change whether applications are submitted automatically.
+                    The app uses a written flow where it has one and the AI agent everywhere
+                    else — there is nothing to switch.
                 </p>
             ) : (
                 <>
-                <label className="switch">
-                    <input
-                        type="checkbox"
-                        checked={agentFallback}
-                        onChange={(e) => setAgentFallback(e.target.checked)}
-                    />
-                    <span>
-                        <strong>Let the AI agent take over</strong>
-                        <p className="muted" style={{ marginTop: 2 }}>
-                            {agentFallback
-                                ? 'When a site is new to the app, or its automation breaks, the AI '
-                                  + 'agent fills the form using only your profile and approved '
-                                  + 'answers. It also checks whether a new question means the same '
-                                  + 'as one you have already answered before stopping to ask you. '
-                                  + 'Anything genuinely new still comes to you.'
-                                : 'Jobs the automation cannot fill come straight to you, and every '
-                                  + 'new question stops for you to answer, exactly as before.'}
-                        </p>
-                    </span>
-                </label>
-                <label className="switch">
-                    <input
-                        type="checkbox"
-                        checked={eeoDecline}
-                        onChange={(e) => setEeoDecline(e.target.checked)}
-                    />
-                    <span>
-                        <strong>Choose “prefer not to say” on voluntary questions</strong>
-                        <p className="muted" style={{ marginTop: 2 }}>
-                            {eeoDecline
-                                ? 'Gender, race, veteran and disability questions get the form’s '
-                                  + '“decline to answer” option. The app never states any of these '
-                                  + 'about you.'
-                                : 'Those questions stop and wait for you to answer them.'}
-                        </p>
-                    </span>
-                </label>
                 <label className="switch">
                     <input
                         type="checkbox"

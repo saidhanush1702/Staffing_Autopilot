@@ -213,7 +213,7 @@ export const linkPosting = async (req, res, next) => {
                     // same transaction, so the history reads exactly like a
                     // discovered job's: queued, then ready.
                     statusId.QUEUED, isOverlap,
-                    job.automatable ? 'BOT' : 'HUMAN', req.user.id],
+                    job.automatable ? 'BOT' : 'AGENT', req.user.id],
             );
 
             await client.query(
@@ -254,7 +254,7 @@ export const linkPosting = async (req, res, next) => {
             ok: true,
             queueItemId: itemId,
             consultant: who[0].name,
-            channel: job.automatable ? 'BOT' : 'HUMAN',
+            channel: job.automatable ? 'BOT' : 'AGENT',
             isOverlap,
         });
     } catch (err) {

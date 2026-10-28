@@ -365,7 +365,7 @@ export const searchJobToPosting = (job, { now = new Date() } = {}) => {
         source: SOURCE_NAME,
         // Reused from googleJobs.js rather than reimplemented: which system an
         // application is filled on is a property of the apply link's host, and
-        // it decides the BOT/HUMAN lane. Two copies of that rule would put the
+        // it decides the BOT/AGENT lane. Two copies of that rule would put the
         // same employer in different lanes depending which door it came in.
         portalType: detectPortalType(sourceUrl),
         posting: {

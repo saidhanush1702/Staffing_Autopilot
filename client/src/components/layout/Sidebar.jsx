@@ -4,7 +4,7 @@ import {
     Building2, LayoutDashboard, Users, Contact, Link2, UserCircle,
     ShieldCheck, ClipboardCheck, X, Search, MessageSquare, Radar, Briefcase, Laptop,
     PanelLeftClose, PanelLeftOpen, ShieldAlert, UserSearch, Coins, ListChecks, Webhook,
-    FileCog, Cpu, RadioTower,
+    FileCog, Cpu, RadioTower, GitMerge,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { RoleBadge } from '../ui/Badge.jsx';
@@ -83,6 +83,9 @@ const NAV_GROUPS = [
                 to: '/management/approvals', label: 'Approvals', icon: ClipboardCheck,
                 roles: ['ORG_ADMIN', 'RECRUITER'], badge: 'approvals',
             },
+            // The jobs the matcher was unsure about, and who can receive jobs at
+            // all: both are a person's decision, so they sit with the reviews.
+            { to: '/management/matching', label: 'Matching', icon: GitMerge, roles: ['ORG_ADMIN', 'RECRUITER'] },
         ],
     },
     {

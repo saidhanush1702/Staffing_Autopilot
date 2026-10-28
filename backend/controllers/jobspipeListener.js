@@ -53,6 +53,7 @@ import Joi from 'joi';
 import { v4 as uuidv4 } from 'uuid';
 import { query, withTransaction } from '../db.js';
 import { laneFor } from '../config/queueLanes.js';
+import { recordSuggestion } from '../services/matchLinker.js';
 import { evaluate } from '../config/jobMatcher.js';
 import { jobspipeToPosting, unwrapBatch, SOURCE_NAME } from '../connectors/jobspipe.js';
 import {
@@ -306,6 +307,16 @@ export const ingestAdapted = async (orgId, adapted, {
         // 'hard' and 'prefilter' are both cheap rejections — the stages that
         // exist precisely so nothing expensive runs on a job nobody wants.
         if (verdict.stage !== 'score') result.prefilteredOut += 1;
+        // v2's middle outcome: a plausible fit that is not certain goes to a
+        // recruiter as a suggestion, with nothing put in the consultant's queue.
+        if (verdict.bucket === 'SUGGEST') {
+            const s = await recordSuggestion({
+                orgId, consultantId: consultant.id, versionId: consultant.versionId,
+                postingId: stored.id, verdict, via: viaLabel,
+            });
+            if (s.suggested) result.suggested = (result.suggested ?? 0) + 1;
+            continue;
+        }
         if (!verdict.matched) continue;
 
         // ON CONFLICT: a consultant is matched to a posting once, ever. A feed
@@ -335,7 +346,7 @@ export const ingestAdapted = async (orgId, adapted, {
               WHERE p.id = $1`,
             [stored.id],
         );
-        // BOT, AGENT or HUMAN — one rule for every door a job comes in by.
+        // BOT or AGENT — one rule for every door a job comes in by.
         const channel = await laneFor(orgId, portal[0]?.automatable);
 
         // R-01 / R-03: the same posting legitimately reaches several

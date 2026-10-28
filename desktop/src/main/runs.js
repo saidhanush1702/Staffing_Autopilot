@@ -28,7 +28,7 @@
  * replay would act on a page that no longer exists.
  */
 const {
-    GATE_TTL_MS, GATE_RETRY_MS, GATE_REMINDER_MS, GATE_REMINDER_REPEAT_MS,
+    GATE_TTL_MS, GATE_RETRY_MS, GATE_COOLDOWN_MS, GATE_REMINDER_MS, GATE_REMINDER_REPEAT_MS,
 } = require('./config.js');
 
 class RunLedger {
@@ -38,13 +38,14 @@ class RunLedger {
      */
     constructor({
         store, now = () => Date.now(),
-        ttlMs = GATE_TTL_MS, retryMs = GATE_RETRY_MS,
+        ttlMs = GATE_TTL_MS, retryMs = GATE_RETRY_MS, cooldowns = GATE_COOLDOWN_MS,
         reminderMs = GATE_REMINDER_MS, repeatMs = GATE_REMINDER_REPEAT_MS,
     }) {
         this.store = store;
         this.now = now;
         this.ttlMs = ttlMs;
         this.retryMs = retryMs;
+        this.cooldowns = cooldowns;
         this.reminderMs = reminderMs;
         this.repeatMs = repeatMs;
     }
@@ -88,9 +89,13 @@ class RunLedger {
             holdsLane,
             since: before?.since ?? at,
             attempts: before?.attempts ?? 0,
+            // Times a person did not come back in time. Counted across
+            // retries, so a job cannot go round the back of the queue forever.
+            gateAttempts: (before?.gateAttempts ?? 0) + 1,
             reminders: before?.reminders ?? 0,
             lastRemindedAt: before?.lastRemindedAt ?? null,
-            nextTryAt: at + this.retryMs,
+            // The site is left alone until then, and so is this job.
+            nextTryAt: at + (this.cooldowns[gate.kind] ?? this.retryMs),
             resumeRequested: false,
         });
         this.#save(rows);
@@ -127,10 +132,31 @@ class RunLedger {
         return found;
     }
 
-    /** Is a person still working in this lane? */
+    /** Was this lane left alone recently, because a person did not come back? */
     holdsLane(lane) {
         return this.#rows().some((r) => r.lane === lane && r.holdsLane
-            && r.status === 'WAITING_USER' && !this.isExpired(r));
+            && r.status === 'WAITING_USER' && !this.isExpired(r)
+            && this.now() < r.nextTryAt);
+    }
+
+    /**
+     * The thing a lane was left alone for has been seen to clear (the board is
+     * signed in now), so the jobs behind it need not wait out the cool-down.
+     */
+    releaseLane(lane, kind) {
+        let changed = false;
+        const rows = this.#rows().map((r) => {
+            if (r.lane !== lane || r.gate.kind !== kind || !r.holdsLane) return r;
+            changed = true;
+            return { ...r, holdsLane: false };
+        });
+        if (changed) this.#save(rows);
+        return changed;
+    }
+
+    /** How many times has a person failed to come back for this job? */
+    gateAttempts(itemId) {
+        return this.get(itemId)?.gateAttempts ?? 0;
     }
 
     isExpired(run) { return this.now() - run.since >= this.ttlMs; }

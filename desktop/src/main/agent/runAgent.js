@@ -93,6 +93,7 @@ const runAgent = async (page, {
         agent: { runId, actions, refused, turns, proposals: shadow ? history : undefined },
     });
 
+    let openedApply = 0;
     while (actions < maxActions) {
         let seen;
         try {
@@ -142,6 +143,31 @@ const runAgent = async (page, {
             }
             if (kind === 'CLOSED' && actions === 0) {
                 return end({ outcome: 'CLOSED', detail: 'the page says the posting is closed' });
+            }
+
+            // A posting with nothing to fill and an Apply control: press it. No
+            // model call is needed to know that is the next step, and a model
+            // asked "what now?" of a page with only a footer box has been seen to
+            // pick the box.
+            if (kind === 'JOB_PAGE' && openedApply < 3 && qa.length === 0) {
+                const apply = seen.observation.controls.find((c) => !c.disabled
+                    && /^\s*(apply( now| for this (job|position|role))?|apply on company (site|website)|start (your )?application|easy apply|apply manually)\s*[›>»]?\s*$/i.test(c.text));
+                if (apply) {
+                    openedApply += 1;
+                    const opened = await execute(page, {
+                        action: 'press', ref: apply.ref, reason: `open the application (${apply.text})`,
+                    }, {
+                        registry: seen.registry, errors: [], book, approvedAnswers: [],
+                        resumePath: null, attachedResume, filledCount: 0, typing, log, waitForHuman,
+                    });
+                    actions += 1;
+                    lastSignature = null;
+                    lastActed = Boolean(opened.ok);
+                    lastResult = opened.ok ? opened.result : `refused: ${opened.error}`;
+                    activity(`Opening the application — ${apply.text}`);
+                    history.push({ n: actions, action: 'press', ref: apply.ref, source: '', result: lastResult });
+                    continue;
+                }
             }
         }
 
